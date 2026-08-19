@@ -130,6 +130,7 @@ struct TabContentView: View {
     @State private var showConnectSheet = false
     @State private var editingSite: Site?
     @State private var newPageSite: Site?
+    @AppStorage("tim.siteSidebar") private var showSiteSidebar = true
     @FocusState private var addressFocused: Bool
 
     private var pageURL: URL? { URL(string: tab.urlString) }
@@ -147,21 +148,27 @@ struct TabContentView: View {
                 )
                 Divider()
             }
-            if tab.isMobilePreview {
-                ZStack {
-                    Color.primary.opacity(0.045)
-                    WebViewContainer(webView: tab.webView)
-                        .frame(width: 390)
-                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                .stroke(Color.primary.opacity(0.2), lineWidth: 1)
-                        )
-                        .shadow(color: .black.opacity(0.18), radius: 22, y: 8)
-                        .padding(.vertical, 20)
+            HStack(spacing: 0) {
+                if showSiteSidebar, let site = matchedSite {
+                    SiteSidebar(site: site, tab: tab) { sha in rollbackCurrentPage(to: sha) }
+                    Divider()
                 }
-            } else {
-                WebViewContainer(webView: tab.webView)
+                if tab.isMobilePreview {
+                    ZStack {
+                        Color.primary.opacity(0.045)
+                        WebViewContainer(webView: tab.webView)
+                            .frame(width: 390)
+                            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                    .stroke(Color.primary.opacity(0.2), lineWidth: 1)
+                            )
+                            .shadow(color: .black.opacity(0.18), radius: 22, y: 8)
+                            .padding(.vertical, 20)
+                    }
+                } else {
+                    WebViewContainer(webView: tab.webView)
+                }
             }
         }
         .background(.background)
@@ -177,6 +184,17 @@ struct TabContentView: View {
         }
         .onChange(of: tab.urlString) { _, newValue in
             if !addressFocused { addressText = newValue }
+        }
+        .onChange(of: tab.isLoading) { _, loading in
+            // Thumbnails fall out of browsing: snapshot owned pages on load.
+            guard !loading, let url = tab.webView.url, matchedSite != nil else { return }
+            let config = WKSnapshotConfiguration()
+            config.snapshotWidth = 280
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                tab.webView.takeSnapshot(with: config) { image, _ in
+                    if let image { ThumbnailStore.save(image, for: url.absoluteString) }
+                }
+            }
         }
         .sheet(isPresented: $showPublishSheet) {
             PublishSheet(tab: tab, site: matchedSite)
@@ -316,6 +334,39 @@ struct TabContentView: View {
         }
     }
 
+    /// History is just history: pick a version, the page returns to it —
+    /// restored in the mirror, republished, reloaded, and recorded as a
+    /// new snapshot (so a rollback can itself be rolled back).
+    private func rollbackCurrentPage(to sha: String) {
+        guard let url = tab.webView.url, let matched = matchedSite else { return }
+        let site = ensureWorkspace(matched)
+        guard !AstroProject.isAstroProject(site.localProjectPath) else { return }
+        let rel = site.relativePagePath(for: url)
+        let relPath = String(rel.dropFirst())
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try SiteWorkspace.restore(relPath, to: sha, in: site.localProjectPath)
+                let html = try String(
+                    contentsOfFile: (site.localProjectPath as NSString).appendingPathComponent(relPath),
+                    encoding: .utf8
+                )
+                switch site.target {
+                case .sftp:
+                    let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
+                    _ = try SFTP.upload(html: html, to: root + rel, host: site.host, username: site.username, port: site.port)
+                case .cloudflare:
+                    _ = try CloudflarePublisher.deploy(folder: site.localProjectPath, projectName: site.cfProjectName)
+                case .githubPages:
+                    _ = try GitHubPagesPublisher.publish(repo: site.localProjectPath, message: "Roll back \(rel)")
+                }
+                SiteWorkspace.snapshot(site.localProjectPath, message: "Roll back \(rel) to \(sha)")
+                DispatchQueue.main.async { tab.webView.reload() }
+            } catch {
+                DispatchQueue.main.async { publishAlert(error) }
+            }
+        }
+    }
+
     private func publishAlert(_ error: Error) {
         let alert = NSAlert()
         alert.messageText = "Publish"
@@ -444,6 +495,14 @@ struct TabContentView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .navigation) {
+            if matchedSite != nil {
+                Button {
+                    showSiteSidebar.toggle()
+                } label: {
+                    Image(systemName: "sidebar.left")
+                }
+                .help("Show your site's pages and history")
+            }
             Button {
                 tab.webView.goBack()
             } label: {
@@ -1903,6 +1962,119 @@ struct SiteEditorSheet: View {
             }
         }
         dismiss()
+    }
+}
+
+// MARK: - Thumbnails (machine-local cache, filled lazily by browsing)
+
+enum ThumbnailStore {
+    static let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("TimThumbnails")
+
+    static func path(for url: String) -> URL {
+        let key = Data(url.utf8).base64EncodedString()
+            .replacingOccurrences(of: "/", with: "_")
+            .prefix(180)
+        return directory.appendingPathComponent(String(key) + ".png")
+    }
+
+    static func save(_ image: NSImage, for url: String) {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return }
+        try? png.write(to: path(for: url))
+    }
+
+    static func image(for url: String) -> NSImage? {
+        NSImage(contentsOf: path(for: url))
+    }
+}
+
+// MARK: - Site sidebar: every page, thumbnails, history
+
+struct SiteSidebar: View {
+    let site: Site
+    @ObservedObject var tab: Tab
+    let rollback: (String) -> Void
+
+    private var pages: [LinkOption] { LinkSources.pages(for: site) }
+    private var currentRel: String? {
+        tab.webView.url.map { site.relativePagePath(for: $0) }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(site.name.isEmpty ? site.origin : site.name)
+                    .font(.headline)
+                    .padding(.top, 10)
+
+                ForEach(pages) { page in
+                    Button {
+                        tab.navigate(to: site.origin + page.href)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Group {
+                                if let thumb = ThumbnailStore.image(for: site.origin + page.href) {
+                                    Image(nsImage: thumb)
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fill)
+                                } else {
+                                    ZStack {
+                                        Rectangle().fill(Color.primary.opacity(0.05))
+                                        Image(systemName: "doc.text")
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                }
+                            }
+                            .frame(height: 96)
+                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .stroke(page.href == currentRel ? Color.accentColor : Color.primary.opacity(0.12),
+                                            lineWidth: page.href == currentRel ? 2 : 1)
+                            )
+                            Text(page.label)
+                                .font(.system(size: 11.5, weight: page.href == currentRel ? .semibold : .regular))
+                                .lineLimit(1)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if let rel = currentRel, !AstroProject.isAstroProject(site.localProjectPath) {
+                    let versions = SiteWorkspace.versions(of: String(rel.dropFirst()), in: site.localProjectPath)
+                    if versions.count > 1 {
+                        Divider().padding(.vertical, 4)
+                        Text("History")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        ForEach(versions) { version in
+                            Button {
+                                rollback(version.sha)
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "clock.arrow.circlepath")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(.secondary)
+                                    Text(version.date)
+                                        .font(.system(size: 11))
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .help("Restore this page to this version and republish it.")
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(width: 190)
     }
 }
 

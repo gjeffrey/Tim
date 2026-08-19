@@ -160,6 +160,31 @@ public enum SiteWorkspace {
     }
 
     #if os(macOS)
+    public struct PageVersion: Identifiable {
+        public var id: String { sha }
+        public let sha: String
+        public let date: String
+    }
+
+    /// The invisible git history of one page, newest first.
+    public static func versions(of relPath: String, in folder: String) -> [PageVersion] {
+        guard let output = try? Shell.run(
+            "git log --format='%h|%ad' --date=format:'%b %e, %H:%M' -- \(Shell.quoted(relPath))",
+            in: folder
+        ) else { return [] }
+        return output.split(separator: "\n").compactMap { line in
+            let parts = line.split(separator: "|", maxSplits: 1)
+            guard parts.count == 2 else { return nil }
+            return PageVersion(sha: String(parts[0]), date: String(parts[1]))
+        }
+    }
+
+    /// Restores one page file to a previous version (working tree only —
+    /// the caller republishes and snapshots).
+    public static func restore(_ relPath: String, to sha: String, in folder: String) throws {
+        _ = try Shell.run("git checkout \(sha) -- \(Shell.quoted(relPath))", in: folder)
+    }
+
     /// Invisible history: every mirror is quietly a git repo, committed on
     /// each publish. Never surfaced in UI — it's the undo layer that later
     /// powers page versions and conflict handling.
