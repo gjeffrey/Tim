@@ -40,41 +40,6 @@
         {
           "image-name" : "tim garamond 1 2.svg",
           "name" : "tim garamond 1 2"
-        },
-        {
-          "hidden" : true,
-          "image-name" : "tim garamond 2.svg",
-          "name" : "tim garamond 2"
-        },
-        {
-          "hidden" : true,
-          "image-name" : "tim garamond 1.svg",
-          "name" : "tim garamond 1"
-        },
-        {
-          "fill-specializations" : [
-            {
-              "value" : "system-dark"
-            },
-            {
-              "appearance" : "dark",
-              "value" : "system-light"
-            },
-            {
-              "appearance" : "tinted",
-              "value" : "system-light"
-            }
-          ],
-          "hidden" : true,
-          "image-name" : "Group.png",
-          "name" : "Group",
-          "position" : {
-            "scale" : 1.4,
-            "translation-in-points" : [
-              0,
-              32.9921875
-            ]
-          }
         }
       ],
       "refractivity" : {

@@ -8,7 +8,11 @@ import AppKit
 let canvas = 1024
 let inset: CGFloat = 100
 let radius: CGFloat = 185
-let artPath = "/tmp/tim-icon-art.png"
+// Layers straight from the Icon Composer document, bottom to top.
+let layerPaths = [
+    "Design/tim icon.icon/Assets/tim garamond 1 2.svg",  // yellow circle
+    "Design/tim icon.icon/Assets/tim garamond 2 2.svg"   // tim:// wordmark
+]
 
 func drawIcon() -> CGImage {
     let space = CGColorSpace(name: CGColorSpace.sRGB)!
@@ -23,13 +27,12 @@ func drawIcon() -> CGImage {
     ctx.setFillColor(CGColor(red: 0.98039, green: 0.98039, blue: 0.98039, alpha: 1))
     ctx.fill(rect)
 
-    if let data = NSData(contentsOfFile: artPath),
-       let provider = CGDataProvider(data: data),
-       let art = CGImage(pngDataProviderSource: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent) {
-        // Center the wordmark; the SVG render already carries its padding.
-        let side = rect.width
+    for path in layerPaths {
+        guard let nsImage = NSImage(contentsOfFile: path) else { continue }
+        var proposed = rect
+        guard let cg = nsImage.cgImage(forProposedRect: &proposed, context: nil, hints: nil) else { continue }
         ctx.interpolationQuality = .high
-        ctx.draw(art, in: CGRect(x: rect.minX, y: rect.minY, width: side, height: side))
+        ctx.draw(cg, in: rect)
     }
     return ctx.makeImage()!
 }
