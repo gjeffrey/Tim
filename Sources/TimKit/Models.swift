@@ -14,6 +14,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     @Published public var canGoBack: Bool = false
     @Published public var canGoForward: Bool = false
     @Published public var isMobilePreview: Bool = false
+    @Published public var lastHTTPStatus: Int = 200
 
     public let webView: WKWebView
     private var observations: [NSKeyValueObservation] = []
@@ -552,11 +553,16 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           hide();
           return;
         }
-        if ((e.key === 'Backspace' || e.key === 'Delete') && sel && isObject(sel) && !editingEl) {
-          sel.remove();
-          sel = null;
-          hide();
+        if ((e.key === 'Backspace' || e.key === 'Delete') && active && !editingEl) {
+          var t = e.target;
+          if (t && (t.isContentEditable || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) { return; }
+          // While editing, delete deletes — it never navigates back.
           e.preventDefault();
+          if (sel) {
+            sel.remove();
+            sel = null;
+            hide();
+          }
         }
       }
 
@@ -691,6 +697,20 @@ extension Tab: WKNavigationDelegate {
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         // Navigating away always leaves edit mode.
         if isEditing { isEditing = false }
+        lastHTTPStatus = 200
+    }
+
+    public func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationResponse: WKNavigationResponse,
+        decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+    ) {
+        if navigationResponse.isForMainFrame,
+           let http = navigationResponse.response as? HTTPURLResponse {
+            let status = http.statusCode
+            DispatchQueue.main.async { self.lastHTTPStatus = status }
+        }
+        decisionHandler(.allow)
     }
 }
 

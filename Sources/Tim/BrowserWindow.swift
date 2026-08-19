@@ -254,6 +254,45 @@ struct TabContentView: View {
         return updated
     }
 
+    /// You browsed to a page on your site that doesn't exist yet — make it
+    /// real at exactly this address, publish it, and reload.
+    private func createMissingPage() {
+        guard let url = tab.webView.url, let matched = matchedSite else { return }
+        let site = ensureWorkspace(matched)
+        if AstroProject.isAstroProject(site.localProjectPath) {
+            newPageSite = site
+            return
+        }
+        let rel = site.relativePagePath(for: url)
+        let name = ((rel as NSString).lastPathComponent as NSString).deletingPathExtension
+        let html = LocalPage.html(title: name == "index" ? (site.name.isEmpty ? "Home" : site.name) : name.capitalized)
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try PageWriter.write(html: html, folder: site.localProjectPath, relativePath: rel)
+                switch site.target {
+                case .sftp:
+                    let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
+                    _ = try SFTP.upload(html: html, to: root + rel, host: site.host, username: site.username, port: site.port)
+                case .cloudflare:
+                    _ = try CloudflarePublisher.deploy(folder: site.localProjectPath, projectName: site.cfProjectName)
+                case .githubPages:
+                    _ = try GitHubPagesPublisher.publish(repo: site.localProjectPath, message: "New page \(rel) with Tim")
+                }
+                DispatchQueue.main.async {
+                    PageRegistry.record(url: url.absoluteString, title: name)
+                    tab.webView.reload()
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    let alert = NSAlert()
+                    alert.messageText = "Create This Page"
+                    alert.informativeText = error.localizedDescription
+                    alert.runModal()
+                }
+            }
+        }
+    }
+
     private func downloadSite(_ site: Site) {
         let s = ensureWorkspace(site)
         DispatchQueue.global(qos: .userInitiated).async {
@@ -359,6 +398,25 @@ struct TabContentView: View {
                     .help("You own this page — press ⌘E to edit and publish it.")
                 }
 
+                if matchedSite != nil, tab.lastHTTPStatus == 404, !tab.isEditing {
+                    Button {
+                        createMissingPage()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 9, weight: .semibold))
+                            Text("Create This Page")
+                                .font(.caption)
+                        }
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 8)
+                        .background(Capsule().fill(Color.accentColor))
+                        .foregroundStyle(Color.white)
+                    }
+                    .buttonStyle(.plain)
+                    .help("This page doesn't exist on your site yet — create and publish it at this address.")
+                }
+
                 TextField("Search or enter website name", text: $addressText)
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
@@ -455,7 +513,9 @@ struct TabContentView: View {
                 }
                 if !siteStore.sites.isEmpty { Divider() }
                 Button("Connect Site…") { showConnectSheet = true }
-                Button("New Local Page…") { LocalPages.createAndOpen(in: tab) }
+                if matchedSite == nil {
+                    Button("New Local Page…") { LocalPages.createAndOpen(in: tab) }
+                }
             } label: {
                 Image(systemName: "server.rack")
             }
