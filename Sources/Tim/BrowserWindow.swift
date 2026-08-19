@@ -243,6 +243,44 @@ struct TabContentView: View {
         }
     }
 
+    /// Makes sure a site has its local mirror, persisting the default.
+    private func ensureWorkspace(_ site: Site) -> Site {
+        var updated = site
+        if updated.localProjectPath.isEmpty {
+            updated.localProjectPath = SiteWorkspace.defaultFolder(for: updated.name.isEmpty ? updated.origin : updated.name)
+            siteStore.upsert(updated)
+        }
+        SiteWorkspace.ensure(updated.localProjectPath)
+        return updated
+    }
+
+    private func downloadSite(_ site: Site) {
+        let s = ensureWorkspace(site)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let message: String
+            do {
+                _ = try SFTP.downloadDirectory(
+                    remoteRoot: s.remoteRoot, to: s.localProjectPath,
+                    host: s.host, username: s.username, port: s.port
+                )
+                message = "Site downloaded to \(s.localProjectPath)."
+            } catch {
+                message = error.localizedDescription
+            }
+            DispatchQueue.main.async {
+                let alert = NSAlert()
+                alert.messageText = "Download Site"
+                alert.informativeText = message
+                alert.runModal()
+            }
+        }
+    }
+
+    private func revealLocalFolder(_ site: Site) {
+        let s = ensureWorkspace(site)
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: s.localProjectPath)])
+    }
+
     private func openLocalPage() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
@@ -405,9 +443,12 @@ struct TabContentView: View {
                 ForEach(siteStore.sites) { site in
                     Menu(site.name.isEmpty ? site.origin : site.name) {
                         Button("Open") { tab.navigate(to: site.origin) }
-                        if AstroProject.isAstroProject(site.localProjectPath) {
-                            Button("New Page…") { newPageSite = site }
+                        Button("New Page…") { newPageSite = site }
+                        Divider()
+                        if site.target == .sftp {
+                            Button("Download Site…") { downloadSite(site) }
                         }
+                        Button("Show Local Folder") { revealLocalFolder(site) }
                         Button("Edit…") { editingSite = site }
                         Button("Delete", role: .destructive) { siteStore.delete(site) }
                     }
@@ -939,11 +980,22 @@ extension Color {
 struct NewPageSheet: View {
     let site: Site?
     @ObservedObject var tab: Tab
+    @EnvironmentObject var siteStore: SiteStore
     @Environment(\.dismiss) private var dismiss
 
     @State private var title = ""
     @State private var isCreating = false
     @State private var errorMessage: String?
+
+    private var isAstro: Bool {
+        site.map { AstroProject.isAstroProject($0.localProjectPath) } ?? false
+    }
+    /// An empty site's first page is obviously the home page.
+    private var isHomePage: Bool {
+        guard let site, !isAstro else { return false }
+        return SiteWorkspace.needsHomePage(site.localProjectPath)
+    }
+    private var effectiveSlug: String { isHomePage ? "index" : slug }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -954,9 +1006,18 @@ struct NewPageSheet: View {
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { create() }
 
-            Text("Creates src/pages/\(slug.isEmpty ? "…" : slug).astro from your site's layout, builds, and opens it. Every page is a canvas — a plain article is just a full-width text box.")
+            Text(isAstro
+                 ? "Creates src/pages/\(slug.isEmpty ? "…" : slug).astro from your site's layout, builds, and opens it."
+                 : (isHomePage
+                    ? "This site has no home page yet — this page becomes index.html, publishes, and opens."
+                    : "Creates \(effectiveSlug.isEmpty ? "…" : effectiveSlug).html in the site's local folder, publishes it, and opens it."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("Every page is a canvas — a plain article is just a full-width text box.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if let errorMessage {
@@ -972,7 +1033,7 @@ struct NewPageSheet: View {
                 Button(isCreating ? "Creating…" : "Create") { create() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(isCreating || slug.isEmpty)
+                    .disabled(isCreating || effectiveSlug.isEmpty)
             }
         }
         .padding(20)
@@ -986,20 +1047,56 @@ struct NewPageSheet: View {
     }
 
     private func create() {
-        guard let site else { return }
+        guard var site else { return }
         isCreating = true
         errorMessage = nil
         let pageTitle = title
+
+        // The local mirror is where pages are born.
+        if site.localProjectPath.isEmpty {
+            site.localProjectPath = SiteWorkspace.defaultFolder(for: site.name.isEmpty ? site.origin : site.name)
+            siteStore.upsert(site)
+        }
+        SiteWorkspace.ensure(site.localProjectPath)
+        let workingSite = site
+        let pageSlug = effectiveSlug
+
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let rel = try ComponentLibrary.createPage(
-                    slug: slug, title: pageTitle, projectPath: site.localProjectPath
-                )
-                _ = try AstroProject.build(projectPath: site.localProjectPath)
+                let rel: String
+                if isAstro {
+                    rel = try ComponentLibrary.createPage(
+                        slug: pageSlug, title: pageTitle, projectPath: workingSite.localProjectPath
+                    )
+                    _ = try AstroProject.build(projectPath: workingSite.localProjectPath)
+                } else {
+                    // Plain site: write the page into the mirror, publish it.
+                    rel = pageSlug == "index" ? "/index.html" : "/\(pageSlug).html"
+                    let html = LocalPage.html(title: pageTitle.isEmpty ? pageSlug : pageTitle)
+                    try PageWriter.write(html: html, folder: workingSite.localProjectPath, relativePath: rel)
+                    switch workingSite.target {
+                    case .sftp:
+                        let root = workingSite.remoteRoot.hasSuffix("/")
+                            ? String(workingSite.remoteRoot.dropLast()) : workingSite.remoteRoot
+                        _ = try SFTP.upload(
+                            html: html, to: root + rel,
+                            host: workingSite.host, username: workingSite.username, port: workingSite.port
+                        )
+                    case .cloudflare:
+                        _ = try CloudflarePublisher.deploy(
+                            folder: workingSite.localProjectPath, projectName: workingSite.cfProjectName
+                        )
+                    case .githubPages:
+                        _ = try GitHubPagesPublisher.publish(
+                            repo: workingSite.localProjectPath, message: "New page \(rel) with Tim"
+                        )
+                    }
+                }
                 DispatchQueue.main.async {
                     isCreating = false
-                    PageRegistry.record(url: site.origin + rel, title: pageTitle)
-                    tab.navigate(to: site.origin + rel)
+                    let destination = workingSite.origin + (rel == "/index.html" && !isAstro ? "/" : rel)
+                    PageRegistry.record(url: destination, title: pageTitle)
+                    tab.navigate(to: destination)
                     dismiss()
                 }
             } catch {
@@ -1245,7 +1342,18 @@ struct PublishSheet: View {
             switch target {
             case .sftp:
                 let (h, u, p, path) = (host, username, port, remotePath)
-                work = { try SFTP.upload(html: html, to: path, host: h, username: u, port: p) }
+                let cacheSite = site
+                work = {
+                    let output = try SFTP.upload(html: html, to: path, host: h, username: u, port: p)
+                    // Keep the local mirror in sync with what was published.
+                    if let cacheSite, !cacheSite.localProjectPath.isEmpty {
+                        try? PageWriter.write(
+                            html: html, folder: cacheSite.localProjectPath,
+                            relativePath: cacheSite.relativePagePath(for: url)
+                        )
+                    }
+                    return output
+                }
             case .cloudflare:
                 guard let site else { isPublishing = false; return }
                 let rel = site.relativePagePath(for: url)
@@ -1497,14 +1605,21 @@ struct SiteEditorSheet: View {
                 draft.name = draft.host
             }
         }
+        .onChange(of: draft.origin) { _, value in
+            // Smart defaults: the origin usually knows the name and host.
+            guard let host = URL(string: Site.normalizeOrigin(value))?.host() else { return }
+            if draft.host.isEmpty { draft.host = host }
+            if draft.name.isEmpty { draft.name = host }
+        }
     }
 
     private var targetCaption: String {
+        let mirror = "Tim keeps a local copy in ~/Tim/\(draft.name.isEmpty ? "<site>" : draft.name) — created automatically; set a folder only to override."
         switch draft.target {
         case .sftp:
-            return "Works with any web host that offers SFTP. Uses your SSH keys — password login isn’t supported."
+            return "Works with any web host that offers SFTP. Uses your SSH keys — password login isn’t supported. Leave remote root empty for the login folder. " + mirror
         case .cloudflare:
-            return "Deploys with Wrangler to Cloudflare’s free global network. One-time setup in Terminal: npm install -g wrangler && wrangler login."
+            return "Deploys with Wrangler to Cloudflare’s free global network. One-time setup in Terminal: npm install -g wrangler && wrangler login. " + mirror
         case .githubPages:
             return "Publishing commits your edit and pushes to origin with your existing git credentials. Free hosting via the repo’s Pages settings."
         }
@@ -1522,7 +1637,7 @@ struct SiteEditorSheet: View {
         guard !draft.origin.isEmpty else { return false }
         switch draft.target {
         case .sftp: return !draft.host.isEmpty && !draft.username.isEmpty
-        case .cloudflare: return !draft.cfProjectName.isEmpty && !draft.localProjectPath.isEmpty
+        case .cloudflare: return !draft.cfProjectName.isEmpty
         case .githubPages: return !draft.localProjectPath.isEmpty
         }
     }
@@ -1573,6 +1688,14 @@ struct SiteEditorSheet: View {
         draft.origin = Site.normalizeOrigin(draft.origin)
         if draft.name.isEmpty {
             draft.name = URL(string: draft.origin)?.host() ?? draft.origin
+        }
+        // The local mirror is a smart default, never a chore: create it
+        // automatically unless the user pointed at their own folder.
+        if draft.localProjectPath.isEmpty, draft.target != .githubPages {
+            draft.localProjectPath = SiteWorkspace.defaultFolder(for: draft.name)
+        }
+        if !draft.localProjectPath.isEmpty {
+            SiteWorkspace.ensure(draft.localProjectPath)
         }
         siteStore.upsert(draft)
         dismiss()

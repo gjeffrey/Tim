@@ -134,6 +134,32 @@ public struct Site: Codable, Identifiable, Equatable {
     }
 }
 
+/// Every site gets a Tim-managed local mirror — the folder new pages are
+/// written to, published edits are cached in, and remote sites can be
+/// downloaded into. Lives visibly at ~/Tim/<site name>.
+public enum SiteWorkspace {
+    public static func defaultFolder(for name: String) -> String {
+        let slug = name.lowercased()
+            .map { $0.isLetter || $0.isNumber ? String($0) : "-" }
+            .joined()
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return NSHomeDirectory() + "/Tim/" + (slug.isEmpty ? "site" : slug)
+    }
+
+    @discardableResult
+    public static func ensure(_ folder: String) -> Bool {
+        (try? FileManager.default.createDirectory(
+            atPath: folder, withIntermediateDirectories: true
+        )) != nil
+    }
+
+    /// No home page yet — the next page created should be index.html.
+    public static func needsHomePage(_ folder: String) -> Bool {
+        guard !folder.isEmpty else { return true }
+        return !FileManager.default.fileExists(atPath: (folder as NSString).appendingPathComponent("index.html"))
+    }
+}
+
 public final class SiteStore: ObservableObject {
     @Published public var sites: [Site] = [] {
         didSet { persist() }

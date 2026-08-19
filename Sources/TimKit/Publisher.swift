@@ -111,6 +111,16 @@ public enum SFTP {
         )
     }
 
+    /// Pulls the remote site down into the local mirror.
+    public static func downloadDirectory(remoteRoot: String, to local: String, host: String, username: String, port: String) throws -> String {
+        try FileManager.default.createDirectory(atPath: local, withIntermediateDirectories: true)
+        let root = remoteRoot.isEmpty ? "." : remoteRoot
+        return try run(
+            batch: "lcd \"\(local)\"\nget -r \(root)/* .\n",
+            host: host, username: username, port: port
+        )
+    }
+
     /// Mirrors a local folder (an Astro `dist/`) to the remote root via scp.
     public static func uploadDirectory(local: String, host: String, username: String, port: String, remoteRoot: String) throws -> String {
         let destination = Shell.quoted("\(username)@\(host):\(remoteRoot.isEmpty ? "." : remoteRoot)")
