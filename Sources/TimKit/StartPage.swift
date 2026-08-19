@@ -62,9 +62,11 @@ enum StartPage {
     <main>
       <h1>Tim</h1>
       <p class="tagline">The web, editable again.</p>
-      <p class="body">Type an address above to browse. When you land on a page you own,
-      press <kbd>⌘E</kbd> and edit it right where it lives — then publish it back.</p>
-      <p class="hint">This page is editable too. Press <kbd>⌘E</kbd> and try it.</p>
+      <p class="body">Type an address above to browse. Connect a site you own — the
+      server icon in the toolbar — and when you land on one of its pages an
+      <strong>Edit</strong> button appears: edit the page right where it lives,
+      then publish it back.</p>
+      <p class="hint">Your pages, editable where they live.</p>
     </main>
     </body>
     </html>

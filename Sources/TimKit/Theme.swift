@@ -117,16 +117,24 @@ public enum ThemeManager {
         .tim-canvas {
           display: grid;
           grid-template-columns: repeat(24, 1fr);
-          grid-auto-rows: minmax(28px, auto);
-          gap: 12px;
+          grid-auto-rows: minmax(32px, auto);
+          gap: 16px;
           align-items: stretch;
+          box-sizing: border-box;
+          /* The canvas is the surface, never a guest in an article column:
+             break out to the full viewport, content capped at ~1320px. */
+          width: 100vw;
+          margin-left: calc(50% - 50vw);
+          margin-right: calc(50% - 50vw);
+          padding: 48px max(32px, calc(50vw - 660px));
+          min-height: 70vh;
         }
         .tim-object { min-width: 0; }
-        .tim-text { min-height: 1em; outline: none; }
+        .tim-text { min-height: 1em; outline: none; padding: 2px 4px; }
         .tim-canvas img.tim-object { width: 100%; height: 100%; object-fit: cover; display: block; }
         .tim-canvas video.tim-object { width: 100%; display: block; }
         @media (max-width: 700px) {
-          .tim-canvas { grid-template-columns: 1fr; grid-auto-rows: auto; }
+          .tim-canvas { grid-template-columns: 1fr; grid-auto-rows: auto; padding: 24px 16px; min-height: 0; }
           .tim-canvas > .tim-object { grid-area: auto !important; }
         }
 

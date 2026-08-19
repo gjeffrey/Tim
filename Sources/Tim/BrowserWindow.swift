@@ -122,6 +122,7 @@ struct TabContentView: View {
     @State private var showPublishSheet = false
     @State private var showConnectSheet = false
     @State private var editingSite: Site?
+    @State private var newPageSite: Site?
     @FocusState private var addressFocused: Bool
 
     private var pageURL: URL? { URL(string: tab.urlString) }
@@ -178,6 +179,9 @@ struct TabContentView: View {
         }
         .sheet(item: $editingSite) { site in
             SiteEditorSheet(site: site, prefillOrigin: nil)
+        }
+        .sheet(item: $newPageSite) { site in
+            NewPageSheet(site: site, tab: tab)
         }
     }
 
@@ -277,6 +281,9 @@ struct TabContentView: View {
                 ForEach(siteStore.sites) { site in
                     Menu(site.name.isEmpty ? site.origin : site.name) {
                         Button("Open") { tab.navigate(to: site.origin) }
+                        if AstroProject.isAstroProject(site.localProjectPath) {
+                            Button("New Page…") { newPageSite = site }
+                        }
                         Button("Edit…") { editingSite = site }
                         Button("Delete", role: .destructive) { siteStore.delete(site) }
                     }
@@ -566,12 +573,13 @@ struct EditingToolbar: View {
             guard let html else { return }
             do {
                 try html.write(to: url, atomically: true, encoding: .utf8)
+                statusMessage = nil
                 withAnimation { savedFlash = true }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                     withAnimation { savedFlash = false }
                 }
             } catch {
-                NSSound.beep()
+                statusMessage = "Couldn’t save: \(error.localizedDescription)"
             }
         }
     }

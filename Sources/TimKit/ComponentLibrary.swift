@@ -149,6 +149,13 @@ public enum ComponentLibrary {
             throw PublishError.failed("A page named \(cleanSlug) already exists.")
         }
         try source.write(toFile: pagePath, atomically: true, encoding: .utf8)
+
+        // Canvas pages need the canvas stylesheet when *browsing*, not just
+        // while the editor's injected copy is around.
+        let themeCSS = (projectPath as NSString).appendingPathComponent("public/\(ThemeManager.stylesheetName)")
+        if !FileManager.default.fileExists(atPath: themeCSS) {
+            try ThemeManager.apply(TimTheme(), projectPath: projectPath)
+        }
         return "/\(cleanSlug).html"
     }
 

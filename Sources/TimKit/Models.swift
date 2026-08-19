@@ -143,6 +143,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         let js = """
         (function () {
           var clone = document.documentElement.cloneNode(true);
+          clone.classList.remove('tim-editing');
           var overlay = clone.querySelector('#__tim-overlay');
           if (overlay) { overlay.remove(); }
           var editables = clone.querySelectorAll('[contenteditable]');
@@ -254,12 +255,14 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       if (!doc.querySelector('style[data-tim-styles]')) {
         var st = doc.createElement('style');
         st.setAttribute('data-tim-styles', '');
-        st.textContent = '.tim-canvas{display:grid;grid-template-columns:repeat(24,1fr);grid-auto-rows:minmax(28px,auto);gap:12px;align-items:stretch}' +
+        st.textContent = '.tim-canvas{display:grid;grid-template-columns:repeat(24,1fr);grid-auto-rows:minmax(32px,auto);gap:16px;align-items:stretch;box-sizing:border-box;width:100vw;margin-left:calc(50% - 50vw);margin-right:calc(50% - 50vw);padding:48px max(32px,calc(50vw - 660px));min-height:70vh}' +
           '.tim-object{min-width:0}' +
-          '.tim-text{min-height:1em;outline:none}' +
+          '.tim-text{min-height:1em;outline:none;padding:2px 4px}' +
+          'html.tim-editing .tim-object{cursor:grab}' +
+          'html.tim-editing .tim-object:active{cursor:grabbing}' +
           '.tim-canvas img.tim-object{width:100%;height:100%;object-fit:cover;display:block}' +
           '.tim-canvas video.tim-object{width:100%;display:block}' +
-          '@media (max-width:700px){.tim-canvas{grid-template-columns:1fr;grid-auto-rows:auto}.tim-canvas>.tim-object{grid-area:auto !important}}' +
+          '@media (max-width:700px){.tim-canvas{grid-template-columns:1fr;grid-auto-rows:auto;padding:24px 16px;min-height:0}.tim-canvas>.tim-object{grid-area:auto !important}}' +
           '.tim-style-title{font-family:var(--tim-font-heading,inherit);font-size:2.5rem;font-weight:700;line-height:1.15}' +
           '.tim-style-heading{font-family:var(--tim-font-heading,inherit);font-size:1.6rem;font-weight:700;line-height:1.25}' +
           '.tim-style-subheading{font-family:var(--tim-font-heading,inherit);font-size:1.25rem;font-weight:600;line-height:1.3}' +
@@ -278,8 +281,11 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       var box = doc.createElement('div');
       box.style.cssText = 'position:absolute;border:1.5px solid #0a84ff;pointer-events:none;display:none;box-sizing:border-box;';
       var badge = doc.createElement('div');
-      badge.style.cssText = 'position:absolute;background:#0a84ff;color:#fff;font:11px -apple-system,sans-serif;padding:2px 6px;border-radius:4px;display:none;white-space:nowrap;';
-      overlay.appendChild(gridBox); overlay.appendChild(box); overlay.appendChild(badge);
+      // The badge doubles as the move grip — grab it to drag the object.
+      badge.style.cssText = 'position:absolute;background:#0a84ff;color:#fff;font:11px -apple-system,sans-serif;padding:3px 8px;border-radius:5px;display:none;white-space:nowrap;pointer-events:auto;cursor:grab;';
+      var hoverBox = doc.createElement('div');
+      hoverBox.style.cssText = 'position:absolute;border:1px dashed rgba(10,132,255,0.55);pointer-events:none;display:none;box-sizing:border-box;';
+      overlay.appendChild(gridBox); overlay.appendChild(hoverBox); overlay.appendChild(box); overlay.appendChild(badge);
       var handles = {};
       ['w', 'e', 's', 'se'].forEach(function (k) {
         var h = doc.createElement('div');
@@ -349,8 +355,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         gridBox.style.height = g.height + 'px';
         var ux = g.colW + g.gap, uy = g.rowH + g.rowGap;
         gridBox.style.backgroundImage =
-          'repeating-linear-gradient(to right, rgba(10,132,255,0.18) 0 1px, transparent 1px ' + ux + 'px),' +
-          'repeating-linear-gradient(to bottom, rgba(10,132,255,0.18) 0 1px, transparent 1px ' + uy + 'px)';
+          'repeating-linear-gradient(to right, rgba(10,132,255,0.10) 0 1px, transparent 1px ' + ux + 'px),' +
+          'repeating-linear-gradient(to bottom, rgba(10,132,255,0.10) 0 1px, transparent 1px ' + uy + 'px)';
         gridBox.style.display = 'block';
       }
       function hideGrid() { gridBox.style.display = 'none'; }
@@ -371,7 +377,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         badge.style.top = Math.max(2, r.y - 24) + 'px';
         if (!drag) {
           var p = placement(sel);
-          badge.textContent = sel.tagName.toLowerCase() +
+          badge.textContent = (p ? '✥ ' : '') + sel.tagName.toLowerCase() +
             (p ? ' · ' + (p.ce - p.cs) + '×' + (p.re - p.rs) + ' cells' : '');
         }
         var resizable = isObject(sel) && canvasFor(sel) && placement(sel);
@@ -511,11 +517,36 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
       }
 
+      function onOver(e) {
+        if (!active || drag) { return; }
+        var obj = e.target && e.target.closest ? e.target.closest('.tim-object') : null;
+        if (obj && obj !== sel && obj !== editingEl) {
+          var r = rectOf(obj);
+          hoverBox.style.display = 'block';
+          hoverBox.style.left = r.x + 'px'; hoverBox.style.top = r.y + 'px';
+          hoverBox.style.width = r.w + 'px'; hoverBox.style.height = r.h + 'px';
+        } else {
+          hoverBox.style.display = 'none';
+        }
+      }
+
+      // The badge is a move grip: dragging it moves the selected object.
+      badge.addEventListener('mousedown', function (e) {
+        if (!sel || !isObject(sel)) { return; }
+        var canvas = canvasFor(sel);
+        var p = placement(sel);
+        if (!canvas || !p) { return; }
+        drag = { mode: 'move', canvas: canvas, sx: e.pageX, sy: e.pageY, p0: p, moved: false };
+        showGrid(canvas);
+        e.preventDefault(); e.stopPropagation();
+      });
+
       doc.addEventListener('click', onClick, true);
       doc.addEventListener('dblclick', onDblClick, true);
       doc.addEventListener('mousedown', onDown, true);
       doc.addEventListener('mousemove', onMove, true);
       doc.addEventListener('mouseup', onUp, true);
+      doc.addEventListener('mouseover', onOver, true);
       doc.addEventListener('keydown', onKey, true);
       window.addEventListener('scroll', layout, true);
       window.addEventListener('resize', layout);
@@ -567,13 +598,19 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       };
 
       window.__timCanvasLayer = true;
-      window.__timCanvasOn = function () { active = true; overlay.style.display = 'block'; };
+      window.__timCanvasOn = function () {
+        active = true;
+        overlay.style.display = 'block';
+        doc.documentElement.classList.add('tim-editing');
+      };
       window.__timCanvasOff = function () {
         active = false;
         stopTextEditing();
         sel = null; drag = null;
         hide();
+        hoverBox.style.display = 'none';
         overlay.style.display = 'none';
+        doc.documentElement.classList.remove('tim-editing');
       };
     })();
     """
