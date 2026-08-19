@@ -81,6 +81,29 @@ public enum LinkSources {
         return []
     }
 
+    /// Every page of a connected site, from its mirror (dist/ for Astro).
+    public static func pages(for site: Site) -> [LinkOption] {
+        let root = AstroProject.isAstroProject(site.localProjectPath)
+            ? AstroProject.distPath(site.localProjectPath)
+            : site.localProjectPath
+        guard !root.isEmpty,
+              let subpaths = try? FileManager.default.subpathsOfDirectory(atPath: root)
+        else { return [] }
+        return subpaths
+            .filter {
+                $0.hasSuffix(".html") && !$0.hasPrefix(".")
+                    && !$0.contains(".git") && !$0.contains("node_modules")
+            }
+            .sorted()
+            .map { rel in
+                var name = (rel as NSString).deletingPathExtension
+                if name == "index" { name = "Home" }
+                name = name.replacingOccurrences(of: "/index", with: "")
+                    .replacingOccurrences(of: "-", with: " ")
+                return LinkOption(label: name.capitalized, href: "/" + rel)
+            }
+    }
+
     /// Pages you've made elsewhere — everything in the registry that isn't
     /// on the current page's origin (those are already covered above).
     public static func yourPages(excluding pageURL: URL?) -> [LinkOption] {

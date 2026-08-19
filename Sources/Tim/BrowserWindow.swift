@@ -582,6 +582,14 @@ struct TabContentView: View {
                     Menu(site.name.isEmpty ? site.origin : site.name) {
                         Button("Open") { tab.navigate(to: site.origin) }
                         Button("New Page…") { newPageSite = site }
+                        let pages = LinkSources.pages(for: site)
+                        if !pages.isEmpty {
+                            Section("Pages") {
+                                ForEach(pages) { page in
+                                    Button(page.label) { tab.navigate(to: site.origin + page.href) }
+                                }
+                            }
+                        }
                         Divider()
                         if site.target == .sftp {
                             Button("Refresh Local Copy") { downloadSite(site) }
