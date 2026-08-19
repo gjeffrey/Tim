@@ -158,6 +158,28 @@ public enum SiteWorkspace {
         guard !folder.isEmpty else { return true }
         return !FileManager.default.fileExists(atPath: (folder as NSString).appendingPathComponent("index.html"))
     }
+
+    #if os(macOS)
+    /// Invisible history: every mirror is quietly a git repo, committed on
+    /// each publish. Never surfaced in UI — it's the undo layer that later
+    /// powers page versions and conflict handling.
+    public static func snapshot(_ folder: String, message: String) {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: folder) else { return }
+        let gitDir = (folder as NSString).appendingPathComponent(".git")
+        if !fm.fileExists(atPath: gitDir) {
+            _ = try? Shell.run("git init -q", in: folder)
+            let ignorePath = (folder as NSString).appendingPathComponent(".gitignore")
+            if !fm.fileExists(atPath: ignorePath) {
+                try? "node_modules/\ndist/\n.DS_Store\n".write(toFile: ignorePath, atomically: true, encoding: .utf8)
+            }
+        }
+        _ = try? Shell.run(
+            "git add -A && (git diff --cached --quiet || git commit -q -m \(Shell.quoted(message)))",
+            in: folder
+        )
+    }
+    #endif
 }
 
 public final class SiteStore: ObservableObject {

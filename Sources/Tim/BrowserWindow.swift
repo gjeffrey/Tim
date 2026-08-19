@@ -274,6 +274,7 @@ struct TabContentView: View {
                                     port: site.port, remoteRoot: site.remoteRoot
                                 )
                             }
+                            SiteWorkspace.snapshot(site.localProjectPath, message: "Edit \(site.relativePagePath(for: url))")
                             DispatchQueue.main.async {
                                 PageRegistry.record(url: url.absoluteString, title: tab.title)
                                 tab.webView.reload()
@@ -304,6 +305,7 @@ struct TabContentView: View {
                     case .githubPages:
                         _ = try GitHubPagesPublisher.publish(repo: site.localProjectPath, message: "Edit \(rel) with Tim")
                     }
+                    SiteWorkspace.snapshot(site.localProjectPath, message: "Edit \(rel)")
                     DispatchQueue.main.async {
                         PageRegistry.record(url: url.absoluteString, title: tab.title)
                     }
@@ -582,7 +584,7 @@ struct TabContentView: View {
                         Button("New Page…") { newPageSite = site }
                         Divider()
                         if site.target == .sftp {
-                            Button("Download Site…") { downloadSite(site) }
+                            Button("Refresh Local Copy") { downloadSite(site) }
                         }
                         Button("Show Local Folder") { revealLocalFolder(site) }
                         Button("Edit…") { editingSite = site }
@@ -1878,7 +1880,20 @@ struct SiteEditorSheet: View {
         if !draft.localProjectPath.isEmpty {
             SiteWorkspace.ensure(draft.localProjectPath)
         }
+        let isNewSFTPSite = site == nil && draft.target == .sftp && !draft.host.isEmpty
         siteStore.upsert(draft)
+        // Connecting an existing site pulls it down automatically — the
+        // mirror fills itself; no manual download step.
+        if isNewSFTPSite {
+            let s = draft
+            DispatchQueue.global(qos: .utility).async {
+                _ = try? SFTP.downloadDirectory(
+                    remoteRoot: s.remoteRoot, to: s.localProjectPath,
+                    host: s.host, username: s.username, port: s.port
+                )
+                SiteWorkspace.snapshot(s.localProjectPath, message: "Initial download from \(s.host)")
+            }
+        }
         dismiss()
     }
 }
