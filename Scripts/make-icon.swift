@@ -1,13 +1,14 @@
-// Generates Design/AppIcon.icns: a placeholder icon — Apple-style squircle,
-// the start page's blue→purple gradient, white "Tim" wordmark.
-// Run: swift Scripts/make-icon.swift && iconutil -c icns Design/AppIcon.iconset -o Design/AppIcon.icns
+// Generates Design/AppIcon.icns from the Icon Composer document's art:
+// near-white squircle (per icon.json fill) + the tim:// Garamond wordmark.
+// Run: qlmanage renders the SVG first (see make-app.sh / below), then:
+//   swift Scripts/make-icon.swift && iconutil -c icns Design/AppIcon.iconset -o Design/AppIcon.icns
 
 import AppKit
-import CoreText
 
 let canvas = 1024
-let inset: CGFloat = 100      // Apple icon grid margin
-let radius: CGFloat = 185     // Big Sur-era squircle approximation
+let inset: CGFloat = 100
+let radius: CGFloat = 185
+let artPath = "/tmp/tim-icon-art.png"
 
 func drawIcon() -> CGImage {
     let space = CGColorSpace(name: CGColorSpace.sRGB)!
@@ -16,48 +17,27 @@ func drawIcon() -> CGImage {
         bitsPerComponent: 8, bytesPerRow: 0, space: space,
         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
     )!
-
     let rect = CGRect(x: inset, y: inset, width: CGFloat(canvas) - 2 * inset, height: CGFloat(canvas) - 2 * inset)
-    let squircle = CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
-    ctx.addPath(squircle)
+    ctx.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
     ctx.clip()
+    ctx.setFillColor(CGColor(red: 0.98039, green: 0.98039, blue: 0.98039, alpha: 1))
+    ctx.fill(rect)
 
-    let colors = [
-        CGColor(red: 0.04, green: 0.52, blue: 1.00, alpha: 1),
-        CGColor(red: 0.75, green: 0.35, blue: 0.95, alpha: 1)
-    ]
-    let gradient = CGGradient(colorsSpace: space, colors: colors as CFArray, locations: [0, 1])!
-    ctx.drawLinearGradient(
-        gradient,
-        start: CGPoint(x: rect.minX, y: rect.maxY),
-        end: CGPoint(x: rect.maxX, y: rect.minY),
-        options: []
-    )
-
-    let font = CTFontCreateWithName("HelveticaNeue-Bold" as CFString, 330, nil)
-    let attributes: [CFString: Any] = [
-        kCTFontAttributeName: font,
-        kCTForegroundColorAttributeName: CGColor(gray: 1, alpha: 1)
-    ]
-    let string = CFAttributedStringCreate(nil, "Tim" as CFString, attributes as CFDictionary)!
-    let line = CTLineCreateWithAttributedString(string)
-    let bounds = CTLineGetBoundsWithOptions(line, .useOpticalBounds)
-    ctx.textPosition = CGPoint(
-        x: (CGFloat(canvas) - bounds.width) / 2 - bounds.minX,
-        y: (CGFloat(canvas) - bounds.height) / 2 - bounds.minY
-    )
-    CTLineDraw(line, ctx)
-
+    if let data = NSData(contentsOfFile: artPath),
+       let provider = CGDataProvider(data: data),
+       let art = CGImage(pngDataProviderSource: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent) {
+        // Center the wordmark; the SVG render already carries its padding.
+        let side = rect.width
+        ctx.interpolationQuality = .high
+        ctx.draw(art, in: CGRect(x: rect.minX, y: rect.minY, width: side, height: side))
+    }
     return ctx.makeImage()!
 }
 
 func scaled(_ image: CGImage, to px: Int) -> CGImage {
     let space = CGColorSpace(name: CGColorSpace.sRGB)!
-    let ctx = CGContext(
-        data: nil, width: px, height: px,
-        bitsPerComponent: 8, bytesPerRow: 0, space: space,
-        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-    )!
+    let ctx = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8, bytesPerRow: 0,
+                        space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
     ctx.interpolationQuality = .high
     ctx.draw(image, in: CGRect(x: 0, y: 0, width: px, height: px))
     return ctx.makeImage()!
@@ -65,23 +45,17 @@ func scaled(_ image: CGImage, to px: Int) -> CGImage {
 
 func writePNG(_ image: CGImage, to url: URL) {
     let rep = NSBitmapImageRep(cgImage: image)
-    let data = rep.representation(using: .png, properties: [:])!
-    try! data.write(to: url)
+    try! rep.representation(using: .png, properties: [:])!.write(to: url)
 }
 
 let master = drawIcon()
 let iconset = URL(fileURLWithPath: "Design/AppIcon.iconset")
 try? FileManager.default.removeItem(at: iconset)
 try! FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)
-
-let entries: [(String, Int)] = [
-    ("icon_16x16.png", 16), ("icon_16x16@2x.png", 32),
-    ("icon_32x32.png", 32), ("icon_32x32@2x.png", 64),
-    ("icon_128x128.png", 128), ("icon_128x128@2x.png", 256),
-    ("icon_256x256.png", 256), ("icon_256x256@2x.png", 512),
-    ("icon_512x512.png", 512), ("icon_512x512@2x.png", 1024)
-]
-for (name, px) in entries {
+for (name, px) in [("icon_16x16.png", 16), ("icon_16x16@2x.png", 32), ("icon_32x32.png", 32),
+                   ("icon_32x32@2x.png", 64), ("icon_128x128.png", 128), ("icon_128x128@2x.png", 256),
+                   ("icon_256x256.png", 256), ("icon_256x256@2x.png", 512),
+                   ("icon_512x512.png", 512), ("icon_512x512@2x.png", 1024)] {
     writePNG(scaled(master, to: px), to: iconset.appendingPathComponent(name))
 }
 print("iconset written")

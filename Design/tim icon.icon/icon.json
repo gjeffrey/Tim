@@ -1,8 +1,56 @@
 {
-  "fill" : "system-light",
+  "features" : [
+    "refractivity"
+  ],
+  "fill-specializations" : [
+    {
+      "value" : {
+        "solid" : "srgb:0.98039,0.98039,0.98039,1.00000"
+      }
+    },
+    {
+      "appearance" : "dark",
+      "value" : {
+        "solid" : "srgb:0.98039,0.98039,0.98039,1.00000"
+      }
+    }
+  ],
   "groups" : [
     {
+      "blur-material" : null,
       "layers" : [
+        {
+          "fill-specializations" : [
+            {
+              "appearance" : "tinted",
+              "value" : {
+                "solid" : "display-p3:0.00392,0.00392,0.00392,1.00000"
+              }
+            }
+          ],
+          "glass-specializations" : [
+            {
+              "appearance" : "tinted",
+              "value" : false
+            }
+          ],
+          "image-name" : "tim garamond 2 2.svg",
+          "name" : "tim garamond 2 2"
+        },
+        {
+          "image-name" : "tim garamond 1 2.svg",
+          "name" : "tim garamond 1 2"
+        },
+        {
+          "hidden" : true,
+          "image-name" : "tim garamond 2.svg",
+          "name" : "tim garamond 2"
+        },
+        {
+          "hidden" : true,
+          "image-name" : "tim garamond 1.svg",
+          "name" : "tim garamond 1"
+        },
         {
           "fill-specializations" : [
             {
@@ -17,6 +65,7 @@
               "value" : "system-light"
             }
           ],
+          "hidden" : true,
           "image-name" : "Group.png",
           "name" : "Group",
           "position" : {
@@ -28,8 +77,13 @@
           }
         }
       ],
+      "refractivity" : {
+        "depth" : 0,
+        "enabled" : true,
+        "strength" : 0.5
+      },
       "shadow" : {
-        "kind" : "neutral",
+        "kind" : "layer-color",
         "opacity" : 0.6
       },
       "translucency" : {
