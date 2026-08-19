@@ -462,10 +462,27 @@ struct TabContentView: View {
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     try PageWriter.write(html: html, folder: site.localProjectPath, relativePath: rel)
+                    // Components edited inline propagate: harvest this
+                    // page's regions into components/, re-stamp every other
+                    // page, and republish the ones that changed.
+                    let harvested = PageComponents.harvest(fromPageHTML: html)
+                    var restamped: [String] = []
+                    for (name, inner) in harvested where PageComponents.html(named: name, in: site.localProjectPath) != inner {
+                        try? PageComponents.save(name: name, html: inner, in: site.localProjectPath)
+                    }
+                    if !harvested.isEmpty {
+                        restamped = PageComponents.restampAll(in: site.localProjectPath, excludingRel: String(rel.dropFirst()))
+                    }
                     switch site.target {
                     case .sftp:
                         let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
                         _ = try SFTP.upload(html: html, to: root + rel, host: site.host, username: site.username, port: site.port)
+                        for pageRel in restamped {
+                            let path = (site.localProjectPath as NSString).appendingPathComponent(pageRel)
+                            if let pageHTML = try? String(contentsOfFile: path, encoding: .utf8) {
+                                _ = try? SFTP.upload(html: pageHTML, to: root + "/" + pageRel, host: site.host, username: site.username, port: site.port)
+                            }
+                        }
                     case .cloudflare:
                         _ = try CloudflarePublisher.deploy(folder: site.localProjectPath, projectName: site.cfProjectName)
                     case .githubPages:
@@ -867,6 +884,14 @@ struct EditingToolbar: View {
                         Label("Media…", systemImage: "photo.on.rectangle.angled")
                     }
                 }
+                if let site, !isAstroSite {
+                    Section("Components") {
+                        ForEach(PageComponents.list(in: site.localProjectPath), id: \.self) { name in
+                            Button(name.capitalized) { insertComponentFragment(name) }
+                        }
+                        Button("New Component from Selection…") { makeComponentFromSelection() }
+                    }
+                }
                 if isAstroSite {
                     Section("Components") {
                         let components = ComponentLibrary.components(in: site?.localProjectPath ?? "")
@@ -1074,6 +1099,42 @@ struct EditingToolbar: View {
             tab.insertObject(html: #"<audio class="tim-object" controls src="\#(src)"></audio>"#, colSpan: 8, rowSpan: 2)
         case .file:
             tab.insertObject(html: "<div class=\"tim-object tim-text tim-style-body\"><a href=\"\(src)\">\(name)</a></div>", colSpan: 6, rowSpan: 2)
+        }
+    }
+
+    private func insertComponentFragment(_ name: String) {
+        guard let site, let content = PageComponents.html(named: name, in: site.localProjectPath) else { return }
+        tab.insertObject(html: PageComponents.stamped(name: name, content: content), colSpan: 24, rowSpan: 3)
+    }
+
+    /// Inline components: the selection becomes the master copy; edits to
+    /// it on any page update every page on Done.
+    private func makeComponentFromSelection() {
+        guard let site else { return }
+        tab.selectedHTML { html in
+            guard !html.isEmpty else {
+                statusMessage = "Select an object first, then make it a component."
+                return
+            }
+            let alert = NSAlert()
+            alert.messageText = "New Component"
+            alert.informativeText = "Name it (nav, footer…). Editing it on any page updates every page that includes it."
+            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 22))
+            field.placeholderString = "nav"
+            alert.accessoryView = field
+            alert.window.initialFirstResponder = field
+            alert.addButton(withTitle: "Create")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            let name = field.stringValue.lowercased().filter { $0.isLetter || $0.isNumber || $0 == "-" }
+            guard !name.isEmpty else { return }
+            do {
+                try PageComponents.save(name: name, html: html, in: site.localProjectPath)
+                tab.replaceSelection(with: PageComponents.stamped(name: name, content: html))
+                statusMessage = "\(name) is now a component — insert it on other pages from Insert."
+            } catch {
+                statusMessage = error.localizedDescription
+            }
         }
     }
 

@@ -203,6 +203,18 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         webView.evaluateJavaScript("window.__timApplyStyle && window.__timApplyStyle(\(Self.jsLiteral(styleClass)));", completionHandler: nil)
     }
 
+    /// The selected element's HTML (Layout selection).
+    public func selectedHTML(_ completion: @escaping (String) -> Void) {
+        webView.evaluateJavaScript("window.__timSelHTML ? window.__timSelHTML() : ''") { result, _ in
+            completion(result as? String ?? "")
+        }
+    }
+
+    /// Replaces the selected element with new HTML.
+    public func replaceSelection(with html: String) {
+        webView.evaluateJavaScript("window.__timReplaceSel && window.__timReplaceSel(\(Self.jsLiteral(html)));", completionHandler: nil)
+    }
+
     /// The page's canvas region, serialized for the source round trip.
     public func canvasHTML(_ completion: @escaping (String) -> Void) {
         webView.evaluateJavaScript("window.__timCanvasHTML ? window.__timCanvasHTML() : ''") { result, _ in
@@ -630,6 +642,19 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         fitSpan(el);
         layout();
         el.scrollIntoView({ block: 'nearest' });
+      };
+
+      window.__timSelHTML = function () { return sel ? sel.outerHTML : ''; };
+      window.__timReplaceSel = function (html) {
+        if (!sel) { return; }
+        var tmp = doc.createElement('div');
+        tmp.innerHTML = html;
+        var el = tmp.firstElementChild;
+        if (!el) { return; }
+        sel.replaceWith(el);
+        sel = (el.classList && el.classList.contains('tim-object'))
+          ? el : (el.querySelector('.tim-object') || el);
+        layout();
       };
 
       var anchorSelector = 'h1,h2,h3,h4,h5,h6,.tim-style-title,.tim-style-heading,.tim-style-subheading';
