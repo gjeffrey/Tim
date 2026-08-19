@@ -737,8 +737,34 @@ public final class BrowserStore: ObservableObject {
 
     public var selectedTab: Tab? { tabs.first { $0.id == selectedTabID } }
 
+    private static let sessionKey = "tim.session.tabs"
+    private static let sessionSelectedKey = "tim.session.selected"
+
     public init() {
-        newTab()
+        // Pick up where you left off: reopen last session's tabs.
+        let saved = UserDefaults.standard.array(forKey: Self.sessionKey) as? [String] ?? []
+        if saved.isEmpty {
+            newTab()
+        } else {
+            for url in saved {
+                let tab = Tab()
+                if url.isEmpty { tab.loadStartPage() } else { tab.navigate(to: url) }
+                tabs.append(tab)
+            }
+            let index = UserDefaults.standard.integer(forKey: Self.sessionSelectedKey)
+            selectedTabID = tabs[max(0, min(index, tabs.count - 1))].id
+        }
+        // URLs change constantly while browsing; a light heartbeat keeps
+        // the saved session current without wiring every navigation.
+        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            self?.persistSession()
+        }
+    }
+
+    public func persistSession() {
+        UserDefaults.standard.set(tabs.map { $0.urlString }, forKey: Self.sessionKey)
+        let index = tabs.firstIndex(where: { $0.id == selectedTabID }) ?? 0
+        UserDefaults.standard.set(index, forKey: Self.sessionSelectedKey)
     }
 
     public func newTab() {
@@ -746,6 +772,7 @@ public final class BrowserStore: ObservableObject {
         tab.loadStartPage()
         tabs.append(tab)
         selectedTabID = tab.id
+        persistSession()
     }
 
     public func close(_ tab: Tab) {
@@ -755,5 +782,6 @@ public final class BrowserStore: ObservableObject {
             selectedTabID = tabs.indices.contains(index) ? tabs[index].id : tabs.last?.id
         }
         if tabs.isEmpty { newTab() }
+        persistSession()
     }
 }
