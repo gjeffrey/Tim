@@ -290,6 +290,7 @@ struct TabContentView: View {
                 }
                 if !siteStore.sites.isEmpty { Divider() }
                 Button("Connect Site…") { showConnectSheet = true }
+                Button("New Local Page…") { LocalPages.createAndOpen(in: tab) }
             } label: {
                 Image(systemName: "server.rack")
             }
@@ -1372,6 +1373,33 @@ struct SiteEditorSheet: View {
         }
         siteStore.upsert(draft)
         dismiss()
+    }
+}
+
+// MARK: - New local page (a single .html canvas file, no site needed)
+
+enum LocalPages {
+    static func createAndOpen(in tab: Tab?) {
+        guard let tab else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "Untitled.html"
+        panel.title = "New Local Page"
+        panel.prompt = "Create"
+        guard panel.runModal() == .OK, var url = panel.url else { return }
+        if url.pathExtension.lowercased() != "html" {
+            url.appendPathExtension("html")
+        }
+        let title = url.deletingPathExtension().lastPathComponent
+        do {
+            try LocalPage.html(title: title).write(to: url, atomically: true, encoding: .utf8)
+            tab.navigate(to: url.absoluteString)
+            // Enter edit mode once the new page has loaded.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                if !tab.isEditing { tab.setEditing(true) }
+            }
+        } catch {
+            NSSound.beep()
+        }
     }
 }
 

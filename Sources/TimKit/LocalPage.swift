@@ -1,0 +1,62 @@
+import Foundation
+
+/// A self-contained local canvas page: one .html file, no project, no
+/// site — the fastest way to a surface you can edit and save.
+public enum LocalPage {
+    public static func html(title: String) -> String {
+        """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>\(title)</title>
+        <style data-tim-styles>
+          :root { color-scheme: light dark; }
+          body {
+            margin: 0;
+            font-family: -apple-system, ui-sans-serif, system-ui, sans-serif;
+            background: #fbfbfd;
+            color: #1d1d1f;
+          }
+          @media (prefers-color-scheme: dark) {
+            body { background: #161617; color: #f5f5f7; }
+          }
+          .tim-canvas {
+            display: grid;
+            grid-template-columns: repeat(24, 1fr);
+            grid-auto-rows: minmax(32px, auto);
+            gap: 16px;
+            align-items: stretch;
+            box-sizing: border-box;
+            width: 100vw;
+            padding: 48px max(32px, calc(50vw - 660px));
+            min-height: 100vh;
+          }
+          .tim-object { min-width: 0; }
+          .tim-text { min-height: 1em; outline: none; padding: 2px 4px; }
+          html.tim-editing .tim-object { cursor: grab; }
+          html.tim-editing .tim-object:active { cursor: grabbing; }
+          .tim-canvas img.tim-object { width: 100%; height: 100%; object-fit: cover; display: block; }
+          .tim-canvas video.tim-object { width: 100%; display: block; }
+          @media (max-width: 700px) {
+            .tim-canvas { grid-template-columns: 1fr; grid-auto-rows: auto; padding: 24px 16px; min-height: 0; }
+            .tim-canvas > .tim-object { grid-area: auto !important; }
+          }
+          .tim-style-title { font-size: 2.5rem; font-weight: 700; line-height: 1.15; letter-spacing: -0.02em; }
+          .tim-style-heading { font-size: 1.6rem; font-weight: 700; line-height: 1.25; }
+          .tim-style-subheading { font-size: 1.25rem; font-weight: 600; line-height: 1.3; }
+          .tim-style-body { font-size: 1rem; line-height: 1.6; }
+          .tim-style-caption { font-size: 0.85rem; opacity: 0.7; line-height: 1.4; }
+        </style>
+        </head>
+        <body>
+        <div class="tim-canvas" data-tim-canvas>
+          <div class="tim-object tim-text tim-style-title" style="grid-area: 2 / 2 / 5 / 18;">\(title)</div>
+          <div class="tim-object tim-text tim-style-body" style="grid-area: 5 / 2 / 9 / 14;">Double-click any text to edit it. Drag objects to move them — everything snaps to the grid. Insert adds text boxes, images, and video. Save writes this file.</div>
+        </div>
+        </body>
+        </html>
+        """
+    }
+}

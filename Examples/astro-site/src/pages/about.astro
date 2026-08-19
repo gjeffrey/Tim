@@ -1,19 +1,11 @@
 ---
 import Base from '../layouts/Base.astro';
-import Hero from '../components/Hero.astro';
 ---
 <Base title="About — Aurora Coffee">
-  <Hero
-    heading="About us"
-    tagline="Two people, one drum roaster, zero shortcuts."
-  />
-  <p>
-    Aurora started in a garage with a popcorn popper and too much ambition.
-    Eight years later we are still small on purpose: every roast is tasted
-    before it ships, and every farm we buy from is one we can name.
-  </p>
-  <p>
-    Questions about wholesale or just want to argue about grind size? Come by
-    on a Saturday — the espresso machine is always on.
-  </p>
+  <div class="tim-canvas" data-tim-canvas>
+    <div class="tim-object tim-text tim-style-title" style="grid-area: 2 / 2 / 5 / 16;">About us</div>
+    <div class="tim-object tim-text tim-style-subheading" style="grid-area: 5 / 2 / 7 / 16;">Two people, one drum roaster, zero shortcuts.</div>
+    <div class="tim-object tim-text tim-style-body" style="grid-area: 8 / 2 / 13 / 13;">Aurora started in a garage with a popcorn popper and too much ambition. Eight years later we are still small on purpose: every roast is tasted before it ships, and every farm we buy from is one we can name.</div>
+    <div class="tim-object tim-text tim-style-body" style="grid-area: 8 / 14 / 13 / 24;">Questions about wholesale or just want to argue about grind size? Come by on a Saturday — the espresso machine is always on.</div>
+  </div>
 </Base>

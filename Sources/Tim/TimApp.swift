@@ -28,6 +28,8 @@ struct TimApp: App {
             CommandGroup(after: .newItem) {
                 Button("New Tab") { store.newTab() }
                     .keyboardShortcut("t", modifiers: .command)
+                Button("New Local Page…") { LocalPages.createAndOpen(in: store.selectedTab) }
+                    .keyboardShortcut("n", modifiers: [.command, .option])
                 Button("Close Tab") {
                     if let tab = store.selectedTab { store.close(tab) }
                 }

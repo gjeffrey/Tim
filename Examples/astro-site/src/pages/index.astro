@@ -3,23 +3,17 @@ import Base from '../layouts/Base.astro';
 import Hero from '../components/Hero.astro';
 ---
 <Base title="Aurora Coffee — Small-batch roasting">
-  <Hero
-    heading="Aurora Coffee"
-    tagline="Small-batch roasting in a big-flavor town."
-  />
-  <p>
-    We roast twice a week in the old print shop on Miller Street. Every bag
-    ships within two days of roasting, because coffee is produce, not pantry.
-  </p>
-  <h2>This season</h2>
-  <p>
-    The spring lineup leans bright: a washed Ethiopia with notes of apricot
-    and bergamot, and a Colombian honey process that tastes like caramel
-    found an orchard.
-  </p>
-  <h2>Visit us</h2>
-  <p>
-    The roastery is open Saturdays from nine to noon. Bring a mug and we will
-    fill it while you watch the drum spin.
-  </p>
+  <div class="tim-canvas" data-tim-canvas>
+    <div class="tim-object" style="grid-area: 1 / 2 / 5 / 18;">
+      <Hero
+        heading="Aurora Coffee"
+        tagline="Small-batch roasting in a big-flavor town."
+      />
+    </div>
+    <div class="tim-object tim-text tim-style-body" style="grid-area: 5 / 2 / 9 / 14;">We roast twice a week in the old print shop on Miller Street. Every bag ships within two days of roasting, because coffee is produce, not pantry.</div>
+    <div class="tim-object tim-text tim-style-heading" style="grid-area: 10 / 2 / 12 / 12;">This season</div>
+    <div class="tim-object tim-text tim-style-body" style="grid-area: 12 / 2 / 17 / 12;">The spring lineup leans bright: a washed Ethiopia with notes of apricot and bergamot, and a Colombian honey process that tastes like caramel found an orchard.</div>
+    <div class="tim-object tim-text tim-style-heading" style="grid-area: 10 / 14 / 12 / 24;">Visit us</div>
+    <div class="tim-object tim-text tim-style-body" style="grid-area: 12 / 14 / 17 / 24;">The roastery is open Saturdays from nine to noon. Bring a mug and we will fill it while you watch the drum spin.</div>
+  </div>
 </Base>
