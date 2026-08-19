@@ -109,10 +109,23 @@ public enum ThemeManager {
         h1, h2, h3, h4, h5, h6 { font-family: var(--tim-font-heading); }
         a { color: var(--tim-accent); }
 
-        /* Canvas layout (Tim's Keynote layer) */
-        .tim-canvas { position: relative; }
-        .tim-object { position: absolute; box-sizing: border-box; margin: 0; }
+        /* Canvas layout: a 12-column grid, single column on small screens.
+           DOM order is reading order is mobile order — responsive by
+           construction. */
+        .tim-canvas {
+          display: grid;
+          grid-template-columns: repeat(12, 1fr);
+          gap: 1.5rem;
+          grid-auto-flow: row dense;
+          align-items: start;
+        }
+        .tim-object { min-width: 0; }
         .tim-text { min-height: 1em; outline: none; }
+        .tim-canvas img.tim-object, .tim-canvas video.tim-object { width: 100%; height: auto; display: block; }
+        @media (max-width: 700px) {
+          .tim-canvas { grid-template-columns: 1fr; }
+          .tim-canvas > .tim-object { grid-column: 1 / -1 !important; }
+        }
 
         /* Global text styles — restyle these here, every page follows. */
         .tim-style-title { font-family: var(--tim-font-heading); font-size: 2.5rem; font-weight: 700; line-height: 1.15; }

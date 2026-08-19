@@ -10,10 +10,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     @Published public var title: String = "New Tab"
     @Published public var urlString: String = ""
     @Published public var isEditing: Bool = false
-    @Published public var isArranging: Bool = false
     @Published public var isLoading: Bool = false
     @Published public var canGoBack: Bool = false
     @Published public var canGoForward: Bool = false
+    @Published public var isMobilePreview: Bool = false
 
     public let webView: WKWebView
     private var observations: [NSKeyValueObservation] = []
@@ -95,372 +95,28 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
     }
 
+    /// One edit mode: the canvas. Objects select, move, and resize on the
+    /// grid; any text — box or flowing paragraph — edits on double-click.
     public func setEditing(_ editing: Bool) {
         isEditing = editing
         if editing {
-            // Track text mutations so edits can be mapped back to source
-            // files (the Astro round trip) instead of publishing raw DOM.
             webView.evaluateJavaScript(Self.editTrackerJS, completionHandler: nil)
-        } else if isArranging {
-            setArranging(false)
-        }
-        webView.evaluateJavaScript("document.designMode = '\(editing && !isArranging ? "on" : "off")';", completionHandler: nil)
-    }
-
-    /// Arrange mode: Keynote's object-selection half. Text caret off,
-    /// selection handles and snap guides on.
-    public func setArranging(_ arranging: Bool) {
-        isArranging = arranging
-        if arranging {
-            webView.evaluateJavaScript("document.designMode = 'off';", completionHandler: nil)
-            webView.evaluateJavaScript(Self.arrangeJS, completionHandler: nil)
-            webView.evaluateJavaScript("window.__timArrangeOn && window.__timArrangeOn();", completionHandler: nil)
+            webView.evaluateJavaScript(Self.canvasJS, completionHandler: nil)
+            webView.evaluateJavaScript("window.__timCanvasOn && window.__timCanvasOn();", completionHandler: nil)
         } else {
-            let restoreDesignMode = isEditing ? "document.designMode = 'on';" : ""
-            webView.evaluateJavaScript(
-                "window.__timArrangeOff && window.__timArrangeOff(); \(restoreDesignMode)",
-                completionHandler: nil
-            )
+            webView.evaluateJavaScript("window.__timCanvasOff && window.__timCanvasOff();", completionHandler: nil)
         }
     }
 
-    /// The Keynote layer: free-positioned objects (.tim-object) on a canvas
-    /// ([data-tim-canvas]) — drag to move with alignment guides against
-    /// other objects and the canvas center/edges, resize with snapping,
-    /// double-click a text box to edit it, ⌫ deletes. Positions are stored
-    /// as % of canvas width so layouts stay proportional on any screen;
-    /// the canvas grows vertically to fit its objects.
-    private static let arrangeJS = """
-    (function () {
-      if (window.__timArrange) { return; }
-      var doc = document;
-
-      if (!doc.querySelector('style[data-tim-styles]')) {
-        var st = doc.createElement('style');
-        st.setAttribute('data-tim-styles', '');
-        st.textContent = '.tim-canvas{position:relative}' +
-          '.tim-object{position:absolute;box-sizing:border-box;margin:0}' +
-          '.tim-text{min-height:1em;outline:none}' +
-          '.tim-style-title{font-family:var(--tim-font-heading,inherit);font-size:2.5rem;font-weight:700;line-height:1.15}' +
-          '.tim-style-heading{font-family:var(--tim-font-heading,inherit);font-size:1.6rem;font-weight:700;line-height:1.25}' +
-          '.tim-style-subheading{font-family:var(--tim-font-heading,inherit);font-size:1.25rem;font-weight:600;line-height:1.3}' +
-          '.tim-style-body{font-family:var(--tim-font-body,inherit);font-size:1rem;line-height:1.6}' +
-          '.tim-style-caption{font-size:0.85rem;opacity:0.7;line-height:1.4}';
-        doc.head.appendChild(st);
-      }
-
-      var overlay = doc.createElement('div');
-      overlay.style.cssText = 'position:absolute;left:0;top:0;z-index:2147483000;pointer-events:none;';
-      overlay.id = '__tim-overlay';
-      var box = doc.createElement('div');
-      box.style.cssText = 'position:absolute;border:1.5px solid #0a84ff;pointer-events:none;display:none;box-sizing:border-box;';
-      var badge = doc.createElement('div');
-      badge.style.cssText = 'position:absolute;background:#0a84ff;color:#fff;font:11px -apple-system,sans-serif;padding:2px 6px;border-radius:4px;display:none;white-space:nowrap;';
-      var guide = doc.createElement('div');
-      guide.style.cssText = 'position:absolute;width:1px;background:#ff9f0a;display:none;';
-      var guideH = doc.createElement('div');
-      guideH.style.cssText = 'position:absolute;height:1px;background:#ff9f0a;display:none;';
-      overlay.appendChild(box); overlay.appendChild(badge); overlay.appendChild(guide); overlay.appendChild(guideH);
-      var handles = {};
-      ['e','s','se'].forEach(function (k) {
-        var h = doc.createElement('div');
-        h.style.cssText = 'position:absolute;width:9px;height:9px;background:#fff;border:1.5px solid #0a84ff;border-radius:50%;pointer-events:auto;display:none;';
-        h.style.cursor = k === 'e' ? 'ew-resize' : (k === 's' ? 'ns-resize' : 'nwse-resize');
-        h.setAttribute('data-tim-handle', k);
-        overlay.appendChild(h); handles[k] = h;
-      });
-      doc.body.appendChild(overlay);
-
-      var sel = null, drag = null, active = false, editingEl = null;
-
-      function rectOf(el) {
-        var r = el.getBoundingClientRect();
-        return { x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height };
-      }
-      function isObject(el) { return !!(el && el.classList && el.classList.contains('tim-object')); }
-      function canvasFor(el) { return el && el.closest ? el.closest('[data-tim-canvas]') : null; }
-      function growCanvas(canvas) {
-        if (!canvas) { return; }
-        var max = 0;
-        Array.prototype.forEach.call(canvas.children, function (c) {
-          if (isObject(c)) { max = Math.max(max, c.offsetTop + c.offsetHeight); }
-        });
-        if (max > 0) { canvas.style.minHeight = (max + 48) + 'px'; }
-      }
-      function stopTextEditing() {
-        if (editingEl) { editingEl.removeAttribute('contenteditable'); editingEl = null; }
-      }
-      function hide() {
-        box.style.display = badge.style.display = guide.style.display = guideH.style.display = 'none';
-        for (var k in handles) { handles[k].style.display = 'none'; }
-      }
-      function layout() {
-        if (!sel || !doc.contains(sel)) { hide(); return; }
-        var r = rectOf(sel);
-        box.style.display = 'block';
-        box.style.left = r.x + 'px'; box.style.top = r.y + 'px';
-        box.style.width = r.w + 'px'; box.style.height = r.h + 'px';
-        badge.style.display = 'block';
-        badge.style.left = r.x + 'px'; badge.style.top = Math.max(2, r.y - 24) + 'px';
-        if (!drag) {
-          badge.textContent = sel.tagName.toLowerCase() + ' · ' + Math.round(r.w) + '×' + Math.round(r.h);
-        }
-        handles.e.style.display = handles.s.style.display = handles.se.style.display = 'block';
-        handles.e.style.left = (r.x + r.w - 5) + 'px'; handles.e.style.top = (r.y + r.h / 2 - 5) + 'px';
-        handles.s.style.left = (r.x + r.w / 2 - 5) + 'px'; handles.s.style.top = (r.y + r.h - 5) + 'px';
-        handles.se.style.left = (r.x + r.w - 5) + 'px'; handles.se.style.top = (r.y + r.h - 5) + 'px';
-      }
-
-      function snapTargets() {
-        var targets = [], p = sel && sel.parentElement;
-        if (!p) { return targets; }
-        var cs = getComputedStyle(p);
-        var inner = p.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-        [[0.25,'25%'],[1/3,'33.33%'],[0.5,'50%'],[2/3,'66.67%'],[0.75,'75%'],[1,'100%']].forEach(function (f) {
-          targets.push({ w: inner * f[0], pct: f[1] });
-        });
-        Array.prototype.forEach.call(p.children, function (c) {
-          if (c !== sel && c.id !== '__tim-overlay') { targets.push({ w: c.getBoundingClientRect().width }); }
-        });
-        return targets;
-      }
-
-      // Keynote-style move snapping: align to other objects' edges and
-      // centers, and to the canvas edges and center.
-      function moveTargets(el, canvas) {
-        var xs = [], ys = [];
-        var w = el.offsetWidth, h = el.offsetHeight;
-        var cw = canvas.clientWidth;
-        xs.push({ left: 0, guide: 0 });
-        xs.push({ left: cw - w, guide: cw });
-        xs.push({ left: (cw - w) / 2, guide: cw / 2 });
-        Array.prototype.forEach.call(canvas.children, function (o) {
-          if (o === el || !isObject(o)) { return; }
-          var ol = o.offsetLeft, ot = o.offsetTop, ow = o.offsetWidth, oh = o.offsetHeight;
-          xs.push({ left: ol, guide: ol });
-          xs.push({ left: ol + ow - w, guide: ol + ow });
-          xs.push({ left: ol + (ow - w) / 2, guide: ol + ow / 2 });
-          ys.push({ top: ot, guide: ot });
-          ys.push({ top: ot + oh - h, guide: ot + oh });
-          ys.push({ top: ot + (oh - h) / 2, guide: ot + oh / 2 });
-        });
-        return { xs: xs, ys: ys };
-      }
-
-      function onDown(e) {
-        var k = e.target && e.target.getAttribute ? e.target.getAttribute('data-tim-handle') : null;
-        if (k && sel) {
-          var r = rectOf(sel);
-          drag = { k: k, sx: e.pageX, sy: e.pageY, w: r.w, h: r.h, targets: snapTargets() };
-          e.preventDefault(); e.stopPropagation();
-          return;
-        }
-        if (!active) { return; }
-        var obj = e.target && e.target.closest ? e.target.closest('.tim-object') : null;
-        if (obj && obj !== editingEl && !(editingEl && editingEl.contains(e.target))) {
-          var canvas = canvasFor(obj);
-          if (canvas) {
-            stopTextEditing();
-            sel = obj;
-            drag = {
-              k: 'move', el: obj, canvas: canvas,
-              sx: e.pageX, sy: e.pageY,
-              left: obj.offsetLeft, top: obj.offsetTop,
-              targets: moveTargets(obj, canvas), moved: false
-            };
-            layout();
-            e.preventDefault(); e.stopPropagation();
-          }
-        }
-      }
-
-      function onMove(e) {
-        if (!drag || !sel) { return; }
-        e.preventDefault();
-        guide.style.display = guideH.style.display = 'none';
-
-        if (drag.k === 'move') {
-          var canvas = drag.canvas;
-          var cr = rectOf(canvas);
-          var nl = drag.left + (e.pageX - drag.sx);
-          var nt = drag.top + (e.pageY - drag.sy);
-          var snapX = null, snapY = null;
-          drag.targets.xs.forEach(function (t) { if (Math.abs(nl - t.left) < 6) { nl = t.left; snapX = t; } });
-          drag.targets.ys.forEach(function (t) { if (Math.abs(nt - t.top) < 6) { nt = t.top; snapY = t; } });
-          nt = Math.max(0, nt);
-          drag.moved = true;
-          sel.style.left = Math.round(nl) + 'px';
-          sel.style.top = Math.round(nt) + 'px';
-          if (snapX) {
-            guide.style.display = 'block';
-            guide.style.left = (cr.x + snapX.guide) + 'px';
-            guide.style.top = cr.y + 'px';
-            guide.style.height = Math.max(canvas.clientHeight, 120) + 'px';
-          }
-          if (snapY) {
-            guideH.style.display = 'block';
-            guideH.style.top = (cr.y + snapY.guide) + 'px';
-            guideH.style.left = cr.x + 'px';
-            guideH.style.width = canvas.clientWidth + 'px';
-          }
-          badge.textContent = Math.round(nl) + ', ' + Math.round(nt);
-          layout();
-          return;
-        }
-
-        var w = drag.w + (e.pageX - drag.sx);
-        var h = drag.h + (e.pageY - drag.sy);
-        var snapped = null;
-        if (drag.k === 'e' || drag.k === 'se') {
-          drag.targets.forEach(function (t) {
-            if (Math.abs(w - t.w) < 7) { w = t.w; snapped = t; }
-          });
-          sel.style.width = snapped && snapped.pct ? snapped.pct : Math.max(24, Math.round(w)) + 'px';
-          if (snapped) {
-            var gr = rectOf(sel);
-            guide.style.display = 'block';
-            guide.style.left = (gr.x + gr.w) + 'px';
-            guide.style.top = (gr.y - 20) + 'px';
-            guide.style.height = (gr.h + 40) + 'px';
-          }
-        }
-        if (drag.k === 's' || drag.k === 'se') {
-          sel.style.height = Math.max(16, Math.round(h)) + 'px';
-        }
-        var r2 = rectOf(sel);
-        badge.textContent = Math.round(r2.w) + '×' + Math.round(r2.h) + (snapped && snapped.pct ? ' · ' + snapped.pct : '');
-        layout();
-      }
-
-      function onUp() {
-        if (!drag) { return; }
-        if (drag.k === 'move' && drag.moved && sel) {
-          // Store horizontal position as % of canvas width so the layout
-          // stays proportional on any screen. Top stays px — the canvas
-          // grows vertically as needed.
-          var cw = drag.canvas.clientWidth;
-          if (cw > 0) {
-            sel.style.left = (sel.offsetLeft / cw * 100).toFixed(2) + '%';
-          }
-          growCanvas(drag.canvas);
-        } else if (sel && isObject(sel)) {
-          growCanvas(canvasFor(sel));
-        }
-        drag = null;
-        guide.style.display = guideH.style.display = 'none';
-        layout();
-      }
-
-      function onClick(e) {
-        if (!active || drag) { return; }
-        if (e.target && e.target.getAttribute && e.target.getAttribute('data-tim-handle')) { return; }
-        if (editingEl && editingEl.contains(e.target)) { return; }
-        e.preventDefault(); e.stopPropagation();
-        stopTextEditing();
-        var obj = e.target && e.target.closest ? e.target.closest('.tim-object') : null;
-        var el = obj || e.target;
-        if (!obj) {
-          while (el && el !== doc.body) {
-            if (el.tagName === 'IMG' || getComputedStyle(el).display !== 'inline') { break; }
-            el = el.parentElement;
-          }
-        }
-        sel = (!el || el === doc.body) ? null : el;
-        if (sel) { layout(); } else { hide(); }
-      }
-
-      function onDblClick(e) {
-        if (!active) { return; }
-        var obj = e.target && e.target.closest ? e.target.closest('.tim-object') : null;
-        if (obj && obj.classList.contains('tim-text')) {
-          e.preventDefault(); e.stopPropagation();
-          stopTextEditing();
-          editingEl = obj;
-          obj.setAttribute('contenteditable', 'true');
-          obj.focus();
-          sel = obj;
-          layout();
-        }
-      }
-
-      function onKey(e) {
-        if (e.key === 'Escape') {
-          stopTextEditing();
-          sel = null;
-          hide();
-          return;
-        }
-        if ((e.key === 'Backspace' || e.key === 'Delete') && sel && isObject(sel) && !editingEl) {
-          var canvas = canvasFor(sel);
-          sel.remove();
-          sel = null;
-          hide();
-          growCanvas(canvas);
-          e.preventDefault();
-        }
-      }
-
-      doc.addEventListener('click', onClick, true);
-      doc.addEventListener('dblclick', onDblClick, true);
-      doc.addEventListener('mousedown', onDown, true);
-      doc.addEventListener('mousemove', onMove, true);
-      doc.addEventListener('mouseup', onUp, true);
-      doc.addEventListener('keydown', onKey, true);
-      window.addEventListener('scroll', layout, true);
-      window.addEventListener('resize', layout);
-
-      window.__timInsert = function (html) {
-        var canvas = doc.querySelector('[data-tim-canvas]');
-        if (!canvas) {
-          canvas = doc.createElement('div');
-          canvas.setAttribute('data-tim-canvas', '');
-          canvas.className = 'tim-canvas';
-          canvas.style.minHeight = '40vh';
-          doc.body.appendChild(canvas);
-        }
-        var tmp = doc.createElement('div');
-        tmp.innerHTML = html;
-        var el = tmp.firstElementChild;
-        if (!el) { return; }
-        var cr = rectOf(canvas);
-        el.style.top = Math.max(24, Math.round(window.scrollY + 120 - cr.y)) + 'px';
-        canvas.appendChild(el);
-        stopTextEditing();
-        sel = el;
-        growCanvas(canvas);
-        layout();
-      };
-
-      window.__timApplyStyle = function (cls) {
-        var target = sel;
-        if (!target || (editingEl && editingEl === target)) {
-          var s = window.getSelection();
-          var n = s && s.anchorNode;
-          if (n) {
-            target = n.nodeType === 1 ? n : n.parentElement;
-            while (target && target !== doc.body && !isObject(target) && getComputedStyle(target).display === 'inline') {
-              target = target.parentElement;
-            }
-          }
-        }
-        if (!target || target === doc.body) { return; }
-        String(target.className || '').split(/\\s+/).forEach(function (c) {
-          if (c.indexOf('tim-style-') === 0) { target.classList.remove(c); }
-        });
-        if (cls) { target.classList.add(cls); }
-      };
-
-      window.__timArrange = true;
-      window.__timArrangeOn = function () { active = true; overlay.style.display = 'block'; };
-      window.__timArrangeOff = function () {
-        active = false;
-        stopTextEditing();
-        sel = null; drag = null;
-        hide();
-        overlay.style.display = 'none';
-      };
-    })();
-    """
+    /// Mobile preview: iPhone-width viewport + iPhone Safari user agent,
+    /// so media queries and UA-sniffing sites both behave as on the phone.
+    public func setMobilePreview(_ mobile: Bool) {
+        isMobilePreview = mobile
+        webView.customUserAgent = mobile
+            ? "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1"
+            : nil
+        webView.reload()
+    }
 
     public func format(_ command: String, value: String? = nil) {
         let js: String
@@ -508,7 +164,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     }
 
     /// Applies a global text style class (tim-style-*) to the selected
-    /// object in Layout mode, or the current paragraph in Text mode.
+    /// object or the paragraph the caret is in.
     public func applyTextStyle(_ styleClass: String) {
         webView.evaluateJavaScript("window.__timApplyStyle && window.__timApplyStyle(\(Self.jsLiteral(styleClass)));", completionHandler: nil)
     }
@@ -520,8 +176,23 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
     }
 
+    /// Collects (old text, new text) pairs recorded since edit mode began.
+    public func collectEdits(_ completion: @escaping ([(String, String)]) -> Void) {
+        webView.evaluateJavaScript("window.__timCollect ? window.__timCollect() : '[]'") { result, _ in
+            guard let json = result as? String,
+                  let data = json.data(using: .utf8),
+                  let array = try? JSONSerialization.jsonObject(with: data) as? [[String]]
+            else {
+                completion([])
+                return
+            }
+            completion(array.compactMap { $0.count == 2 ? ($0[0], $0[1]) : nil })
+        }
+    }
+
     /// Records the first-seen old value and current value of every text
-    /// node changed during this edit session.
+    /// node changed during this edit session (outside the canvas, which
+    /// round-trips wholesale), and provides the canvas serializer.
     private static let editTrackerJS = """
     (function () {
       if (window.__timTracker) { return; }
@@ -530,8 +201,6 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         for (var i = 0; i < list.length; i++) {
           var m = list[i];
           if (m.type !== 'characterData') { continue; }
-          // Canvas content round-trips wholesale via __timCanvasHTML —
-          // don't double-report its text edits.
           var p = m.target.parentElement;
           if (p && p.closest && p.closest('[data-tim-canvas]')) { continue; }
           if (!edits.has(m.target)) { edits.set(m.target, m.oldValue); }
@@ -557,44 +226,333 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         for (var j = 0; j < editables.length; j++) { editables[j].removeAttribute('contenteditable'); }
         return clone.outerHTML;
       };
-      if (!window.__timApplyStyle) {
-        window.__timApplyStyle = function (cls) {
-          var s = window.getSelection();
-          var n = s && s.anchorNode;
-          var target = n ? (n.nodeType === 1 ? n : n.parentElement) : null;
-          while (target && target !== document.body && getComputedStyle(target).display === 'inline') {
-            target = target.parentElement;
-          }
-          if (!target || target === document.body) { return; }
-          String(target.className || '').split(/\\s+/).forEach(function (c) {
-            if (c.indexOf('tim-style-') === 0) { target.classList.remove(c); }
-          });
-          if (cls) { target.classList.add(cls); }
-        };
-      }
     })();
     """
 
-    /// Collects (old text, new text) pairs recorded since edit mode began.
-    public func collectEdits(_ completion: @escaping ([(String, String)]) -> Void) {
-        webView.evaluateJavaScript("window.__timCollect ? window.__timCollect() : '[]'") { result, _ in
-            guard let json = result as? String,
-                  let data = json.data(using: .utf8),
-                  let array = try? JSONSerialization.jsonObject(with: data) as? [[String]]
-            else {
-                completion([])
-                return
-            }
-            completion(array.compactMap { $0.count == 2 ? ($0[0], $0[1]) : nil })
+    /// The canvas layer. Web-native Keynote: a 12-column grid, not a fixed
+    /// slide. Objects snap to columns when moved and resized; dragging
+    /// vertically reorders them (DOM order = reading order = mobile order);
+    /// text boxes grow downward; the mobile breakpoint collapses the grid
+    /// to a single column. Responsive by construction — never by tweaks.
+    private static let canvasJS = """
+    (function () {
+      if (window.__timCanvasLayer) { return; }
+      var doc = document;
+
+      if (!doc.querySelector('style[data-tim-styles]')) {
+        var st = doc.createElement('style');
+        st.setAttribute('data-tim-styles', '');
+        st.textContent = '.tim-canvas{display:grid;grid-template-columns:repeat(12,1fr);gap:1.5rem;grid-auto-flow:row dense;align-items:start}' +
+          '.tim-object{min-width:0}' +
+          '.tim-text{min-height:1em;outline:none}' +
+          '.tim-canvas img.tim-object{width:100%;height:auto;display:block}' +
+          '.tim-canvas video.tim-object{width:100%;height:auto;display:block}' +
+          '@media (max-width:700px){.tim-canvas{grid-template-columns:1fr}.tim-canvas>.tim-object{grid-column:1 / -1 !important}}' +
+          '.tim-style-title{font-family:var(--tim-font-heading,inherit);font-size:2.5rem;font-weight:700;line-height:1.15}' +
+          '.tim-style-heading{font-family:var(--tim-font-heading,inherit);font-size:1.6rem;font-weight:700;line-height:1.25}' +
+          '.tim-style-subheading{font-family:var(--tim-font-heading,inherit);font-size:1.25rem;font-weight:600;line-height:1.3}' +
+          '.tim-style-body{font-family:var(--tim-font-body,inherit);font-size:1rem;line-height:1.6}' +
+          '.tim-style-caption{font-size:0.85rem;opacity:0.7;line-height:1.4}';
+        doc.head.appendChild(st);
+      }
+
+      var overlay = doc.createElement('div');
+      overlay.id = '__tim-overlay';
+      overlay.style.cssText = 'position:absolute;left:0;top:0;z-index:2147483000;pointer-events:none;';
+      var box = doc.createElement('div');
+      box.style.cssText = 'position:absolute;border:1.5px solid #0a84ff;pointer-events:none;display:none;box-sizing:border-box;';
+      var badge = doc.createElement('div');
+      badge.style.cssText = 'position:absolute;background:#0a84ff;color:#fff;font:11px -apple-system,sans-serif;padding:2px 6px;border-radius:4px;display:none;white-space:nowrap;';
+      var gridBox = doc.createElement('div');
+      gridBox.style.cssText = 'position:absolute;pointer-events:none;display:none;';
+      overlay.appendChild(gridBox); overlay.appendChild(box); overlay.appendChild(badge);
+      var handles = {};
+      ['w', 'e'].forEach(function (k) {
+        var h = doc.createElement('div');
+        h.style.cssText = 'position:absolute;width:9px;height:9px;background:#fff;border:1.5px solid #0a84ff;border-radius:50%;pointer-events:auto;display:none;cursor:ew-resize;';
+        h.setAttribute('data-tim-handle', k);
+        overlay.appendChild(h); handles[k] = h;
+      });
+      doc.body.appendChild(overlay);
+
+      var sel = null, drag = null, active = false, editingEl = null;
+
+      function rectOf(el) {
+        var r = el.getBoundingClientRect();
+        return { x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height };
+      }
+      function isObject(el) { return !!(el && el.classList && el.classList.contains('tim-object')); }
+      function canvasFor(el) { return el && el.closest ? el.closest('[data-tim-canvas]') : null; }
+      function stopTextEditing() {
+        if (editingEl) { editingEl.removeAttribute('contenteditable'); editingEl = null; }
+      }
+
+      function gridInfo(canvas) {
+        var cs = getComputedStyle(canvas);
+        var gap = parseFloat(cs.columnGap) || 0;
+        var padL = parseFloat(cs.paddingLeft) || 0;
+        var padR = parseFloat(cs.paddingRight) || 0;
+        var inner = canvas.clientWidth - padL - padR;
+        var r = rectOf(canvas);
+        return {
+          gap: gap,
+          colW: (inner - gap * 11) / 12,
+          originX: r.x + padL,
+          top: r.y,
+          height: Math.max(canvas.clientHeight, 160)
+        };
+      }
+      function placement(el) {
+        var m = String(el.style.gridColumn || '').match(/(\\d+)\\s*\\/\\s*span\\s*(\\d+)/);
+        return m ? { col: +m[1], span: +m[2] } : { col: 1, span: 12 };
+      }
+      function setPlacement(el, col, span) {
+        span = Math.max(1, Math.min(12, span));
+        col = Math.max(1, Math.min(13 - span, col));
+        el.style.gridColumn = col + ' / span ' + span;
+      }
+
+      function showGrid(canvas) {
+        var g = gridInfo(canvas);
+        gridBox.innerHTML = '';
+        for (var i = 0; i < 12; i++) {
+          var strip = doc.createElement('div');
+          strip.style.cssText = 'position:absolute;background:rgba(10,132,255,0.07);border-radius:3px;';
+          strip.style.left = (g.originX + i * (g.colW + g.gap)) + 'px';
+          strip.style.top = g.top + 'px';
+          strip.style.width = g.colW + 'px';
+          strip.style.height = g.height + 'px';
+          gridBox.appendChild(strip);
         }
-    }
+        gridBox.style.display = 'block';
+      }
+      function hideGrid() { gridBox.style.display = 'none'; gridBox.innerHTML = ''; }
+
+      function hide() {
+        box.style.display = badge.style.display = 'none';
+        hideGrid();
+        for (var k in handles) { handles[k].style.display = 'none'; }
+      }
+      function layout() {
+        if (!sel || !doc.contains(sel)) { hide(); return; }
+        var r = rectOf(sel);
+        box.style.display = 'block';
+        box.style.left = r.x + 'px'; box.style.top = r.y + 'px';
+        box.style.width = r.w + 'px'; box.style.height = r.h + 'px';
+        badge.style.display = 'block';
+        badge.style.left = r.x + 'px';
+        badge.style.top = Math.max(2, r.y - 24) + 'px';
+        if (!drag) {
+          var label = sel.tagName.toLowerCase();
+          if (isObject(sel) && canvasFor(sel)) {
+            var p = placement(sel);
+            label += ' · cols ' + p.col + '–' + (p.col + p.span - 1);
+          }
+          badge.textContent = label;
+        }
+        var resizable = isObject(sel) && canvasFor(sel);
+        handles.w.style.display = handles.e.style.display = resizable ? 'block' : 'none';
+        if (resizable) {
+          handles.w.style.left = (r.x - 5) + 'px';
+          handles.w.style.top = (r.y + r.h / 2 - 5) + 'px';
+          handles.e.style.left = (r.x + r.w - 5) + 'px';
+          handles.e.style.top = (r.y + r.h / 2 - 5) + 'px';
+        }
+      }
+
+      function onDown(e) {
+        var k = e.target && e.target.getAttribute ? e.target.getAttribute('data-tim-handle') : null;
+        if (k && sel && isObject(sel)) {
+          var canvas = canvasFor(sel);
+          if (!canvas) { return; }
+          var p = placement(sel);
+          drag = { mode: k, canvas: canvas, sx: e.pageX, col0: p.col, span0: p.span };
+          showGrid(canvas);
+          e.preventDefault(); e.stopPropagation();
+          return;
+        }
+        if (!active) { return; }
+        var obj = e.target && e.target.closest ? e.target.closest('.tim-object') : null;
+        if (obj && obj !== editingEl && !(editingEl && editingEl.contains(e.target))) {
+          var canvas2 = canvasFor(obj);
+          if (canvas2) {
+            stopTextEditing();
+            sel = obj;
+            var p2 = placement(obj);
+            drag = { mode: 'move', canvas: canvas2, sx: e.pageX, sy: e.pageY, col0: p2.col, span: p2.span, moved: false };
+            showGrid(canvas2);
+            layout();
+            e.preventDefault(); e.stopPropagation();
+          }
+        }
+      }
+
+      function onMove(e) {
+        if (!drag || !sel) { return; }
+        e.preventDefault();
+        var g = gridInfo(drag.canvas);
+        var deltaCols = Math.round((e.pageX - drag.sx) / (g.colW + g.gap));
+
+        if (drag.mode === 'move') {
+          drag.moved = true;
+          setPlacement(sel, drag.col0 + deltaCols, drag.span);
+          // Vertical drag reorders: DOM order is reading order is mobile order.
+          var siblings = Array.prototype.slice.call(drag.canvas.children).filter(function (c) {
+            return isObject(c) && c !== sel;
+          });
+          var ref = null;
+          for (var i = 0; i < siblings.length; i++) {
+            var sr = rectOf(siblings[i]);
+            if (e.pageY < sr.y + sr.h / 2) { ref = siblings[i]; break; }
+          }
+          if (sel.nextElementSibling !== ref) { drag.canvas.insertBefore(sel, ref); }
+          var p = placement(sel);
+          badge.textContent = 'cols ' + p.col + '–' + (p.col + p.span - 1);
+        } else if (drag.mode === 'e') {
+          setPlacement(sel, drag.col0, drag.span0 + deltaCols);
+          badge.textContent = 'span ' + placement(sel).span + ' of 12';
+        } else if (drag.mode === 'w') {
+          var col = drag.col0 + deltaCols;
+          var span = drag.span0 - deltaCols;
+          if (span >= 1 && col >= 1) { setPlacement(sel, col, span); }
+          badge.textContent = 'span ' + placement(sel).span + ' of 12';
+        }
+        layout();
+      }
+
+      function onUp() {
+        if (!drag) { return; }
+        drag = null;
+        hideGrid();
+        layout();
+      }
+
+      function onClick(e) {
+        if (!active || drag) { return; }
+        if (e.target && e.target.getAttribute && e.target.getAttribute('data-tim-handle')) { return; }
+        if (editingEl && editingEl.contains(e.target)) { return; }
+        e.preventDefault(); e.stopPropagation();
+        stopTextEditing();
+        var obj = e.target && e.target.closest ? e.target.closest('.tim-object') : null;
+        var el = obj || e.target;
+        if (!obj) {
+          while (el && el !== doc.body) {
+            if (el.tagName === 'IMG' || getComputedStyle(el).display !== 'inline') { break; }
+            el = el.parentElement;
+          }
+        }
+        sel = (!el || el === doc.body) ? null : el;
+        if (sel) { layout(); } else { hide(); }
+      }
+
+      function onDblClick(e) {
+        if (!active) { return; }
+        var obj = e.target && e.target.closest ? e.target.closest('.tim-object') : null;
+        var target = null;
+        if (obj && obj.classList.contains('tim-text')) {
+          target = obj;
+        } else if (!obj) {
+          var el = e.target;
+          while (el && el !== doc.body) {
+            if (getComputedStyle(el).display !== 'inline' && !el.hasAttribute('data-tim-canvas')) { break; }
+            el = el.parentElement;
+          }
+          if (el && el !== doc.body) { target = el; }
+        }
+        if (target) {
+          e.preventDefault(); e.stopPropagation();
+          stopTextEditing();
+          editingEl = target;
+          target.setAttribute('contenteditable', 'true');
+          target.focus();
+          sel = target;
+          layout();
+        }
+      }
+
+      function onKey(e) {
+        if (e.key === 'Escape') {
+          stopTextEditing();
+          sel = null;
+          hide();
+          return;
+        }
+        if ((e.key === 'Backspace' || e.key === 'Delete') && sel && isObject(sel) && !editingEl) {
+          sel.remove();
+          sel = null;
+          hide();
+          e.preventDefault();
+        }
+      }
+
+      doc.addEventListener('click', onClick, true);
+      doc.addEventListener('dblclick', onDblClick, true);
+      doc.addEventListener('mousedown', onDown, true);
+      doc.addEventListener('mousemove', onMove, true);
+      doc.addEventListener('mouseup', onUp, true);
+      doc.addEventListener('keydown', onKey, true);
+      window.addEventListener('scroll', layout, true);
+      window.addEventListener('resize', layout);
+
+      window.__timInsert = function (html) {
+        var canvas = doc.querySelector('[data-tim-canvas]');
+        if (!canvas) {
+          canvas = doc.createElement('div');
+          canvas.setAttribute('data-tim-canvas', '');
+          canvas.className = 'tim-canvas';
+          doc.body.appendChild(canvas);
+        }
+        var tmp = doc.createElement('div');
+        tmp.innerHTML = html;
+        var el = tmp.firstElementChild;
+        if (!el) { return; }
+        if (sel && isObject(sel) && canvasFor(sel) === canvas) {
+          canvas.insertBefore(el, sel.nextElementSibling);
+        } else {
+          canvas.appendChild(el);
+        }
+        stopTextEditing();
+        sel = el;
+        layout();
+        el.scrollIntoView({ block: 'nearest' });
+      };
+
+      window.__timApplyStyle = function (cls) {
+        var target = sel;
+        if (!target || (editingEl && editingEl === target)) {
+          var s = window.getSelection();
+          var n = s && s.anchorNode;
+          if (n) {
+            target = n.nodeType === 1 ? n : n.parentElement;
+            while (target && target !== doc.body && !isObject(target) && getComputedStyle(target).display === 'inline') {
+              target = target.parentElement;
+            }
+          }
+        }
+        if (!target || target === doc.body) { return; }
+        String(target.className || '').split(/\\s+/).forEach(function (c) {
+          if (c.indexOf('tim-style-') === 0) { target.classList.remove(c); }
+        });
+        if (cls) { target.classList.add(cls); }
+      };
+
+      window.__timCanvasLayer = true;
+      window.__timCanvasOn = function () { active = true; overlay.style.display = 'block'; };
+      window.__timCanvasOff = function () {
+        active = false;
+        stopTextEditing();
+        sel = null; drag = null;
+        hide();
+        overlay.style.display = 'none';
+      };
+    })();
+    """
 }
 
 extension Tab: WKNavigationDelegate {
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         // Navigating away always leaves edit mode.
         if isEditing { isEditing = false }
-        if isArranging { isArranging = false }
     }
 }
 

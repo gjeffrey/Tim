@@ -111,19 +111,16 @@ public enum ComponentLibrary {
             .filter { $0.hasSuffix(".astro") }.sorted().first
         let layoutName = layoutFile.map { ($0 as NSString).deletingPathExtension }
 
-        // Pages' insight: a layout page is just a page without the default
-        // body text flow — a canvas you place objects on. The starter text
-        // box is deletable like any object.
-        let textBody = """
-          <h1>\(title)</h1>
-          <p>Write something true.</p>
-        """
-        let canvasBody = """
-          <div class="tim-canvas" data-tim-canvas style="min-height: 70vh;">
-            <div class="tim-object tim-text tim-style-title" style="left: 8%; top: 48px; width: 60%;">\(title)</div>
+        // Every new page is a canvas: a 12-column grid of objects. A plain
+        // article is just a full-width text box — text continues down the
+        // page; the web has no pagination to fight.
+        let body = """
+          <div class="tim-canvas" data-tim-canvas>
+            <div class="tim-object tim-text tim-style-title" style="grid-column: 1 / span 10;">\(title)</div>
+            <div class="tim-object tim-text tim-style-body" style="grid-column: 1 / span 8;">Write something true.</div>
           </div>
         """
-        let body = layoutPage ? canvasBody : textBody
+        _ = layoutPage
 
         let source: String
         if let layoutName {

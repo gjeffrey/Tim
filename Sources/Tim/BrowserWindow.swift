@@ -126,6 +126,7 @@ struct TabContentView: View {
 
     private var pageURL: URL? { URL(string: tab.urlString) }
     private var matchedSite: Site? { siteStore.match(pageURL) }
+    private var isPageEditable: Bool { siteStore.isEditable(pageURL) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -138,7 +139,22 @@ struct TabContentView: View {
                 )
                 Divider()
             }
-            WebViewContainer(webView: tab.webView)
+            if tab.isMobilePreview {
+                ZStack {
+                    Color.primary.opacity(0.045)
+                    WebViewContainer(webView: tab.webView)
+                        .frame(width: 390)
+                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                .stroke(Color.primary.opacity(0.2), lineWidth: 1)
+                        )
+                        .shadow(color: .black.opacity(0.18), radius: 22, y: 8)
+                        .padding(.vertical, 20)
+                }
+            } else {
+                WebViewContainer(webView: tab.webView)
+            }
         }
         .background(.background)
         .navigationTitle("")
@@ -230,14 +246,29 @@ struct TabContentView: View {
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
+            Picker("", selection: Binding(
+                get: { tab.isMobilePreview },
+                set: { tab.setMobilePreview($0) }
+            )) {
+                Image(systemName: "desktopcomputer").tag(false)
+                Image(systemName: "iphone").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .help("Preview as Mac or iPhone — same content, both must be excellent")
+
             Button {
                 tab.setEditing(!tab.isEditing)
             } label: {
                 Image(systemName: tab.isEditing ? "pencil.circle.fill" : "pencil.circle")
                     .font(.system(size: 15))
-                    .foregroundStyle(tab.isEditing || matchedSite != nil ? Color.accentColor : Color.secondary)
+                    .foregroundStyle(tab.isEditing || isPageEditable ? Color.accentColor : Color.secondary.opacity(0.4))
             }
-            .help(tab.isEditing ? "Stop Editing (⌘E)" : "Edit This Page (⌘E)")
+            .disabled(!isPageEditable && !tab.isEditing)
+            .help(tab.isEditing
+                  ? "Stop Editing (⌘E)"
+                  : (isPageEditable ? "Edit This Page (⌘E)" : "You can edit pages on your connected sites — add this one in My Sites"))
 
             Menu {
                 ForEach(siteStore.sites) { site in
@@ -268,7 +299,7 @@ struct TabContentView: View {
     }
 }
 
-// MARK: - Editing toolbar (the Keynote-ish part)
+// MARK: - Editing toolbar (one mode: the canvas)
 
 struct EditingToolbar: View {
     @ObservedObject var tab: Tab
@@ -292,99 +323,27 @@ struct EditingToolbar: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Picker("", selection: Binding(
-                get: { tab.isArranging ? 1 : 0 },
-                set: { tab.setArranging($0 == 1) }
-            )) {
-                Text("Text").tag(0)
-                Text("Layout").tag(1)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-
-            Divider().frame(height: 16)
-
-            if tab.isArranging {
-                Button {
-                    tab.insertObject(html: """
-                    <div class="tim-object tim-text tim-style-body" style="left: 8%; width: 38%;">Double-click to edit</div>
-                    """)
-                } label: {
-                    Label("Text Box", systemImage: "character.textbox")
-                }
-                Button {
-                    insertMedia(video: false)
-                } label: {
-                    Label("Image…", systemImage: "photo")
-                }
-                Button {
-                    insertMedia(video: true)
-                } label: {
-                    Label("Video…", systemImage: "video")
-                }
-
-                Divider().frame(height: 16)
-
-                Menu {
-                    Button("Title") { tab.applyTextStyle("tim-style-title") }
-                    Button("Heading") { tab.applyTextStyle("tim-style-heading") }
-                    Button("Subheading") { tab.applyTextStyle("tim-style-subheading") }
-                    Button("Body") { tab.applyTextStyle("tim-style-body") }
-                    Button("Caption") { tab.applyTextStyle("tim-style-caption") }
-                    Divider()
-                    Button("Clear Style") { tab.applyTextStyle("") }
-                } label: {
-                    Label("Styles", systemImage: "textformat.alt")
-                }
-                .fixedSize()
-
-                Text("drag to move · double-click text to edit · ⌫ deletes")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                Menu {
-                    Button("Title") { tab.format("formatBlock", value: "h1") }
-                    Button("Heading") { tab.format("formatBlock", value: "h2") }
-                    Button("Subheading") { tab.format("formatBlock", value: "h3") }
-                    Button("Body") { tab.format("formatBlock", value: "p") }
-                    Button("Quote") { tab.format("formatBlock", value: "blockquote") }
-                    Button("Code") { tab.format("formatBlock", value: "pre") }
-                } label: {
-                    Label("Style", systemImage: "textformat")
-                }
-                .fixedSize()
-
-                FormatButton(symbol: "bold") { tab.format("bold") }
-                FormatButton(symbol: "italic") { tab.format("italic") }
-                FormatButton(symbol: "underline") { tab.format("underline") }
-                FormatButton(symbol: "strikethrough") { tab.format("strikethrough") }
-
-                Divider().frame(height: 16)
-
-                FormatButton(symbol: "list.bullet") { tab.format("insertUnorderedList") }
-                FormatButton(symbol: "list.number") { tab.format("insertOrderedList") }
-
-                FormatButton(symbol: "link") { showLinkPopover = true }
-                    .popover(isPresented: $showLinkPopover, arrowEdge: .bottom) {
-                        HStack {
-                            TextField("https://…", text: $linkURL)
-                                .textFieldStyle(.roundedBorder)
-                                .frame(width: 240)
-                                .onSubmit { addLink() }
-                            Button("Add Link") { addLink() }
-                        }
-                        .padding(10)
+            Menu {
+                Section("Objects") {
+                    Button {
+                        tab.insertObject(html: """
+                        <div class="tim-object tim-text tim-style-body" style="grid-column: 1 / span 6;">Double-click to edit</div>
+                        """)
+                    } label: {
+                        Label("Text Box", systemImage: "character.textbox")
                     }
-
-                FormatButton(symbol: "arrow.uturn.backward") { tab.format("undo") }
-                FormatButton(symbol: "arrow.uturn.forward") { tab.format("redo") }
-            }
-
-            if isAstroSite {
-                Divider().frame(height: 16)
-
-                Menu {
+                    Button {
+                        insertMedia(video: false)
+                    } label: {
+                        Label("Image…", systemImage: "photo")
+                    }
+                    Button {
+                        insertMedia(video: true)
+                    } label: {
+                        Label("Video…", systemImage: "video")
+                    }
+                }
+                if isAstroSite {
                     Section("Components") {
                         let components = ComponentLibrary.components(in: site?.localProjectPath ?? "")
                         if components.isEmpty {
@@ -401,11 +360,54 @@ struct EditingToolbar: View {
                     Section("Pages") {
                         Button("New Page…") { showNewPageSheet = true }
                     }
-                } label: {
-                    Label("Insert", systemImage: "plus.square.on.square")
                 }
-                .fixedSize()
+            } label: {
+                Label("Insert", systemImage: "plus.square.on.square")
+            }
+            .fixedSize()
 
+            Menu {
+                Button("Title") { tab.applyTextStyle("tim-style-title") }
+                Button("Heading") { tab.applyTextStyle("tim-style-heading") }
+                Button("Subheading") { tab.applyTextStyle("tim-style-subheading") }
+                Button("Body") { tab.applyTextStyle("tim-style-body") }
+                Button("Caption") { tab.applyTextStyle("tim-style-caption") }
+                Divider()
+                Button("Clear Style") { tab.applyTextStyle("") }
+            } label: {
+                Label("Styles", systemImage: "textformat")
+            }
+            .fixedSize()
+
+            Divider().frame(height: 16)
+
+            FormatButton(symbol: "bold") { tab.format("bold") }
+            FormatButton(symbol: "italic") { tab.format("italic") }
+            FormatButton(symbol: "underline") { tab.format("underline") }
+            FormatButton(symbol: "strikethrough") { tab.format("strikethrough") }
+
+            Divider().frame(height: 16)
+
+            FormatButton(symbol: "list.bullet") { tab.format("insertUnorderedList") }
+            FormatButton(symbol: "list.number") { tab.format("insertOrderedList") }
+
+            FormatButton(symbol: "link") { showLinkPopover = true }
+                .popover(isPresented: $showLinkPopover, arrowEdge: .bottom) {
+                    HStack {
+                        TextField("https://…", text: $linkURL)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 240)
+                            .onSubmit { addLink() }
+                        Button("Add Link") { addLink() }
+                    }
+                    .padding(10)
+                }
+
+            FormatButton(symbol: "arrow.uturn.backward") { tab.format("undo") }
+            FormatButton(symbol: "arrow.uturn.forward") { tab.format("redo") }
+
+            if isAstroSite {
+                Divider().frame(height: 16)
                 Button {
                     showThemePanel = true
                 } label: {
@@ -415,6 +417,11 @@ struct EditingToolbar: View {
                     ThemePanel(site: site, tab: tab)
                 }
             }
+
+            Text("double-click text to edit · drag objects to move · ⌫ deletes")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
 
             Spacer()
 
@@ -437,20 +444,12 @@ struct EditingToolbar: View {
                     .transition(.opacity)
             }
 
-            if isAstroSite {
+            if isAstroSite || site != nil {
                 Button("Publish") { publish() }
                     .keyboardShortcut("s", modifiers: .command)
             } else if isLocalFile {
                 Button("Save") { saveLocalFile() }
                     .keyboardShortcut("s", modifiers: .command)
-            } else if site != nil {
-                Button("Publish") { publish() }
-                    .keyboardShortcut("s", modifiers: .command)
-            } else {
-                Text("Edits are local only")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button("Connect Site…") { connect() }
             }
 
             Button("Done") { tab.setEditing(false) }
@@ -508,11 +507,11 @@ struct EditingToolbar: View {
         guard let src else { return }
         if video {
             tab.insertObject(html: """
-            <video class="tim-object" controls src="\(src)" style="left: 8%; width: 48%;"></video>
+            <video class="tim-object" controls src="\(src)" style="grid-column: 1 / span 8;"></video>
             """)
         } else {
             tab.insertObject(html: """
-            <img class="tim-object" src="\(src)" style="left: 8%; width: 40%;" alt="" />
+            <img class="tim-object" src="\(src)" style="grid-column: 1 / span 6;" alt="" />
             """)
         }
     }
@@ -732,7 +731,6 @@ struct NewPageSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var title = ""
-    @State private var isLayoutPage = true
     @State private var isCreating = false
     @State private var errorMessage: String?
 
@@ -745,21 +743,7 @@ struct NewPageSheet: View {
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { create() }
 
-            Picker("", selection: $isLayoutPage) {
-                Text("Layout").tag(true)
-                Text("Text").tag(false)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-
-            Text(isLayoutPage
-                 ? "A canvas page: place and move text boxes, images, and video freely — boxes grow downward as needed."
-                 : "A text page: a flowing document, like a plain article.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text("Creates src/pages/\(slug.isEmpty ? "…" : slug).astro from your site's layout, builds, and opens it.")
+            Text("Creates src/pages/\(slug.isEmpty ? "…" : slug).astro from your site's layout, builds, and opens it. Every page is a canvas — a plain article is just a full-width text box.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -798,8 +782,7 @@ struct NewPageSheet: View {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 let rel = try ComponentLibrary.createPage(
-                    slug: slug, title: pageTitle, projectPath: site.localProjectPath,
-                    layoutPage: isLayoutPage
+                    slug: slug, title: pageTitle, projectPath: site.localProjectPath
                 )
                 _ = try AstroProject.build(projectPath: site.localProjectPath)
                 DispatchQueue.main.async {

@@ -35,9 +35,17 @@ struct TimApp: App {
             }
             CommandMenu("Page") {
                 Button("Toggle Edit Mode") {
-                    if let tab = store.selectedTab { tab.setEditing(!tab.isEditing) }
+                    guard let tab = store.selectedTab else { return }
+                    // Editing is for pages you own.
+                    if tab.isEditing || siteStore.isEditable(URL(string: tab.urlString)) {
+                        tab.setEditing(!tab.isEditing)
+                    }
                 }
                 .keyboardShortcut("e", modifiers: .command)
+                Button("Toggle Mobile Preview") {
+                    if let tab = store.selectedTab { tab.setMobilePreview(!tab.isMobilePreview) }
+                }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
                 Button("Reload") { store.selectedTab?.webView.reload() }
                     .keyboardShortcut("r", modifiers: .command)
                 Divider()

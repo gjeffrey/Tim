@@ -153,6 +153,13 @@ public final class SiteStore: ObservableObject {
         return sites.first { $0.matches(url) }
     }
 
+    /// Editing is a publishing act: only pages you own are editable —
+    /// pages under a connected site, or local files.
+    public func isEditable(_ url: URL?) -> Bool {
+        guard let url else { return false }
+        return url.isFileURL || match(url) != nil
+    }
+
     public func upsert(_ site: Site) {
         if let index = sites.firstIndex(where: { $0.id == site.id }) {
             sites[index] = site

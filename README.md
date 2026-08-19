@@ -54,28 +54,36 @@ Working today:
   anything unclear is reported, never guessed — then runs `astro build` and
   deploys `dist/` to the site's target. Formatting edits don't round-trip
   yet; that's the AST work.
-- **Edit mode (⌘E)** with two sub-modes — the Pages split, minus pagination:
-  - **Text** — the flowing-document mode: WebKit `designMode` with a
-    formatting bar (text styles, bold/italic/underline/strikethrough,
-    lists, links, undo/redo).
-  - **Layout** — the Keynote mode: a canvas (`[data-tim-canvas]`) of freely
-    placed objects. Insert **text boxes** (double-click to edit; they grow
-    downward as needed — the web means never worrying about pagination),
-    **images**, and **video**; drag to move with Keynote-style alignment
-    guides (edges/centers of other objects, canvas edges and center);
-    resize with snapping (sibling widths, container fractions); ⌫ deletes.
-    Horizontal positions are stored as percentages so layouts stay
-    proportional on any screen. **Global text styles** (Title, Heading,
-    Subheading, Body, Caption) apply to any object or paragraph as
-    `tim-style-*` classes bound to the theme — restyle the theme, every
-    page follows.
+- **Editing is for pages you own.** The pencil enables only on connected
+  sites and local files — Tim is not a scratchpad for other people's pages.
+  Editability shows beside the address bar (and, when bookmarks land, on
+  bookmarks too).
+- **One edit mode (⌘E): the canvas.** Web-native Keynote — not a fixed
+  slide, and not Pages' text/layout split either, because the web has no
+  pagination: text boxes simply grow downward.
+  - The canvas is a **12-column grid** (`[data-tim-canvas]`). Objects —
+    text boxes, images, video — snap to columns when moved and resized
+    (the column strips light up while you drag); dragging vertically
+    reorders objects, and **DOM order = reading order = mobile order**.
+  - **Responsive by construction, never by tweaks.** Below 700px the grid
+    collapses to a single column: every object goes full-width in reading
+    order. The same Astro content is excellent on desktop and phone with
+    zero per-breakpoint work. This is architecture, not a feature flag —
+    there is no way to build a Tim page that isn't responsive.
+  - **Double-click any text to edit it** — a text box or a flowing
+    paragraph. Formatting (bold/italic/lists/links/undo) applies wherever
+    the caret is. **Global text styles** (Title, Heading, Subheading,
+    Body, Caption) are `tim-style-*` classes bound to the theme — restyle
+    the theme, every page follows.
   - **Canvas round trip** — Tim owns everything inside the canvas, so on
     publish the whole canvas block is swapped wholesale into the page's
-    source: moves, resizes, inserts, deletes, and text all persist on
-    Astro sites, losslessly. (Resizing arbitrary non-canvas elements is
-    still preview-only on Astro pages until the v0.4 annotations.)
-  - **New Page** offers Layout (canvas) or Text (flowing) — Pages' two
-    document types, chosen per page.
+    source: moves, resizes, reorders, inserts, deletes, and text all
+    persist on Astro sites, losslessly.
+  - **New Page** creates a canvas page — a plain article is just a
+    full-width text box.
+- **Mobile / desktop preview toggle** — a toolbar switch (⇧⌘M) that
+  emulates iPhone Safari (390pt viewport in a phone frame, iPhone user
+  agent) or Mac Safari. Check both; ship when both are excellent.
 - **Components & templates** (Astro sites) — the Insert menu lists the
   site's own `src/components/`, with props parsed from `Astro.props`;
   inserting writes the import + instance into the page source with
