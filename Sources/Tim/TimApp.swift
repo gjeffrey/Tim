@@ -25,25 +25,24 @@ struct TimApp: App {
         }
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
-            CommandGroup(after: .newItem) {
+            CommandGroup(replacing: .newItem) {
                 Button("New Tab") { store.newTab() }
                     .keyboardShortcut("t", modifiers: .command)
-                Button("New Local Page…") { LocalPages.createAndOpen(in: store.selectedTab) }
-                    .keyboardShortcut("n", modifiers: [.command, .option])
+                Button("New Page…") { NotificationCenter.default.post(name: .timNewPage, object: nil) }
+                    .keyboardShortcut("n", modifiers: .command)
+                Button("Open…") { NotificationCenter.default.post(name: .timOpenPage, object: nil) }
+                    .keyboardShortcut("o", modifiers: .command)
+                Button("Duplicate…") { NotificationCenter.default.post(name: .timDuplicatePage, object: nil) }
+                    .keyboardShortcut("s", modifiers: [.command, .shift])
+                Divider()
                 Button("Close Tab") {
                     if let tab = store.selectedTab { store.close(tab) }
                 }
                 .keyboardShortcut("w", modifiers: .command)
             }
             CommandMenu("Page") {
-                Button("Toggle Edit Mode") {
-                    guard let tab = store.selectedTab else { return }
-                    // Editing is for pages you own.
-                    if tab.isEditing || siteStore.isEditable(URL(string: tab.urlString)) {
-                        tab.setEditing(!tab.isEditing)
-                    }
-                }
-                .keyboardShortcut("e", modifiers: .command)
+                Button("Toggle Edit Mode") { NotificationCenter.default.post(name: .timToggleEdit, object: nil) }
+                    .keyboardShortcut("e", modifiers: .command)
                 Button("Toggle Mobile Preview") {
                     if let tab = store.selectedTab { tab.setMobilePreview(!tab.isMobilePreview) }
                 }

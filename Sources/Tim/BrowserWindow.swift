@@ -6,6 +6,13 @@ import TimKit
 // SwiftUI has its own `Tab` (TabView); ours wins in this file.
 typealias Tab = TimKit.Tab
 
+extension Notification.Name {
+    static let timNewPage = Notification.Name("tim.newPage")
+    static let timOpenPage = Notification.Name("tim.openPage")
+    static let timDuplicatePage = Notification.Name("tim.duplicatePage")
+    static let timToggleEdit = Notification.Name("tim.toggleEdit")
+}
+
 struct BrowserWindow: View {
     @EnvironmentObject var store: BrowserStore
 
@@ -183,6 +190,98 @@ struct TabContentView: View {
         .sheet(item: $newPageSite) { site in
             NewPageSheet(site: site, tab: tab)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .timNewPage)) { _ in
+            if let site = matchedSite, AstroProject.isAstroProject(site.localProjectPath) {
+                newPageSite = site
+            } else {
+                LocalPages.createAndOpen(in: tab)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .timOpenPage)) { _ in
+            openLocalPage()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .timDuplicatePage)) { _ in
+            duplicatePage()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .timToggleEdit)) { _ in
+            if tab.isEditing {
+                finishEditing()
+            } else if isPageEditable {
+                tab.setEditing(true)
+            }
+        }
+        .onReceive(Timer.publish(every: 3, on: .main, in: .common).autoconnect()) { _ in
+            if tab.isEditing, isPlainLocalPage { savePlainLocalPage() }
+        }
+    }
+
+    /// A local page that isn't a build product of a connected project —
+    /// the kind that autosaves like any modern Mac document.
+    private var isPlainLocalPage: Bool {
+        guard let url = tab.webView.url, url.isFileURL else { return false }
+        if let site = matchedSite, AstroProject.isAstroProject(site.localProjectPath) { return false }
+        return true
+    }
+
+    private func savePlainLocalPage(then completion: (() -> Void)? = nil) {
+        guard let url = tab.webView.url, url.isFileURL else { completion?(); return }
+        tab.currentHTML { html in
+            if let html { try? html.write(to: url, atomically: true, encoding: .utf8) }
+            completion?()
+        }
+    }
+
+    /// Done means done: save, remember the page, leave edit mode.
+    private func finishEditing() {
+        if isPlainLocalPage, let url = tab.webView.url {
+            savePlainLocalPage {
+                PageRegistry.record(url: url.absoluteString, title: tab.title)
+                tab.setEditing(false)
+            }
+        } else {
+            tab.setEditing(false)
+        }
+    }
+
+    private func openLocalPage() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url {
+            tab.navigate(to: url.absoluteString)
+        }
+    }
+
+    private func duplicatePage() {
+        guard let url = tab.webView.url else { return }
+        if let site = matchedSite, AstroProject.isAstroProject(site.localProjectPath) {
+            let rel = site.relativePagePath(for: url)
+            guard let source = ComponentLibrary.pageSource(
+                forRelativePagePath: rel, projectPath: site.localProjectPath
+            ) else { return }
+            let stem = ((source as NSString).lastPathComponent as NSString).deletingPathExtension + "-copy"
+            let destination = ((source as NSString).deletingLastPathComponent as NSString)
+                .appendingPathComponent(stem + ".astro")
+            guard !FileManager.default.fileExists(atPath: destination) else { return }
+            try? FileManager.default.copyItem(atPath: source, toPath: destination)
+            let project = site.localProjectPath
+            let origin = site.origin
+            DispatchQueue.global(qos: .userInitiated).async {
+                _ = try? AstroProject.build(projectPath: project)
+                DispatchQueue.main.async { tab.navigate(to: origin + "/" + stem + ".html") }
+            }
+        } else if url.isFileURL {
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = url.deletingPathExtension().lastPathComponent + " copy.html"
+            panel.directoryURL = url.deletingLastPathComponent()
+            guard panel.runModal() == .OK, var destination = panel.url else { return }
+            if destination.pathExtension.lowercased() != "html" {
+                destination.appendPathExtension("html")
+            }
+            try? FileManager.default.removeItem(at: destination)
+            try? FileManager.default.copyItem(at: url, to: destination)
+            tab.navigate(to: destination.absoluteString)
+        }
     }
 
     @ToolbarContentBuilder
@@ -262,19 +361,44 @@ struct TabContentView: View {
             .fixedSize()
             .help("Preview as Mac or iPhone — same content, both must be excellent")
 
-            if isPageEditable || tab.isEditing {
+            if tab.isEditing {
                 Button {
-                    tab.setEditing(!tab.isEditing)
+                    tab.format("undo")
                 } label: {
-                    Text(tab.isEditing ? "Done" : "Edit")
+                    Image(systemName: "arrow.uturn.backward")
+                }
+                .help("Undo")
+                Button {
+                    tab.format("redo")
+                } label: {
+                    Image(systemName: "arrow.uturn.forward")
+                }
+                .help("Redo")
+                Button {
+                    finishEditing()
+                } label: {
+                    Text("Done")
                         .font(.system(size: 12, weight: .semibold))
                         .padding(.vertical, 4)
                         .padding(.horizontal, 12)
-                        .background(Capsule().fill(tab.isEditing ? Color.accentColor : Color.accentColor.opacity(0.15)))
-                        .foregroundStyle(tab.isEditing ? Color.white : Color.accentColor)
+                        .background(Capsule().fill(Color.accentColor))
+                        .foregroundStyle(Color.white)
                 }
                 .buttonStyle(.plain)
-                .help(tab.isEditing ? "Stop Editing (⌘E)" : "Edit This Page (⌘E)")
+                .help("Done (⌘E) — your changes are saved")
+            } else if isPageEditable {
+                Button {
+                    tab.setEditing(true)
+                } label: {
+                    Text("Edit")
+                        .font(.system(size: 12, weight: .semibold))
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 12)
+                        .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+                        .foregroundStyle(Color.accentColor)
+                }
+                .buttonStyle(.plain)
+                .help("Edit This Page (⌘E)")
             }
 
             Menu {
@@ -319,8 +443,6 @@ struct EditingToolbar: View {
     let connect: () -> Void
 
     @State private var showLinkPopover = false
-    @State private var linkURL = ""
-    @State private var savedFlash = false
     @State private var showThemePanel = false
     @State private var showNewPageSheet = false
     @State private var statusMessage: String?
@@ -405,18 +527,8 @@ struct EditingToolbar: View {
 
             FormatButton(symbol: "link") { showLinkPopover = true }
                 .popover(isPresented: $showLinkPopover, arrowEdge: .bottom) {
-                    HStack {
-                        TextField("https://…", text: $linkURL)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 240)
-                            .onSubmit { addLink() }
-                        Button("Add Link") { addLink() }
-                    }
-                    .padding(10)
+                    LinkPicker(tab: tab, site: site) { showLinkPopover = false }
                 }
-
-            FormatButton(symbol: "arrow.uturn.backward") { tab.format("undo") }
-            FormatButton(symbol: "arrow.uturn.forward") { tab.format("redo") }
 
             if isAstroSite {
                 Divider().frame(height: 16)
@@ -449,24 +561,15 @@ struct EditingToolbar: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            if savedFlash {
-                Text("Saved")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .transition(.opacity)
-            }
-
             if isAstroSite || site != nil {
                 Button("Publish") { publish() }
                     .keyboardShortcut("s", modifiers: .command)
             } else if isLocalFile {
-                Button("Save") { saveLocalFile() }
-                    .keyboardShortcut("s", modifiers: .command)
+                Text("Autosaves")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .help("Local pages save continuously — Done finishes up.")
             }
-
-            Button("Done") { tab.setEditing(false) }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
         }
         .controlSize(.small)
         .padding(.horizontal, 12)
@@ -559,30 +662,123 @@ struct EditingToolbar: View {
         }
     }
 
-    private func addLink() {
-        let url = linkURL.trimmingCharacters(in: .whitespaces)
-        if !url.isEmpty {
-            tab.format("createLink", value: url)
-        }
-        linkURL = ""
-        showLinkPopover = false
+}
+
+// MARK: - Link picker: link targets in proximity order
+
+struct LinkPicker: View {
+    @ObservedObject var tab: Tab
+    let site: Site?
+    let dismiss: () -> Void
+
+    @State private var query = ""
+    @State private var anchors: [String] = []
+
+    private var pageURL: URL? { tab.webView.url }
+    private var siblings: [LinkOption] { LinkSources.siblings(pageURL: pageURL, site: site) }
+    private var yours: [LinkOption] { LinkSources.yourPages(excluding: pageURL) }
+
+    private func matches(_ label: String) -> Bool {
+        query.isEmpty || label.localizedCaseInsensitiveContains(query)
     }
 
-    private func saveLocalFile() {
-        guard let url = tab.webView.url, url.isFileURL else { return }
-        tab.currentHTML { html in
-            guard let html else { return }
-            do {
-                try html.write(to: url, atomically: true, encoding: .utf8)
-                statusMessage = nil
-                withAnimation { savedFlash = true }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                    withAnimation { savedFlash = false }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Type to filter, or paste any URL", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { apply(LinkSources.normalize(query)) }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    let anchorItems = Array(anchors.enumerated()).filter { matches($0.element) }
+                    if !anchorItems.isEmpty {
+                        sectionHeader("On This Page")
+                        ForEach(anchorItems, id: \.offset) { item in
+                            row(label: item.element, detail: "section", symbol: "number") {
+                                tab.anchorHref(at: item.offset) { href in apply(href) }
+                            }
+                        }
+                    }
+                    let sib = siblings.filter { matches($0.label) }
+                    if !sib.isEmpty {
+                        sectionHeader(site != nil ? "On This Site" : "In This Folder")
+                        ForEach(sib) { option in
+                            row(label: option.label, detail: option.href, symbol: "doc.text") {
+                                apply(option.href)
+                            }
+                        }
+                    }
+                    let mine = yours.filter { matches($0.label) }
+                    if !mine.isEmpty {
+                        sectionHeader("Your Pages")
+                        ForEach(mine) { option in
+                            row(label: option.label, detail: option.href, symbol: "globe") {
+                                apply(option.href)
+                            }
+                        }
+                    }
+                    if anchorItems.isEmpty, sib.isEmpty, mine.isEmpty {
+                        Text(query.isEmpty
+                             ? "No link targets yet — paste a URL above."
+                             : "No matches — press return to link to “\(query)”.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 6)
+                    }
                 }
-            } catch {
-                statusMessage = "Couldn’t save: \(error.localizedDescription)"
+            }
+            .frame(maxHeight: 280)
+
+            HStack {
+                Spacer()
+                Button("Link") { apply(LinkSources.normalize(query)) }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(query.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
+        .padding(12)
+        .frame(width: 360)
+        .onAppear { tab.pageAnchors { anchors = $0 } }
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
+            .padding(.top, 6)
+    }
+
+    private func row(label: String, detail: String, symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: symbol)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 16)
+                Text(label)
+                    .lineLimit(1)
+                Spacer(minLength: 12)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 130, alignment: .trailing)
+            }
+            .padding(.vertical, 4)
+            .padding(.horizontal, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func apply(_ href: String) {
+        let value = href.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return }
+        tab.format("createLink", value: value)
+        dismiss()
     }
 }
 
@@ -802,6 +998,7 @@ struct NewPageSheet: View {
                 _ = try AstroProject.build(projectPath: site.localProjectPath)
                 DispatchQueue.main.async {
                     isCreating = false
+                    PageRegistry.record(url: site.origin + rel, title: pageTitle)
                     tab.navigate(to: site.origin + rel)
                     dismiss()
                 }
@@ -1077,6 +1274,9 @@ struct PublishSheet: View {
                     DispatchQueue.main.async {
                         isPublishing = false
                         successMessage = "Published."
+                        if let pageURL = tab.webView.url {
+                            PageRegistry.record(url: pageURL.absoluteString, title: tab.title)
+                        }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { dismiss() }
                     }
                 } catch {
@@ -1141,6 +1341,9 @@ struct PublishSheet: View {
                     DispatchQueue.main.async {
                         isPublishing = false
                         successMessage = summary
+                        if let pageURL = tab.webView.url {
+                            PageRegistry.record(url: pageURL.absoluteString, title: tab.title)
+                        }
                         tab.setEditing(false)
                         tab.webView.reload()
                         if result.skipped.isEmpty {

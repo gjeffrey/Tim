@@ -112,6 +112,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     /// so media queries and UA-sniffing sites both behave as on the phone.
     public func setMobilePreview(_ mobile: Bool) {
         isMobilePreview = mobile
+        // While editing, only the viewport changes — media queries respond
+        // instantly and the edit session survives. The UA swap and reload
+        // happen only while browsing.
+        guard !isEditing else { return }
         webView.customUserAgent = mobile
             ? "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1"
             : nil
@@ -121,6 +125,24 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
             loadStartPage()
         } else {
             webView.reload()
+        }
+    }
+
+    /// Headings and titled text objects on the page — link targets.
+    public func pageAnchors(_ completion: @escaping ([String]) -> Void) {
+        webView.evaluateJavaScript("window.__timAnchorList ? window.__timAnchorList() : '[]'") { result, _ in
+            guard let json = result as? String,
+                  let data = json.data(using: .utf8),
+                  let array = try? JSONSerialization.jsonObject(with: data) as? [String]
+            else { completion([]); return }
+            completion(array)
+        }
+    }
+
+    /// Ensures the indexed anchor has an id and returns its "#id" href.
+    public func anchorHref(at index: Int, _ completion: @escaping (String) -> Void) {
+        webView.evaluateJavaScript("window.__timAnchorHref ? window.__timAnchorHref(\(index)) : ''") { result, _ in
+            completion(result as? String ?? "")
         }
     }
 
@@ -255,7 +277,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       if (!doc.querySelector('style[data-tim-styles]')) {
         var st = doc.createElement('style');
         st.setAttribute('data-tim-styles', '');
-        st.textContent = '.tim-canvas{display:grid;grid-template-columns:repeat(24,1fr);grid-auto-rows:minmax(32px,auto);gap:16px;align-items:stretch;box-sizing:border-box;width:100vw;margin-left:calc(50% - 50vw);margin-right:calc(50% - 50vw);padding:48px max(32px,calc(50vw - 660px));min-height:70vh}' +
+        st.textContent = '.tim-canvas{display:grid;grid-template-columns:repeat(24,1fr);grid-auto-rows:32px;gap:16px;align-items:stretch;box-sizing:border-box;width:100vw;margin-left:calc(50% - 50vw);margin-right:calc(50% - 50vw);padding:48px max(32px,calc(50vw - 660px));min-height:70vh}' +
           '.tim-object{min-width:0}' +
           '.tim-text{min-height:1em;outline:none;padding:2px 4px}' +
           'html.tim-editing .tim-object{cursor:grab}' +
@@ -303,6 +325,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         return { x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height };
       }
       function isObject(el) { return !!(el && el.classList && el.classList.contains('tim-object')); }
+      // In the collapsed (mobile) layout, placement is automatic — objects
+      // can be selected and their text edited, but not moved or resized.
+      function collapsed() { return window.innerWidth <= 700; }
       function canvasFor(el) { return el && el.closest ? el.closest('[data-tim-canvas]') : null; }
       function stopTextEditing() {
         if (editingEl) { editingEl.removeAttribute('contenteditable'); editingEl = null; }
@@ -337,6 +362,22 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         rs = Math.max(1, rs);
         el.style.gridArea = rs + ' / ' + cs + ' / ' + (rs + rh) + ' / ' + (cs + cw);
       }
+      // Rows are fixed height, so text boxes grow by extending their row
+      // span to fit content — geometry stays deterministic while dragging.
+      function fitSpan(el) {
+        if (!el || !el.classList || !el.classList.contains('tim-text')) { return; }
+        var canvas = canvasFor(el);
+        var p = placement(el);
+        if (!canvas || !p || collapsed()) { return; }
+        var g = gridInfo(canvas);
+        var unit = g.rowH + g.rowGap;
+        var needed = Math.max(1, Math.ceil((el.scrollHeight + g.rowGap) / unit));
+        if (p.re - p.rs < needed) {
+          setArea(el, p.rs, p.cs, p.rs + needed, p.ce);
+          layout();
+        }
+      }
+
       function resort(canvas) {
         var objs = Array.prototype.slice.call(canvas.children).filter(isObject);
         objs.sort(function (a, b) {
@@ -380,7 +421,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           badge.textContent = (p ? '✥ ' : '') + sel.tagName.toLowerCase() +
             (p ? ' · ' + (p.ce - p.cs) + '×' + (p.re - p.rs) + ' cells' : '');
         }
-        var resizable = isObject(sel) && canvasFor(sel) && placement(sel);
+        var resizable = isObject(sel) && canvasFor(sel) && placement(sel) && !collapsed();
         for (var k in handles) { handles[k].style.display = resizable ? 'block' : 'none'; }
         if (resizable) {
           handles.w.style.left = (r.x - 5) + 'px';
@@ -395,6 +436,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       }
 
       function onDown(e) {
+        if (collapsed()) { return; }
         var k = e.target && e.target.getAttribute ? e.target.getAttribute('data-tim-handle') : null;
         if (k && sel && isObject(sel)) {
           var canvas = canvasFor(sel);
@@ -455,6 +497,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         var moved = drag.moved;
         drag = null;
         hideGrid();
+        if (sel) { fitSpan(sel); }
         if (moved) { resort(canvas); }
         layout();
       }
@@ -548,6 +591,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       doc.addEventListener('mouseup', onUp, true);
       doc.addEventListener('mouseover', onOver, true);
       doc.addEventListener('keydown', onKey, true);
+      doc.addEventListener('input', function () {
+        if (editingEl) { fitSpan(editingEl); }
+      }, true);
       window.addEventListener('scroll', layout, true);
       window.addEventListener('resize', layout);
 
@@ -574,8 +620,33 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         canvas.appendChild(el);
         stopTextEditing();
         sel = el;
+        fitSpan(el);
         layout();
         el.scrollIntoView({ block: 'nearest' });
+      };
+
+      var anchorSelector = 'h1,h2,h3,h4,h5,h6,.tim-style-title,.tim-style-heading,.tim-style-subheading';
+      window.__timAnchorList = function () {
+        var els = doc.querySelectorAll(anchorSelector);
+        var out = [];
+        for (var i = 0; i < els.length; i++) {
+          var t = (els[i].textContent || '').trim();
+          out.push(t.slice(0, 80) || '(untitled)');
+        }
+        return JSON.stringify(out);
+      };
+      window.__timAnchorHref = function (index) {
+        var els = doc.querySelectorAll(anchorSelector);
+        var el = els[index];
+        if (!el) { return ''; }
+        if (!el.id) {
+          var slug = (el.textContent || 'section').trim().toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'section';
+          var id = slug, n = 2;
+          while (doc.getElementById(id)) { id = slug + '-' + n; n++; }
+          el.id = id;
+        }
+        return '#' + el.id;
       };
 
       window.__timApplyStyle = function (cls) {

@@ -117,7 +117,7 @@ public enum ThemeManager {
         .tim-canvas {
           display: grid;
           grid-template-columns: repeat(24, 1fr);
-          grid-auto-rows: minmax(32px, auto);
+          grid-auto-rows: 32px;
           gap: 16px;
           align-items: stretch;
           box-sizing: border-box;
