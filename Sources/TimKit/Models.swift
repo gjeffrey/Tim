@@ -285,6 +285,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           'html.tim-editing .tim-object:active{cursor:grabbing}' +
           '.tim-canvas img.tim-object{width:100%;height:100%;object-fit:cover;display:block}' +
           '.tim-canvas video.tim-object{width:100%;display:block}' +
+          '.tim-canvas audio.tim-object{width:100%}' +
           '@media (max-width:700px){.tim-canvas{grid-template-columns:1fr;grid-auto-rows:auto;padding:24px 16px;min-height:0}.tim-canvas>.tim-object{grid-area:auto !important}}' +
           '.tim-style-title{font-family:var(--tim-font-heading,inherit);font-size:2.5rem;font-weight:700;line-height:1.15}' +
           '.tim-style-heading{font-family:var(--tim-font-heading,inherit);font-size:1.6rem;font-weight:700;line-height:1.25}' +

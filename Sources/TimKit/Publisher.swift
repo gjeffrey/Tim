@@ -111,6 +111,14 @@ public enum SFTP {
         )
     }
 
+    /// Uploads one file into a remote directory, creating it if needed.
+    public static func uploadFile(localPath: String, toDirectory remoteDir: String, named name: String, host: String, username: String, port: String) throws -> String {
+        try run(
+            batch: "-mkdir \"\(remoteDir)\"\nput \"\(localPath)\" \"\(remoteDir)/\(name)\"\n",
+            host: host, username: username, port: port
+        )
+    }
+
     /// Pulls the remote site down into the local mirror.
     public static func downloadDirectory(remoteRoot: String, to local: String, host: String, username: String, port: String) throws -> String {
         try FileManager.default.createDirectory(atPath: local, withIntermediateDirectories: true)

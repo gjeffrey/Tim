@@ -231,16 +231,94 @@ struct TabContentView: View {
         }
     }
 
-    /// Done means done: save, remember the page, leave edit mode.
+    /// Done means done: local pages save, site pages publish. One action.
     private func finishEditing() {
-        if isPlainLocalPage, let url = tab.webView.url {
+        guard let url = tab.webView.url else { tab.setEditing(false); return }
+
+        if isPlainLocalPage {
             savePlainLocalPage {
                 PageRegistry.record(url: url.absoluteString, title: tab.title)
                 tab.setEditing(false)
             }
-        } else {
-            tab.setEditing(false)
+            return
         }
+
+        guard let matched = matchedSite else { tab.setEditing(false); return }
+        let site = ensureWorkspace(matched)
+
+        if AstroProject.isAstroProject(site.localProjectPath) {
+            // Done = sync canvas + text edits to source, build, deploy.
+            tab.canvasHTML { canvas in
+                tab.collectEdits { edits in
+                    tab.setEditing(false)
+                    let pagePath = ComponentLibrary.pageSource(
+                        forRelativePagePath: site.relativePagePath(for: url),
+                        projectPath: site.localProjectPath
+                    )
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        do {
+                            if !canvas.isEmpty, let pagePath {
+                                _ = try? AstroProject.replaceCanvas(inPageSource: pagePath, with: canvas)
+                            }
+                            _ = AstroProject.applyEdits(edits, projectPath: site.localProjectPath)
+                            _ = try AstroProject.build(projectPath: site.localProjectPath)
+                            let dist = AstroProject.distPath(site.localProjectPath)
+                            switch site.target {
+                            case .cloudflare:
+                                _ = try CloudflarePublisher.deploy(folder: dist, projectName: site.cfProjectName)
+                            case .githubPages:
+                                _ = try GitHubPagesPublisher.publish(repo: site.localProjectPath, message: "Edit with Tim")
+                            case .sftp:
+                                _ = try SFTP.uploadDirectory(
+                                    local: dist, host: site.host, username: site.username,
+                                    port: site.port, remoteRoot: site.remoteRoot
+                                )
+                            }
+                            DispatchQueue.main.async {
+                                PageRegistry.record(url: url.absoluteString, title: tab.title)
+                                tab.webView.reload()
+                            }
+                        } catch {
+                            DispatchQueue.main.async { publishAlert(error) }
+                        }
+                    }
+                }
+            }
+            return
+        }
+
+        // Plain site page: Done publishes this page.
+        tab.currentHTML { html in
+            tab.setEditing(false)
+            guard let html else { return }
+            let rel = site.relativePagePath(for: url)
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try PageWriter.write(html: html, folder: site.localProjectPath, relativePath: rel)
+                    switch site.target {
+                    case .sftp:
+                        let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
+                        _ = try SFTP.upload(html: html, to: root + rel, host: site.host, username: site.username, port: site.port)
+                    case .cloudflare:
+                        _ = try CloudflarePublisher.deploy(folder: site.localProjectPath, projectName: site.cfProjectName)
+                    case .githubPages:
+                        _ = try GitHubPagesPublisher.publish(repo: site.localProjectPath, message: "Edit \(rel) with Tim")
+                    }
+                    DispatchQueue.main.async {
+                        PageRegistry.record(url: url.absoluteString, title: tab.title)
+                    }
+                } catch {
+                    DispatchQueue.main.async { publishAlert(error) }
+                }
+            }
+        }
+    }
+
+    private func publishAlert(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Publish"
+        alert.informativeText = error.localizedDescription
+        alert.runModal()
     }
 
     /// Makes sure a site has its local mirror, persisting the default.
@@ -542,6 +620,7 @@ struct EditingToolbar: View {
     let site: Site?
     let publish: () -> Void
     let connect: () -> Void
+    @EnvironmentObject var siteStore: SiteStore
 
     @State private var showLinkPopover = false
     @State private var showThemePanel = false
@@ -568,14 +647,9 @@ struct EditingToolbar: View {
                         Label("Text Box", systemImage: "character.textbox")
                     }
                     Button {
-                        insertMedia(video: false)
+                        insertMedia()
                     } label: {
-                        Label("Image…", systemImage: "photo")
-                    }
-                    Button {
-                        insertMedia(video: true)
-                    } label: {
-                        Label("Video…", systemImage: "video")
+                        Label("Media…", systemImage: "photo.on.rectangle.angled")
                     }
                 }
                 if isAstroSite {
@@ -662,9 +736,11 @@ struct EditingToolbar: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            if isAstroSite || site != nil {
-                Button("Publish") { publish() }
-                    .keyboardShortcut("s", modifiers: .command)
+            if site != nil {
+                Text("Done publishes")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .help("Done syncs your edits to the site and publishes them.")
             } else if isLocalFile {
                 Text("Autosaves")
                     .font(.caption2)
@@ -681,56 +757,101 @@ struct EditingToolbar: View {
         }
     }
 
-    /// Copies a chosen image/video into the site (public/media + dist/media)
-    /// or beside a local page, then inserts it as a canvas object.
-    private func insertMedia(video: Bool) {
+    /// One Media command: pick any file — images, video, and audio embed
+    /// as their native elements; anything else becomes a linked file. The
+    /// file lands in the site's mirror (media/) and is pushed to the
+    /// site's target, or saved beside a local page.
+    private func insertMedia() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let fileURL = panel.url else { return }
-
         let name = fileURL.lastPathComponent
-        var src: String?
-        do {
-            if let site, isAstroSite {
-                let project = site.localProjectPath
-                for folder in ["public/media", "dist/media"] {
-                    let dir = (project as NSString).appendingPathComponent(folder)
-                    try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-                    let dest = (dir as NSString).appendingPathComponent(name)
-                    if FileManager.default.fileExists(atPath: dest) {
-                        try FileManager.default.removeItem(atPath: dest)
-                    }
-                    try FileManager.default.copyItem(atPath: fileURL.path, toPath: dest)
-                }
-                src = "media/\(name)"
-            } else if let pageURL = tab.webView.url, pageURL.isFileURL {
-                let dest = pageURL.deletingLastPathComponent().appendingPathComponent(name)
-                if FileManager.default.fileExists(atPath: dest.path) {
-                    try FileManager.default.removeItem(at: dest)
-                }
-                try FileManager.default.copyItem(at: fileURL, to: dest)
-                src = name
-            } else {
-                statusMessage = "Media needs a connected site or a local page to live in."
-                return
-            }
-        } catch {
-            statusMessage = "Couldn’t copy \(name): \(error.localizedDescription)"
-            return
-        }
+        let kind = MediaKind.of(fileExtension: fileURL.pathExtension)
 
-        guard let src else { return }
-        if video {
-            tab.insertObject(
-                html: #"<video class="tim-object" controls src="\#(src)"></video>"#,
-                colSpan: 12, rowSpan: 8
-            )
-        } else {
-            tab.insertObject(
-                html: #"<img class="tim-object" src="\#(src)" alt="" />"#,
-                colSpan: 8, rowSpan: 8
-            )
+        // Resolve the mirror on the main thread (may persist a default).
+        var resolvedSite = site
+        if var s = resolvedSite {
+            if s.localProjectPath.isEmpty {
+                s.localProjectPath = SiteWorkspace.defaultFolder(for: s.name.isEmpty ? s.origin : s.name)
+                siteStore.upsert(s)
+            }
+            SiteWorkspace.ensure(s.localProjectPath)
+            resolvedSite = s
+        }
+        let pageURL = tab.webView.url
+        isWorking = true
+        statusMessage = "Adding \(name)…"
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let src = try Self.stage(fileURL: fileURL, site: resolvedSite, pageURL: pageURL)
+                DispatchQueue.main.async {
+                    isWorking = false
+                    statusMessage = nil
+                    insertStaged(kind: kind, src: src, name: name)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    isWorking = false
+                    statusMessage = "Couldn’t add \(name): \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private static func stage(fileURL: URL, site: Site?, pageURL: URL?) throws -> String {
+        let fm = FileManager.default
+        let name = fileURL.lastPathComponent
+        if let site, !site.localProjectPath.isEmpty {
+            if AstroProject.isAstroProject(site.localProjectPath) {
+                for folder in ["public/media", "dist/media"] {
+                    let dir = (site.localProjectPath as NSString).appendingPathComponent(folder)
+                    try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                    let dest = (dir as NSString).appendingPathComponent(name)
+                    if fm.fileExists(atPath: dest) { try fm.removeItem(atPath: dest) }
+                    try fm.copyItem(atPath: fileURL.path, toPath: dest)
+                }
+                return "media/\(name)"
+            }
+            let mediaDir = (site.localProjectPath as NSString).appendingPathComponent("media")
+            try fm.createDirectory(atPath: mediaDir, withIntermediateDirectories: true)
+            let dest = (mediaDir as NSString).appendingPathComponent(name)
+            if fm.fileExists(atPath: dest) { try fm.removeItem(atPath: dest) }
+            try fm.copyItem(atPath: fileURL.path, toPath: dest)
+            switch site.target {
+            case .sftp:
+                let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
+                _ = try SFTP.uploadFile(
+                    localPath: dest, toDirectory: root + "/media", named: name,
+                    host: site.host, username: site.username, port: site.port
+                )
+            case .cloudflare:
+                _ = try CloudflarePublisher.deploy(folder: site.localProjectPath, projectName: site.cfProjectName)
+            case .githubPages:
+                _ = try GitHubPagesPublisher.publish(repo: site.localProjectPath, message: "Add media \(name)")
+            }
+            return "/media/\(name)"
+        }
+        if let pageURL, pageURL.isFileURL {
+            let dest = pageURL.deletingLastPathComponent().appendingPathComponent(name)
+            if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
+            try fm.copyItem(at: fileURL, to: dest)
+            return name
+        }
+        throw PublishError.failed("Media needs a connected site or a local page to live in.")
+    }
+
+    private func insertStaged(kind: MediaKind, src: String, name: String) {
+        switch kind {
+        case .image:
+            tab.insertObject(html: #"<img class="tim-object" src="\#(src)" alt="" />"#, colSpan: 8, rowSpan: 8)
+        case .video:
+            tab.insertObject(html: #"<video class="tim-object" controls src="\#(src)"></video>"#, colSpan: 12, rowSpan: 8)
+        case .audio:
+            tab.insertObject(html: #"<audio class="tim-object" controls src="\#(src)"></audio>"#, colSpan: 8, rowSpan: 2)
+        case .file:
+            tab.insertObject(html: "<div class=\"tim-object tim-text tim-style-body\"><a href=\"\(src)\">\(name)</a></div>", colSpan: 6, rowSpan: 2)
         }
     }
 

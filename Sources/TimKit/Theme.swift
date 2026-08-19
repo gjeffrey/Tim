@@ -133,6 +133,7 @@ public enum ThemeManager {
         .tim-text { min-height: 1em; outline: none; padding: 2px 4px; }
         .tim-canvas img.tim-object { width: 100%; height: 100%; object-fit: cover; display: block; }
         .tim-canvas video.tim-object { width: 100%; display: block; }
+        .tim-canvas audio.tim-object { width: 100%; }
         @media (max-width: 700px) {
           .tim-canvas { grid-template-columns: 1fr; grid-auto-rows: auto; padding: 24px 16px; min-height: 0; }
           .tim-canvas > .tim-object { grid-area: auto !important; }
