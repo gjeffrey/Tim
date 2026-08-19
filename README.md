@@ -118,6 +118,16 @@ hit Publish: Tim patches the `.astro` source, rebuilds, and reloads.
 
 ## Run it
 
+The real way — a proper app bundle with an icon, running with its own
+permissions (file access prompts work correctly):
+
+```bash
+./Scripts/make-app.sh && open Tim.app
+```
+
+The quick way (note: if launched from a sandboxed shell, the app inherits
+that sandbox and file dialogs/saves outside the project may silently fail):
+
 ```bash
 swift run Tim
 ```

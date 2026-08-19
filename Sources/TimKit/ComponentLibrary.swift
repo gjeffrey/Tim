@@ -116,8 +116,8 @@ public enum ComponentLibrary {
         // page; the web has no pagination to fight.
         let body = """
           <div class="tim-canvas" data-tim-canvas>
-            <div class="tim-object tim-text tim-style-title" style="grid-area: 2 / 2 / 5 / 20;">\(title)</div>
-            <div class="tim-object tim-text tim-style-body" style="grid-area: 5 / 2 / 9 / 16;">Write something true.</div>
+            <div class="tim-object tim-text tim-style-title" style="grid-area: 1 / 1 / 3 / 19;">\(title)</div>
+            <div class="tim-object tim-text tim-style-body" style="grid-area: 3 / 1 / 6 / 15;">Write something true.</div>
           </div>
         """
         _ = layoutPage

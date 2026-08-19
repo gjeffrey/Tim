@@ -1,6 +1,8 @@
 .build/
 .swiftpm/
 .DS_Store
+Tim.app/
+Design/AppIcon.iconset/
 node_modules/
 Examples/astro-site/dist/
 Examples/astro-site/.astro/

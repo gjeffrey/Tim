@@ -52,8 +52,8 @@ public enum LocalPage {
         </head>
         <body>
         <div class="tim-canvas" data-tim-canvas>
-          <div class="tim-object tim-text tim-style-title" style="grid-area: 2 / 2 / 5 / 18;">\(title)</div>
-          <div class="tim-object tim-text tim-style-body" style="grid-area: 5 / 2 / 9 / 14;">Double-click any text to edit it. Drag objects to move them — everything snaps to the grid. Insert adds text boxes, images, and video. Save writes this file.</div>
+          <div class="tim-object tim-text tim-style-title" style="grid-area: 1 / 1 / 3 / 17;">\(title)</div>
+          <div class="tim-object tim-text tim-style-body" style="grid-area: 3 / 1 / 6 / 13;">Double-click any text to edit it. Drag objects to move them — everything snaps to the grid. Insert adds text boxes, images, and video. Save writes this file.</div>
         </div>
         </body>
         </html>

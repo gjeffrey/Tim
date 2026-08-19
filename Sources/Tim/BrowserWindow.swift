@@ -512,7 +512,7 @@ struct EditingToolbar: View {
                 return
             }
         } catch {
-            statusMessage = error.localizedDescription
+            statusMessage = "Couldn’t copy \(name): \(error.localizedDescription)"
             return
         }
 
