@@ -123,6 +123,7 @@ struct SiteSection: View {
 
     @State private var pages: [LinkOption] = []
     @State private var versions: [SiteWorkspace.PageVersion] = []
+    @State private var showNewPage = false
 
     private var site: Site? { siteStore.match(URL(string: tab.urlString)) }
     private var currentRel: String? {
@@ -166,6 +167,19 @@ struct SiteSection: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                }
+
+                Button {
+                    showNewPage = true
+                } label: {
+                    Label("New Page…", systemImage: "plus")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+                .sheet(isPresented: $showNewPage) {
+                    NewPageSheet(site: site, tab: tab)
                 }
 
                 if versions.count > 1 {
