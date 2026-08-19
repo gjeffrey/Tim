@@ -72,6 +72,41 @@ public enum AstroProject {
         return result
     }
 
+    /// Replaces the page's canvas block with the live serialized canvas.
+    /// Tim owns everything inside [data-tim-canvas], so this round trip is
+    /// wholesale and lossless — moves, resizes, inserts, deletes, text.
+    @discardableResult
+    public static func replaceCanvas(inPageSource pagePath: String, with canvasHTML: String) throws -> Bool {
+        guard !canvasHTML.isEmpty else { return false }
+        let source = try String(contentsOfFile: pagePath, encoding: .utf8)
+        guard let attr = source.range(of: "data-tim-canvas"),
+              let open = source.range(of: "<div", options: .backwards, range: source.startIndex..<attr.lowerBound)
+        else { return false }
+
+        var depth = 0
+        var index = open.lowerBound
+        var end: String.Index?
+        while index < source.endIndex {
+            if source[index...].hasPrefix("<div") {
+                depth += 1
+                index = source.index(index, offsetBy: 4)
+            } else if source[index...].hasPrefix("</div>") {
+                depth -= 1
+                index = source.index(index, offsetBy: 6)
+                if depth == 0 { end = index; break }
+            } else {
+                index = source.index(after: index)
+            }
+        }
+        guard let end else { return false }
+
+        var updated = source
+        updated.replaceSubrange(open.lowerBound..<end, with: canvasHTML)
+        guard updated != source else { return false }
+        try updated.write(toFile: pagePath, atomically: true, encoding: .utf8)
+        return true
+    }
+
     #if os(macOS)
     /// `npm install` if needed, then `npm run build`.
     public static func build(projectPath: String) throws -> String {

@@ -93,9 +93,11 @@ public enum ComponentLibrary {
         try source.write(toFile: pagePath, atomically: true, encoding: .utf8)
     }
 
-    /// Creates a new page from the site's own layout (its master slide).
+    /// Creates a new page from the site's own layout. `layoutPage: true`
+    /// makes a canvas page (Pages' layout mode: no body text flow, free
+    /// object placement); false makes a text page.
     /// Returns the built page's site-relative path.
-    public static func createPage(slug: String, title: String, projectPath: String) throws -> String {
+    public static func createPage(slug: String, title: String, projectPath: String, layoutPage: Bool = false) throws -> String {
         let cleanSlug = slug
             .lowercased()
             .replacingOccurrences(of: " ", with: "-")
@@ -109,6 +111,20 @@ public enum ComponentLibrary {
             .filter { $0.hasSuffix(".astro") }.sorted().first
         let layoutName = layoutFile.map { ($0 as NSString).deletingPathExtension }
 
+        // Pages' insight: a layout page is just a page without the default
+        // body text flow — a canvas you place objects on. The starter text
+        // box is deletable like any object.
+        let textBody = """
+          <h1>\(title)</h1>
+          <p>Write something true.</p>
+        """
+        let canvasBody = """
+          <div class="tim-canvas" data-tim-canvas style="min-height: 70vh;">
+            <div class="tim-object tim-text tim-style-title" style="left: 8%; top: 48px; width: 60%;">\(title)</div>
+          </div>
+        """
+        let body = layoutPage ? canvasBody : textBody
+
         let source: String
         if let layoutName {
             source = """
@@ -116,8 +132,7 @@ public enum ComponentLibrary {
             import \(layoutName) from '../layouts/\(layoutName).astro';
             ---
             <\(layoutName) title="\(title)">
-              <h1>\(title)</h1>
-              <p>Write something true.</p>
+            \(body)
             </\(layoutName)>
             """
         } else {
@@ -125,8 +140,7 @@ public enum ComponentLibrary {
             <html>
               <head><title>\(title)</title></head>
               <body>
-                <h1>\(title)</h1>
-                <p>Write something true.</p>
+            \(body)
               </body>
             </html>
             """

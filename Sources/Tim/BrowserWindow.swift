@@ -297,7 +297,7 @@ struct EditingToolbar: View {
                 set: { tab.setArranging($0 == 1) }
             )) {
                 Text("Text").tag(0)
-                Text("Arrange").tag(1)
+                Text("Layout").tag(1)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -306,14 +306,42 @@ struct EditingToolbar: View {
             Divider().frame(height: 16)
 
             if tab.isArranging {
-                Text("Click to select · drag handles to resize · edges snap to siblings and ¼ ⅓ ½ ⅔ ¾ full")
+                Button {
+                    tab.insertObject(html: """
+                    <div class="tim-object tim-text tim-style-body" style="left: 8%; width: 38%;">Double-click to edit</div>
+                    """)
+                } label: {
+                    Label("Text Box", systemImage: "character.textbox")
+                }
+                Button {
+                    insertMedia(video: false)
+                } label: {
+                    Label("Image…", systemImage: "photo")
+                }
+                Button {
+                    insertMedia(video: true)
+                } label: {
+                    Label("Video…", systemImage: "video")
+                }
+
+                Divider().frame(height: 16)
+
+                Menu {
+                    Button("Title") { tab.applyTextStyle("tim-style-title") }
+                    Button("Heading") { tab.applyTextStyle("tim-style-heading") }
+                    Button("Subheading") { tab.applyTextStyle("tim-style-subheading") }
+                    Button("Body") { tab.applyTextStyle("tim-style-body") }
+                    Button("Caption") { tab.applyTextStyle("tim-style-caption") }
+                    Divider()
+                    Button("Clear Style") { tab.applyTextStyle("") }
+                } label: {
+                    Label("Styles", systemImage: "textformat.alt")
+                }
+                .fixedSize()
+
+                Text("drag to move · double-click text to edit · ⌫ deletes")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if isAstroSite {
-                    Text("(layout changes are preview-only on Astro sites until v0.4)")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
             } else {
                 Menu {
                     Button("Title") { tab.format("formatBlock", value: "h1") }
@@ -435,6 +463,57 @@ struct EditingToolbar: View {
         .background(Color.accentColor.opacity(0.08))
         .sheet(isPresented: $showNewPageSheet) {
             NewPageSheet(site: site, tab: tab)
+        }
+    }
+
+    /// Copies a chosen image/video into the site (public/media + dist/media)
+    /// or beside a local page, then inserts it as a canvas object.
+    private func insertMedia(video: Bool) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let fileURL = panel.url else { return }
+
+        let name = fileURL.lastPathComponent
+        var src: String?
+        do {
+            if let site, isAstroSite {
+                let project = site.localProjectPath
+                for folder in ["public/media", "dist/media"] {
+                    let dir = (project as NSString).appendingPathComponent(folder)
+                    try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                    let dest = (dir as NSString).appendingPathComponent(name)
+                    if FileManager.default.fileExists(atPath: dest) {
+                        try FileManager.default.removeItem(atPath: dest)
+                    }
+                    try FileManager.default.copyItem(atPath: fileURL.path, toPath: dest)
+                }
+                src = "media/\(name)"
+            } else if let pageURL = tab.webView.url, pageURL.isFileURL {
+                let dest = pageURL.deletingLastPathComponent().appendingPathComponent(name)
+                if FileManager.default.fileExists(atPath: dest.path) {
+                    try FileManager.default.removeItem(at: dest)
+                }
+                try FileManager.default.copyItem(at: fileURL, to: dest)
+                src = name
+            } else {
+                statusMessage = "Media needs a connected site or a local page to live in."
+                return
+            }
+        } catch {
+            statusMessage = error.localizedDescription
+            return
+        }
+
+        guard let src else { return }
+        if video {
+            tab.insertObject(html: """
+            <video class="tim-object" controls src="\(src)" style="left: 8%; width: 48%;"></video>
+            """)
+        } else {
+            tab.insertObject(html: """
+            <img class="tim-object" src="\(src)" style="left: 8%; width: 40%;" alt="" />
+            """)
         }
     }
 
@@ -653,6 +732,7 @@ struct NewPageSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var title = ""
+    @State private var isLayoutPage = true
     @State private var isCreating = false
     @State private var errorMessage: String?
 
@@ -664,6 +744,20 @@ struct NewPageSheet: View {
             TextField("Page title", text: $title)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { create() }
+
+            Picker("", selection: $isLayoutPage) {
+                Text("Layout").tag(true)
+                Text("Text").tag(false)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            Text(isLayoutPage
+                 ? "A canvas page: place and move text boxes, images, and video freely — boxes grow downward as needed."
+                 : "A text page: a flowing document, like a plain article.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             Text("Creates src/pages/\(slug.isEmpty ? "…" : slug).astro from your site's layout, builds, and opens it.")
                 .font(.caption)
@@ -704,7 +798,8 @@ struct NewPageSheet: View {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 let rel = try ComponentLibrary.createPage(
-                    slug: slug, title: pageTitle, projectPath: site.localProjectPath
+                    slug: slug, title: pageTitle, projectPath: site.localProjectPath,
+                    layoutPage: isLayoutPage
                 )
                 _ = try AstroProject.build(projectPath: site.localProjectPath)
                 DispatchQueue.main.async {
@@ -1002,16 +1097,26 @@ struct PublishSheet: View {
             return
         }
         let deploy = deployAfterBuild
+        let pageSourcePath: String? = tab.webView.url.flatMap { url in
+            ComponentLibrary.pageSource(
+                forRelativePagePath: site.relativePagePath(for: url),
+                projectPath: site.localProjectPath
+            )
+        }
+        tab.canvasHTML { canvas in
         tab.collectEdits { edits in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
+                    var parts: [String] = []
+                    if !canvas.isEmpty, let pageSourcePath,
+                       (try? AstroProject.replaceCanvas(inPageSource: pageSourcePath, with: canvas)) == true {
+                        parts.append("canvas synced to source")
+                    }
                     let result = AstroProject.applyEdits(edits, projectPath: site.localProjectPath)
                     _ = try AstroProject.build(projectPath: site.localProjectPath)
 
-                    var parts = [
-                        "\(result.applied.count) text edit\(result.applied.count == 1 ? "" : "s") written to source",
-                        "site rebuilt"
-                    ]
+                    parts.append("\(result.applied.count) text edit\(result.applied.count == 1 ? "" : "s") written to source")
+                    parts.append("site rebuilt")
                     if deploy {
                         let dist = AstroProject.distPath(site.localProjectPath)
                         switch site.target {
@@ -1051,6 +1156,7 @@ struct PublishSheet: View {
                     }
                 }
             }
+        }
         }
     }
 }

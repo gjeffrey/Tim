@@ -108,6 +108,18 @@ public enum ThemeManager {
         body { font-family: var(--tim-font-body); }
         h1, h2, h3, h4, h5, h6 { font-family: var(--tim-font-heading); }
         a { color: var(--tim-accent); }
+
+        /* Canvas layout (Tim's Keynote layer) */
+        .tim-canvas { position: relative; }
+        .tim-object { position: absolute; box-sizing: border-box; margin: 0; }
+        .tim-text { min-height: 1em; outline: none; }
+
+        /* Global text styles — restyle these here, every page follows. */
+        .tim-style-title { font-family: var(--tim-font-heading); font-size: 2.5rem; font-weight: 700; line-height: 1.15; }
+        .tim-style-heading { font-family: var(--tim-font-heading); font-size: 1.6rem; font-weight: 700; line-height: 1.25; }
+        .tim-style-subheading { font-family: var(--tim-font-heading); font-size: 1.25rem; font-weight: 600; line-height: 1.3; }
+        .tim-style-body { font-family: var(--tim-font-body); font-size: 1rem; line-height: 1.6; }
+        .tim-style-caption { font-size: 0.85rem; opacity: 0.7; line-height: 1.4; }
         """
         return css
     }
