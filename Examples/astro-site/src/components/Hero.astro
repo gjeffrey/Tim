@@ -1,0 +1,20 @@
+---
+const { heading, tagline } = Astro.props;
+---
+<header class="hero">
+  <h1>{heading}</h1>
+  <p class="tagline">{tagline}</p>
+</header>
+
+<style>
+  .hero {
+    padding: 2rem 0 1rem;
+  }
+  .tagline {
+    font-size: 1.2rem;
+    color: #6e6e73;
+  }
+  @media (prefers-color-scheme: dark) {
+    .tagline { color: #a1a1a6; }
+  }
+</style>

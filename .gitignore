@@ -1,0 +1,6 @@
+.build/
+.swiftpm/
+.DS_Store
+node_modules/
+Examples/astro-site/dist/
+Examples/astro-site/.astro/
