@@ -61,10 +61,14 @@ Working today:
 - **One edit mode (⌘E): the canvas.** Web-native Keynote — not a fixed
   slide, and not Pages' text/layout split either, because the web has no
   pagination: text boxes simply grow downward.
-  - The canvas is a **12-column grid** (`[data-tim-canvas]`). Objects —
-    text boxes, images, video — snap to columns when moved and resized
-    (the column strips light up while you drag); dragging vertically
-    reorders objects, and **DOM order = reading order = mobile order**.
+  - The canvas is a **true two-axis grid**, the model Squarespace's Fluid
+    Engine proved out: 24 columns wide with fixed-unit rows, so the cells
+    form graph paper. Every object owns an explicit rectangle of cells
+    (`grid-area`). Dragging is **completely free** — pick up an object,
+    put it anywhere, it snaps to the nearest cells (the grid appears while
+    you drag); objects can overlap; resize from any edge in cell units.
+    Freeform feel, grid truth. After every move the DOM is re-sorted by
+    (row, column), so **reading order = mobile order** stays true.
   - **Responsive by construction, never by tweaks.** Below 700px the grid
     collapses to a single column: every object goes full-width in reading
     order. The same Astro content is excellent on desktop and phone with

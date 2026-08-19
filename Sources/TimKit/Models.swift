@@ -115,7 +115,13 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         webView.customUserAgent = mobile
             ? "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1"
             : nil
-        webView.reload()
+        // Pages loaded from strings (the start page) have no URL — reload()
+        // would blank them. Re-load them instead.
+        if webView.url == nil || webView.url?.absoluteString == "about:blank" {
+            loadStartPage()
+        } else {
+            webView.reload()
+        }
     }
 
     public func format(_ command: String, value: String? = nil) {
@@ -158,9 +164,13 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     }
 
     /// Inserts an object (text box, image, video) into the page's canvas,
-    /// creating the canvas if the page doesn't have one yet.
-    public func insertObject(html: String) {
-        webView.evaluateJavaScript("window.__timInsert && window.__timInsert(\(Self.jsLiteral(html)));", completionHandler: nil)
+    /// creating the canvas if the page doesn't have one yet. Spans are in
+    /// grid cells (24 columns wide; rows are fixed units).
+    public func insertObject(html: String, colSpan: Int = 12, rowSpan: Int = 3) {
+        webView.evaluateJavaScript(
+            "window.__timInsert && window.__timInsert(\(Self.jsLiteral(html)), \(colSpan), \(rowSpan));",
+            completionHandler: nil
+        )
     }
 
     /// Applies a global text style class (tim-style-*) to the selected
@@ -229,11 +239,13 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     })();
     """
 
-    /// The canvas layer. Web-native Keynote: a 12-column grid, not a fixed
-    /// slide. Objects snap to columns when moved and resized; dragging
-    /// vertically reorders them (DOM order = reading order = mobile order);
-    /// text boxes grow downward; the mobile breakpoint collapses the grid
-    /// to a single column. Responsive by construction — never by tweaks.
+    /// The canvas layer, Fluid Engine-style: a true two-axis grid — 24
+    /// columns, fixed-unit rows — where every object owns an explicit
+    /// rectangle of cells (grid-area). Dragging is completely free and
+    /// snaps to cells (graph-paper feedback while dragging); objects may
+    /// overlap; resize from any edge snaps to cells; text rows are minimums
+    /// so text still grows downward. DOM order is kept sorted by (row, col)
+    /// after every drag, so the mobile collapse stacks in reading order.
     private static let canvasJS = """
     (function () {
       if (window.__timCanvasLayer) { return; }
@@ -242,12 +254,12 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       if (!doc.querySelector('style[data-tim-styles]')) {
         var st = doc.createElement('style');
         st.setAttribute('data-tim-styles', '');
-        st.textContent = '.tim-canvas{display:grid;grid-template-columns:repeat(12,1fr);gap:1.5rem;grid-auto-flow:row dense;align-items:start}' +
+        st.textContent = '.tim-canvas{display:grid;grid-template-columns:repeat(24,1fr);grid-auto-rows:minmax(28px,auto);gap:12px;align-items:stretch}' +
           '.tim-object{min-width:0}' +
           '.tim-text{min-height:1em;outline:none}' +
-          '.tim-canvas img.tim-object{width:100%;height:auto;display:block}' +
-          '.tim-canvas video.tim-object{width:100%;height:auto;display:block}' +
-          '@media (max-width:700px){.tim-canvas{grid-template-columns:1fr}.tim-canvas>.tim-object{grid-column:1 / -1 !important}}' +
+          '.tim-canvas img.tim-object{width:100%;height:100%;object-fit:cover;display:block}' +
+          '.tim-canvas video.tim-object{width:100%;display:block}' +
+          '@media (max-width:700px){.tim-canvas{grid-template-columns:1fr;grid-auto-rows:auto}.tim-canvas>.tim-object{grid-area:auto !important}}' +
           '.tim-style-title{font-family:var(--tim-font-heading,inherit);font-size:2.5rem;font-weight:700;line-height:1.15}' +
           '.tim-style-heading{font-family:var(--tim-font-heading,inherit);font-size:1.6rem;font-weight:700;line-height:1.25}' +
           '.tim-style-subheading{font-family:var(--tim-font-heading,inherit);font-size:1.25rem;font-weight:600;line-height:1.3}' +
@@ -256,20 +268,23 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         doc.head.appendChild(st);
       }
 
+      var COLS = 24;
+
       var overlay = doc.createElement('div');
       overlay.id = '__tim-overlay';
       overlay.style.cssText = 'position:absolute;left:0;top:0;z-index:2147483000;pointer-events:none;';
+      var gridBox = doc.createElement('div');
+      gridBox.style.cssText = 'position:absolute;pointer-events:none;display:none;';
       var box = doc.createElement('div');
       box.style.cssText = 'position:absolute;border:1.5px solid #0a84ff;pointer-events:none;display:none;box-sizing:border-box;';
       var badge = doc.createElement('div');
       badge.style.cssText = 'position:absolute;background:#0a84ff;color:#fff;font:11px -apple-system,sans-serif;padding:2px 6px;border-radius:4px;display:none;white-space:nowrap;';
-      var gridBox = doc.createElement('div');
-      gridBox.style.cssText = 'position:absolute;pointer-events:none;display:none;';
       overlay.appendChild(gridBox); overlay.appendChild(box); overlay.appendChild(badge);
       var handles = {};
-      ['w', 'e'].forEach(function (k) {
+      ['w', 'e', 's', 'se'].forEach(function (k) {
         var h = doc.createElement('div');
-        h.style.cssText = 'position:absolute;width:9px;height:9px;background:#fff;border:1.5px solid #0a84ff;border-radius:50%;pointer-events:auto;display:none;cursor:ew-resize;';
+        h.style.cssText = 'position:absolute;width:9px;height:9px;background:#fff;border:1.5px solid #0a84ff;border-radius:50%;pointer-events:auto;display:none;';
+        h.style.cursor = (k === 'w' || k === 'e') ? 'ew-resize' : (k === 's' ? 'ns-resize' : 'nwse-resize');
         h.setAttribute('data-tim-handle', k);
         overlay.appendChild(h); handles[k] = h;
       });
@@ -289,44 +304,56 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
 
       function gridInfo(canvas) {
         var cs = getComputedStyle(canvas);
-        var gap = parseFloat(cs.columnGap) || 0;
+        var gap = parseFloat(cs.columnGap) || 12;
+        var rowGap = parseFloat(cs.rowGap) || gap;
         var padL = parseFloat(cs.paddingLeft) || 0;
+        var padT = parseFloat(cs.paddingTop) || 0;
         var padR = parseFloat(cs.paddingRight) || 0;
+        var rowM = String(cs.gridAutoRows || '').match(/(\\d+(?:\\.\\d+)?)px/);
+        var rowH = rowM ? parseFloat(rowM[1]) : 28;
         var inner = canvas.clientWidth - padL - padR;
         var r = rectOf(canvas);
         return {
-          gap: gap,
-          colW: (inner - gap * 11) / 12,
-          originX: r.x + padL,
-          top: r.y,
-          height: Math.max(canvas.clientHeight, 160)
+          gap: gap, rowGap: rowGap, rowH: rowH,
+          colW: (inner - gap * (COLS - 1)) / COLS,
+          originX: r.x + padL, originY: r.y + padT,
+          inner: inner, height: Math.max(canvas.clientHeight, 240)
         };
       }
       function placement(el) {
-        var m = String(el.style.gridColumn || '').match(/(\\d+)\\s*\\/\\s*span\\s*(\\d+)/);
-        return m ? { col: +m[1], span: +m[2] } : { col: 1, span: 12 };
+        var m = String(el.style.gridArea || '').match(/(\\d+)\\s*\\/\\s*(\\d+)\\s*\\/\\s*(\\d+)\\s*\\/\\s*(\\d+)/);
+        if (m) { return { rs: +m[1], cs: +m[2], re: +m[3], ce: +m[4] }; }
+        return null;
       }
-      function setPlacement(el, col, span) {
-        span = Math.max(1, Math.min(12, span));
-        col = Math.max(1, Math.min(13 - span, col));
-        el.style.gridColumn = col + ' / span ' + span;
+      function setArea(el, rs, cs, re, ce) {
+        var rh = Math.max(1, re - rs), cw = Math.max(1, ce - cs);
+        cs = Math.max(1, Math.min(COLS + 1 - cw, cs));
+        rs = Math.max(1, rs);
+        el.style.gridArea = rs + ' / ' + cs + ' / ' + (rs + rh) + ' / ' + (cs + cw);
+      }
+      function resort(canvas) {
+        var objs = Array.prototype.slice.call(canvas.children).filter(isObject);
+        objs.sort(function (a, b) {
+          var pa = placement(a) || { rs: 9999, cs: 9999 };
+          var pb = placement(b) || { rs: 9999, cs: 9999 };
+          return (pa.rs - pb.rs) || (pa.cs - pb.cs);
+        });
+        objs.forEach(function (o) { canvas.appendChild(o); });
       }
 
       function showGrid(canvas) {
         var g = gridInfo(canvas);
-        gridBox.innerHTML = '';
-        for (var i = 0; i < 12; i++) {
-          var strip = doc.createElement('div');
-          strip.style.cssText = 'position:absolute;background:rgba(10,132,255,0.07);border-radius:3px;';
-          strip.style.left = (g.originX + i * (g.colW + g.gap)) + 'px';
-          strip.style.top = g.top + 'px';
-          strip.style.width = g.colW + 'px';
-          strip.style.height = g.height + 'px';
-          gridBox.appendChild(strip);
-        }
+        gridBox.style.left = g.originX + 'px';
+        gridBox.style.top = g.originY + 'px';
+        gridBox.style.width = g.inner + 'px';
+        gridBox.style.height = g.height + 'px';
+        var ux = g.colW + g.gap, uy = g.rowH + g.rowGap;
+        gridBox.style.backgroundImage =
+          'repeating-linear-gradient(to right, rgba(10,132,255,0.18) 0 1px, transparent 1px ' + ux + 'px),' +
+          'repeating-linear-gradient(to bottom, rgba(10,132,255,0.18) 0 1px, transparent 1px ' + uy + 'px)';
         gridBox.style.display = 'block';
       }
-      function hideGrid() { gridBox.style.display = 'none'; gridBox.innerHTML = ''; }
+      function hideGrid() { gridBox.style.display = 'none'; }
 
       function hide() {
         box.style.display = badge.style.display = 'none';
@@ -343,20 +370,21 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         badge.style.left = r.x + 'px';
         badge.style.top = Math.max(2, r.y - 24) + 'px';
         if (!drag) {
-          var label = sel.tagName.toLowerCase();
-          if (isObject(sel) && canvasFor(sel)) {
-            var p = placement(sel);
-            label += ' · cols ' + p.col + '–' + (p.col + p.span - 1);
-          }
-          badge.textContent = label;
+          var p = placement(sel);
+          badge.textContent = sel.tagName.toLowerCase() +
+            (p ? ' · ' + (p.ce - p.cs) + '×' + (p.re - p.rs) + ' cells' : '');
         }
-        var resizable = isObject(sel) && canvasFor(sel);
-        handles.w.style.display = handles.e.style.display = resizable ? 'block' : 'none';
+        var resizable = isObject(sel) && canvasFor(sel) && placement(sel);
+        for (var k in handles) { handles[k].style.display = resizable ? 'block' : 'none'; }
         if (resizable) {
           handles.w.style.left = (r.x - 5) + 'px';
           handles.w.style.top = (r.y + r.h / 2 - 5) + 'px';
           handles.e.style.left = (r.x + r.w - 5) + 'px';
           handles.e.style.top = (r.y + r.h / 2 - 5) + 'px';
+          handles.s.style.left = (r.x + r.w / 2 - 5) + 'px';
+          handles.s.style.top = (r.y + r.h - 5) + 'px';
+          handles.se.style.left = (r.x + r.w - 5) + 'px';
+          handles.se.style.top = (r.y + r.h - 5) + 'px';
         }
       }
 
@@ -364,9 +392,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         var k = e.target && e.target.getAttribute ? e.target.getAttribute('data-tim-handle') : null;
         if (k && sel && isObject(sel)) {
           var canvas = canvasFor(sel);
-          if (!canvas) { return; }
-          var p = placement(sel);
-          drag = { mode: k, canvas: canvas, sx: e.pageX, col0: p.col, span0: p.span };
+          var p0 = placement(sel);
+          if (!canvas || !p0) { return; }
+          drag = { mode: k, canvas: canvas, sx: e.pageX, sy: e.pageY, p0: p0, moved: false };
           showGrid(canvas);
           e.preventDefault(); e.stopPropagation();
           return;
@@ -375,11 +403,11 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         var obj = e.target && e.target.closest ? e.target.closest('.tim-object') : null;
         if (obj && obj !== editingEl && !(editingEl && editingEl.contains(e.target))) {
           var canvas2 = canvasFor(obj);
-          if (canvas2) {
+          var p1 = placement(obj);
+          if (canvas2 && p1) {
             stopTextEditing();
             sel = obj;
-            var p2 = placement(obj);
-            drag = { mode: 'move', canvas: canvas2, sx: e.pageX, sy: e.pageY, col0: p2.col, span: p2.span, moved: false };
+            drag = { mode: 'move', canvas: canvas2, sx: e.pageX, sy: e.pageY, p0: p1, moved: false };
             showGrid(canvas2);
             layout();
             e.preventDefault(); e.stopPropagation();
@@ -391,39 +419,37 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (!drag || !sel) { return; }
         e.preventDefault();
         var g = gridInfo(drag.canvas);
-        var deltaCols = Math.round((e.pageX - drag.sx) / (g.colW + g.gap));
+        var dc = Math.round((e.pageX - drag.sx) / (g.colW + g.gap));
+        var dr = Math.round((e.pageY - drag.sy) / (g.rowH + g.rowGap));
+        var p = drag.p0;
+        if (dc !== 0 || dr !== 0) { drag.moved = true; }
 
         if (drag.mode === 'move') {
-          drag.moved = true;
-          setPlacement(sel, drag.col0 + deltaCols, drag.span);
-          // Vertical drag reorders: DOM order is reading order is mobile order.
-          var siblings = Array.prototype.slice.call(drag.canvas.children).filter(function (c) {
-            return isObject(c) && c !== sel;
-          });
-          var ref = null;
-          for (var i = 0; i < siblings.length; i++) {
-            var sr = rectOf(siblings[i]);
-            if (e.pageY < sr.y + sr.h / 2) { ref = siblings[i]; break; }
-          }
-          if (sel.nextElementSibling !== ref) { drag.canvas.insertBefore(sel, ref); }
-          var p = placement(sel);
-          badge.textContent = 'cols ' + p.col + '–' + (p.col + p.span - 1);
+          setArea(sel, p.rs + dr, p.cs + dc, p.re + dr, p.ce + dc);
         } else if (drag.mode === 'e') {
-          setPlacement(sel, drag.col0, drag.span0 + deltaCols);
-          badge.textContent = 'span ' + placement(sel).span + ' of 12';
+          setArea(sel, p.rs, p.cs, p.re, Math.max(p.cs + 1, Math.min(COLS + 1, p.ce + dc)));
         } else if (drag.mode === 'w') {
-          var col = drag.col0 + deltaCols;
-          var span = drag.span0 - deltaCols;
-          if (span >= 1 && col >= 1) { setPlacement(sel, col, span); }
-          badge.textContent = 'span ' + placement(sel).span + ' of 12';
+          var ncs = Math.max(1, Math.min(p.ce - 1, p.cs + dc));
+          setArea(sel, p.rs, ncs, p.re, p.ce);
+        } else if (drag.mode === 's') {
+          setArea(sel, p.rs, p.cs, Math.max(p.rs + 1, p.re + dr), p.ce);
+        } else if (drag.mode === 'se') {
+          setArea(sel, p.rs, p.cs, Math.max(p.rs + 1, p.re + dr), Math.max(p.cs + 1, Math.min(COLS + 1, p.ce + dc)));
         }
+        var np = placement(sel);
+        badge.textContent = drag.mode === 'move'
+          ? 'row ' + np.rs + ' · col ' + np.cs
+          : (np.ce - np.cs) + '×' + (np.re - np.rs) + ' cells';
         layout();
       }
 
       function onUp() {
         if (!drag) { return; }
+        var canvas = drag.canvas;
+        var moved = drag.moved;
         drag = null;
         hideGrid();
+        if (moved) { resort(canvas); }
         layout();
       }
 
@@ -494,7 +520,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       window.addEventListener('scroll', layout, true);
       window.addEventListener('resize', layout);
 
-      window.__timInsert = function (html) {
+      window.__timInsert = function (html, colSpan, rowSpan) {
+        colSpan = Math.max(1, Math.min(COLS, colSpan || 12));
+        rowSpan = Math.max(1, rowSpan || 3);
         var canvas = doc.querySelector('[data-tim-canvas]');
         if (!canvas) {
           canvas = doc.createElement('div');
@@ -506,11 +534,13 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         tmp.innerHTML = html;
         var el = tmp.firstElementChild;
         if (!el) { return; }
-        if (sel && isObject(sel) && canvasFor(sel) === canvas) {
-          canvas.insertBefore(el, sel.nextElementSibling);
-        } else {
-          canvas.appendChild(el);
-        }
+        var maxRe = 1;
+        Array.prototype.forEach.call(canvas.children, function (c) {
+          var p = placement(c);
+          if (p && p.re > maxRe) { maxRe = p.re; }
+        });
+        setArea(el, maxRe, 1, maxRe + rowSpan, 1 + colSpan);
+        canvas.appendChild(el);
         stopTextEditing();
         sel = el;
         layout();

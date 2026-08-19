@@ -258,17 +258,20 @@ struct TabContentView: View {
             .fixedSize()
             .help("Preview as Mac or iPhone — same content, both must be excellent")
 
-            Button {
-                tab.setEditing(!tab.isEditing)
-            } label: {
-                Image(systemName: tab.isEditing ? "pencil.circle.fill" : "pencil.circle")
-                    .font(.system(size: 15))
-                    .foregroundStyle(tab.isEditing || isPageEditable ? Color.accentColor : Color.secondary.opacity(0.4))
+            if isPageEditable || tab.isEditing {
+                Button {
+                    tab.setEditing(!tab.isEditing)
+                } label: {
+                    Text(tab.isEditing ? "Done" : "Edit")
+                        .font(.system(size: 12, weight: .semibold))
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 12)
+                        .background(Capsule().fill(tab.isEditing ? Color.accentColor : Color.accentColor.opacity(0.15)))
+                        .foregroundStyle(tab.isEditing ? Color.white : Color.accentColor)
+                }
+                .buttonStyle(.plain)
+                .help(tab.isEditing ? "Stop Editing (⌘E)" : "Edit This Page (⌘E)")
             }
-            .disabled(!isPageEditable && !tab.isEditing)
-            .help(tab.isEditing
-                  ? "Stop Editing (⌘E)"
-                  : (isPageEditable ? "Edit This Page (⌘E)" : "You can edit pages on your connected sites — add this one in My Sites"))
 
             Menu {
                 ForEach(siteStore.sites) { site in
@@ -326,9 +329,10 @@ struct EditingToolbar: View {
             Menu {
                 Section("Objects") {
                     Button {
-                        tab.insertObject(html: """
-                        <div class="tim-object tim-text tim-style-body" style="grid-column: 1 / span 6;">Double-click to edit</div>
-                        """)
+                        tab.insertObject(
+                            html: #"<div class="tim-object tim-text tim-style-body">Double-click to edit</div>"#,
+                            colSpan: 10, rowSpan: 2
+                        )
                     } label: {
                         Label("Text Box", systemImage: "character.textbox")
                     }
@@ -506,13 +510,15 @@ struct EditingToolbar: View {
 
         guard let src else { return }
         if video {
-            tab.insertObject(html: """
-            <video class="tim-object" controls src="\(src)" style="grid-column: 1 / span 8;"></video>
-            """)
+            tab.insertObject(
+                html: #"<video class="tim-object" controls src="\#(src)"></video>"#,
+                colSpan: 12, rowSpan: 8
+            )
         } else {
-            tab.insertObject(html: """
-            <img class="tim-object" src="\(src)" style="grid-column: 1 / span 6;" alt="" />
-            """)
+            tab.insertObject(
+                html: #"<img class="tim-object" src="\#(src)" alt="" />"#,
+                colSpan: 8, rowSpan: 8
+            )
         }
     }
 

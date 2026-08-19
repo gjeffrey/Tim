@@ -109,22 +109,25 @@ public enum ThemeManager {
         h1, h2, h3, h4, h5, h6 { font-family: var(--tim-font-heading); }
         a { color: var(--tim-accent); }
 
-        /* Canvas layout: a 12-column grid, single column on small screens.
-           DOM order is reading order is mobile order — responsive by
-           construction. */
+        /* Canvas layout: a true two-axis grid (Fluid Engine-style) — 24
+           columns, fixed-unit rows. Objects own explicit cell rectangles
+           (grid-area), so placement feels freeform but is grid-quantized.
+           On small screens the grid collapses to a single column in
+           reading order — responsive by construction. */
         .tim-canvas {
           display: grid;
-          grid-template-columns: repeat(12, 1fr);
-          gap: 1.5rem;
-          grid-auto-flow: row dense;
-          align-items: start;
+          grid-template-columns: repeat(24, 1fr);
+          grid-auto-rows: minmax(28px, auto);
+          gap: 12px;
+          align-items: stretch;
         }
         .tim-object { min-width: 0; }
         .tim-text { min-height: 1em; outline: none; }
-        .tim-canvas img.tim-object, .tim-canvas video.tim-object { width: 100%; height: auto; display: block; }
+        .tim-canvas img.tim-object { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .tim-canvas video.tim-object { width: 100%; display: block; }
         @media (max-width: 700px) {
-          .tim-canvas { grid-template-columns: 1fr; }
-          .tim-canvas > .tim-object { grid-column: 1 / -1 !important; }
+          .tim-canvas { grid-template-columns: 1fr; grid-auto-rows: auto; }
+          .tim-canvas > .tim-object { grid-area: auto !important; }
         }
 
         /* Global text styles — restyle these here, every page follows. */
