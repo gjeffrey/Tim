@@ -854,7 +854,14 @@ struct EditingToolbar: View {
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let src = try Self.stage(fileURL: fileURL, site: resolvedSite, pageURL: pageURL)
+                var src = try Self.stage(fileURL: fileURL, site: resolvedSite, pageURL: pageURL)
+                // Relative to the current page, so it works under any base
+                // path, on file:// previews, and on the live site alike.
+                if let resolvedSite, let pageURL {
+                    let rel = resolvedSite.relativePagePath(for: pageURL)
+                    let depth = max(0, rel.split(separator: "/").count - 1)
+                    src = String(repeating: "../", count: depth) + src
+                }
                 DispatchQueue.main.async {
                     isWorking = false
                     statusMessage = nil
@@ -892,7 +899,7 @@ struct EditingToolbar: View {
             case .sftp:
                 let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
                 _ = try SFTP.uploadFile(
-                    localPath: dest, toDirectory: root + "/media", named: name,
+                    localPath: dest, toDirectory: root.isEmpty ? "media" : root + "/media", named: name,
                     host: site.host, username: site.username, port: site.port
                 )
             case .cloudflare:
@@ -900,7 +907,7 @@ struct EditingToolbar: View {
             case .githubPages:
                 _ = try GitHubPagesPublisher.publish(repo: site.localProjectPath, message: "Add media \(name)")
             }
-            return "/media/\(name)"
+            return "media/\(name)"
         }
         if let pageURL, pageURL.isFileURL {
             let dest = pageURL.deletingLastPathComponent().appendingPathComponent(name)
