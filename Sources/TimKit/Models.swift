@@ -15,6 +15,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     @Published public var canGoForward: Bool = false
     @Published public var isMobilePreview: Bool = false
     @Published public var lastHTTPStatus: Int = 200
+    /// Current Layout selection, as reported by the canvas layer — the
+    /// Inspector's data source. Nil when nothing is selected.
+    @Published public var selectionInfo: [String: Any]?
 
     public let webView: WKWebView
     private var observations: [NSKeyValueObservation] = []
@@ -36,6 +39,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         super.init()
         webView.navigationDelegate = self
         webView.uiDelegate = self
+        webView.configuration.userContentController.add(self, name: "timSel")
 
         observations.append(webView.observe(\.title, options: [.new]) { [weak self] view, _ in
             DispatchQueue.main.async {
@@ -201,6 +205,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     /// object or the paragraph the caret is in.
     public func applyTextStyle(_ styleClass: String) {
         webView.evaluateJavaScript("window.__timApplyStyle && window.__timApplyStyle(\(Self.jsLiteral(styleClass)));", completionHandler: nil)
+    }
+
+    /// Live styling from the Inspector: sets one CSS property on the
+    /// selected element (design vocabulary in the UI, CSS underneath).
+    public func setSelectionStyle(_ property: String, _ value: String) {
+        webView.evaluateJavaScript(
+            "window.__timSetStyle && window.__timSetStyle(\(Self.jsLiteral(property)), \(Self.jsLiteral(value)));",
+            completionHandler: nil
+        )
     }
 
     /// The selected element's HTML (Layout selection).
@@ -532,6 +545,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
         sel = (!el || el === doc.body) ? null : el;
         if (sel) { layout(); } else { hide(); }
+        notifySel();
       }
 
       function onDblClick(e) {
@@ -564,6 +578,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           stopTextEditing();
           sel = null;
           hide();
+          notifySel();
           return;
         }
         if ((e.key === 'Backspace' || e.key === 'Delete') && active && !editingEl) {
@@ -575,6 +590,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
             sel.remove();
             sel = null;
             hide();
+            notifySel();
           }
         }
       }
@@ -641,7 +657,46 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         sel = el;
         fitSpan(el);
         layout();
+        notifySel();
         el.scrollIntoView({ block: 'nearest' });
+      };
+
+      var selSeq = 0;
+      function notifySel() {
+        try {
+          var payload = '';
+          if (sel) {
+            selSeq += 1;
+            var cs = getComputedStyle(sel);
+            var timStyle = '';
+            String(sel.className || '').split(/\\s+/).forEach(function (c) {
+              if (c.indexOf('tim-style-') === 0) { timStyle = c; }
+            });
+            payload = JSON.stringify({
+              seq: selSeq,
+              tag: sel.tagName.toLowerCase(),
+              timStyle: timStyle,
+              isText: (sel.classList && sel.classList.contains('tim-text')) ? 1 : 0,
+              fontSize: parseFloat(cs.fontSize) || 16,
+              fontWeight: parseInt(cs.fontWeight, 10) || 400,
+              align: cs.textAlign,
+              color: cs.color,
+              radius: parseFloat(sel.style.borderRadius) || 0,
+              opacity: parseFloat(cs.opacity) || 1,
+              padding: parseFloat(sel.style.padding) || 0,
+              hasShadow: sel.style.boxShadow ? 1 : 0,
+              fill: sel.style.background || ''
+            });
+          }
+          if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.timSel) {
+            window.webkit.messageHandlers.timSel.postMessage(payload);
+          }
+        } catch (e) {}
+      }
+      window.__timSetStyle = function (prop, value) {
+        if (!sel) { return; }
+        sel.style[prop] = value;
+        layout();
       };
 
       window.__timSelHTML = function () { return sel ? sel.outerHTML : ''; };
@@ -713,10 +768,24 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         hide();
         hoverBox.style.display = 'none';
         overlay.style.display = 'none';
+        notifySel();
         doc.documentElement.classList.remove('tim-editing');
       };
     })();
     """
+}
+
+extension Tab: WKScriptMessageHandler {
+    public func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "timSel" else { return }
+        if let json = message.body as? String, !json.isEmpty,
+           let data = json.data(using: .utf8),
+           let info = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            selectionInfo = info
+        } else {
+            selectionInfo = nil
+        }
+    }
 }
 
 extension Tab: WKNavigationDelegate {

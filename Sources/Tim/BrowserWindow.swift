@@ -300,6 +300,7 @@ struct TabContentView: View {
                 )
                 Divider()
             }
+            HStack(spacing: 0) {
             Group {
                 if tab.isMobilePreview {
                     ZStack {
@@ -317,6 +318,11 @@ struct TabContentView: View {
                 } else {
                     WebViewContainer(webView: tab.webView)
                 }
+            }
+            if tab.isEditing {
+                Divider()
+                InspectorView(tab: tab)
+            }
             }
         }
         .background(.background)
@@ -2229,6 +2235,129 @@ enum LocalPages {
         } catch {
             NSSound.beep()
         }
+    }
+}
+
+
+// MARK: - Inspector: style the selection like a design tool, not a CSS editor
+
+struct InspectorView: View {
+    @ObservedObject var tab: Tab
+
+    var body: some View {
+        ScrollView {
+            if let info = tab.selectionInfo {
+                InspectorControls(tab: tab, info: info)
+                    .id(info["seq"] as? Int ?? 0)
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "cursorarrow.click.2")
+                        .font(.system(size: 20))
+                        .foregroundStyle(.tertiary)
+                    Text("Select something\nto style it")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 60)
+            }
+        }
+        .frame(width: 216)
+    }
+}
+
+struct InspectorControls: View {
+    @ObservedObject var tab: Tab
+    let info: [String: Any]
+
+    @State private var fontSize: Double = 16
+    @State private var weightIndex = 0
+    @State private var radius: Double = 0
+    @State private var opacity: Double = 1
+    @State private var padding: Double = 0
+    @State private var hasShadow = false
+    @State private var textColor: Color = .primary
+    @State private var fillColor: Color = .clear
+
+    private let weights = [400, 500, 600, 700]
+    private var isText: Bool { (info["isText"] as? Int) == 1 || ["h1","h2","h3","h4","h5","h6","p"].contains(info["tag"] as? String ?? "") }
+    private var styleName: String? {
+        let s = info["timStyle"] as? String ?? ""
+        return s.isEmpty ? nil : s.replacingOccurrences(of: "tim-style-", with: "").capitalized
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(styleName ?? (info["tag"] as? String ?? "Object").capitalized)
+                .font(.headline)
+
+            if isText {
+                VStack(alignment: .leading, spacing: 8) {
+                    label("Size — \(Int(fontSize))")
+                    Slider(value: $fontSize, in: 10...96, step: 1)
+                        .onChange(of: fontSize) { _, v in tab.setSelectionStyle("fontSize", "\(Int(v))px") }
+                    label("Weight")
+                    Picker("", selection: $weightIndex) {
+                        Text("Reg").tag(0); Text("Med").tag(1); Text("Semi").tag(2); Text("Bold").tag(3)
+                    }
+                    .pickerStyle(.segmented).labelsHidden()
+                    .onChange(of: weightIndex) { _, i in tab.setSelectionStyle("fontWeight", "\(weights[i])") }
+                    label("Align")
+                    HStack(spacing: 4) {
+                        ForEach(["left", "center", "right"], id: \.self) { a in
+                            Button { tab.setSelectionStyle("textAlign", a) } label: {
+                                Image(systemName: "text.align\(a)").frame(width: 30, height: 20)
+                            }.buttonStyle(.bordered).controlSize(.small)
+                        }
+                    }
+                    HStack {
+                        label("Color")
+                        ColorPicker("", selection: $textColor, supportsOpacity: false).labelsHidden()
+                            .onChange(of: textColor) { _, c in tab.setSelectionStyle("color", c.hexString) }
+                    }
+                }
+                Divider()
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    label("Fill")
+                    ColorPicker("", selection: $fillColor).labelsHidden()
+                        .onChange(of: fillColor) { _, c in tab.setSelectionStyle("background", c.hexString) }
+                    Button("None") { tab.setSelectionStyle("background", "") }
+                        .controlSize(.mini)
+                }
+                label("Corner — \(Int(radius))")
+                Slider(value: $radius, in: 0...40, step: 1)
+                    .onChange(of: radius) { _, v in tab.setSelectionStyle("borderRadius", "\(Int(v))px") }
+                label("Padding — \(Int(padding))")
+                Slider(value: $padding, in: 0...48, step: 2)
+                    .onChange(of: padding) { _, v in tab.setSelectionStyle("padding", "\(Int(v))px") }
+                Toggle("Shadow", isOn: $hasShadow)
+                    .font(.caption)
+                    .onChange(of: hasShadow) { _, on in
+                        tab.setSelectionStyle("boxShadow", on ? "0 8px 24px rgba(0,0,0,0.18)" : "")
+                    }
+                label("Opacity — \(Int(opacity * 100))%")
+                Slider(value: $opacity, in: 0.2...1)
+                    .onChange(of: opacity) { _, v in tab.setSelectionStyle("opacity", String(format: "%.2f", v)) }
+            }
+        }
+        .padding(12)
+        .onAppear {
+            fontSize = info["fontSize"] as? Double ?? 16
+            let w = info["fontWeight"] as? Int ?? 400
+            weightIndex = weights.lastIndex(where: { $0 <= w }) ?? 0
+            radius = info["radius"] as? Double ?? 0
+            opacity = info["opacity"] as? Double ?? 1
+            padding = info["padding"] as? Double ?? 0
+            hasShadow = (info["hasShadow"] as? Int) == 1
+        }
+    }
+
+    private func label(_ text: String) -> some View {
+        Text(text).font(.caption).foregroundStyle(.secondary)
     }
 }
 
