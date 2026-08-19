@@ -30,6 +30,9 @@
           ],
           "glass-specializations" : [
             {
+              "value" : false
+            },
+            {
               "appearance" : "tinted",
               "value" : false
             }
@@ -38,6 +41,7 @@
           "name" : "tim garamond 2 2"
         },
         {
+          "glass" : false,
           "image-name" : "tim garamond 1 2.svg",
           "name" : "tim garamond 1 2"
         }
