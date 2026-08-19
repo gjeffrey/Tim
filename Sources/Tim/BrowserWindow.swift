@@ -15,11 +15,12 @@ extension Notification.Name {
 
 struct BrowserWindow: View {
     @EnvironmentObject var store: BrowserStore
+    @AppStorage("tim.siteSidebar") private var showSidebar = true
 
     var body: some View {
-        VStack(spacing: 0) {
-            if store.tabs.count > 1 {
-                TabBarView()
+        HStack(spacing: 0) {
+            if showSidebar {
+                UnifiedSidebar()
                 Divider()
             }
             if let tab = store.selectedTab {
@@ -32,40 +33,47 @@ struct BrowserWindow: View {
     }
 }
 
-// MARK: - Safari-style tab bar (appears with a second tab)
+// MARK: - Sidebar: vertical tabs above, the current site below (Arc-style)
 
-struct TabBarView: View {
+struct UnifiedSidebar: View {
     @EnvironmentObject var store: BrowserStore
+    @EnvironmentObject var siteStore: SiteStore
 
     var body: some View {
-        HStack(spacing: 2) {
-            ForEach(store.tabs) { tab in
-                TabChip(
-                    tab: tab,
-                    isSelected: tab.id == store.selectedTabID,
-                    select: { store.selectedTabID = tab.id },
-                    close: { store.close(tab) }
-                )
+        ScrollView {
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(store.tabs) { t in
+                    VerticalTabRow(
+                        tab: t,
+                        isSelected: t.id == store.selectedTabID,
+                        select: { store.selectedTabID = t.id },
+                        close: { store.close(t) }
+                    )
+                }
+                Button {
+                    store.newTab()
+                } label: {
+                    Label("New Tab", systemImage: "plus")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 5)
+                        .padding(.horizontal, 8)
+                }
+                .buttonStyle(.plain)
+
+                if let tab = store.selectedTab {
+                    SiteSection(tab: tab)
+                        .id(tab.id)
+                }
             }
-            Button {
-                store.newTab()
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 11, weight: .medium))
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 4)
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
-        .frame(height: 32)
+        .frame(width: 220)
     }
 }
 
-struct TabChip: View {
+struct VerticalTabRow: View {
     @ObservedObject var tab: Tab
     let isSelected: Bool
     let select: () -> Void
@@ -74,46 +82,176 @@ struct TabChip: View {
 
     var body: some View {
         Button(action: select) {
-            HStack(spacing: 4) {
-                if hovering {
+            HStack(spacing: 7) {
+                Image(systemName: "globe")
+                    .font(.system(size: 11))
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                Text(tab.title.isEmpty ? "New Tab" : tab.title)
+                    .font(.system(size: 12.5))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if tab.isLoading {
+                    ProgressView().controlSize(.small).scaleEffect(0.5)
+                } else if hovering {
                     Button(action: close) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 8, weight: .bold))
+                        Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
-                    .frame(width: 14)
-                } else {
-                    Spacer().frame(width: 14)
-                }
-                Spacer(minLength: 0)
-                Text(tab.title.isEmpty ? "New Tab" : tab.title)
-                    .font(.system(size: 11.5))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer(minLength: 0)
-                if tab.isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.45)
-                        .frame(width: 14)
-                } else {
-                    Spacer().frame(width: 14)
                 }
             }
-            .padding(.horizontal, 6)
-            .frame(maxWidth: 220, minHeight: 26)
+            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
             .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(isSelected ? Color.primary.opacity(0.09) : (hovering ? Color.primary.opacity(0.04) : .clear))
             )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .frame(maxWidth: .infinity)
         .onHover { hovering = $0 }
-        .contextMenu {
-            Button("Close Tab") { close() }
+        .contextMenu { Button("Close Tab") { close() } }
+    }
+}
+
+/// Site pages + history for the selected tab. All filesystem/git reads
+/// happen off the main thread into state — body stays pure (the old
+/// in-body git calls were the tab-switch crash).
+struct SiteSection: View {
+    @ObservedObject var tab: Tab
+    @EnvironmentObject var siteStore: SiteStore
+
+    @State private var pages: [LinkOption] = []
+    @State private var versions: [SiteWorkspace.PageVersion] = []
+
+    private var site: Site? { siteStore.match(URL(string: tab.urlString)) }
+    private var currentRel: String? {
+        tab.webView.url.flatMap { url in site.map { $0.relativePagePath(for: url) } }
+    }
+
+    var body: some View {
+        if let site {
+            VStack(alignment: .leading, spacing: 10) {
+                Divider().padding(.vertical, 6)
+                Text(site.name.isEmpty ? site.origin : site.name)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                ForEach(pages) { page in
+                    Button {
+                        tab.navigate(to: site.origin + page.href)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Group {
+                                if let thumb = ThumbnailStore.image(for: site.origin + page.href) {
+                                    Image(nsImage: thumb).resizable().aspectRatio(contentMode: .fill)
+                                } else {
+                                    ZStack {
+                                        Rectangle().fill(Color.primary.opacity(0.05))
+                                        Image(systemName: "doc.text").foregroundStyle(.tertiary)
+                                    }
+                                }
+                            }
+                            .frame(height: 100)
+                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .stroke(page.href == currentRel ? Color.accentColor : Color.primary.opacity(0.12),
+                                            lineWidth: page.href == currentRel ? 2 : 1)
+                            )
+                            Text(page.label)
+                                .font(.system(size: 11.5, weight: page.href == currentRel ? .semibold : .regular))
+                                .lineLimit(1)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if versions.count > 1 {
+                    Text("History")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                    ForEach(versions) { version in
+                        Button {
+                            rollback(to: version.sha)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "clock.arrow.circlepath")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                                Text(version.date).font(.system(size: 11))
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Restore this page to this version and republish it.")
+                    }
+                }
+            }
+            .onAppear { refresh() }
+            .onChange(of: tab.isLoading) { _, loading in
+                if !loading { refresh() }
+            }
+        }
+    }
+
+    private func refresh() {
+        guard let site else { pages = []; versions = []; return }
+        let rel = currentRel
+        DispatchQueue.global(qos: .utility).async {
+            let loadedPages = LinkSources.pages(for: site)
+            var loadedVersions: [SiteWorkspace.PageVersion] = []
+            if let rel, !AstroProject.isAstroProject(site.localProjectPath) {
+                loadedVersions = SiteWorkspace.versions(of: String(rel.dropFirst()), in: site.localProjectPath)
+            }
+            DispatchQueue.main.async {
+                pages = loadedPages
+                versions = loadedVersions
+            }
+        }
+    }
+
+    private func rollback(to sha: String) {
+        guard let url = tab.webView.url, var mutableSite = site else { return }
+        if mutableSite.localProjectPath.isEmpty {
+            mutableSite.localProjectPath = SiteWorkspace.defaultFolder(
+                for: mutableSite.name.isEmpty ? mutableSite.origin : mutableSite.name
+            )
+            siteStore.upsert(mutableSite)
+        }
+        SiteWorkspace.ensure(mutableSite.localProjectPath)
+        guard !AstroProject.isAstroProject(mutableSite.localProjectPath) else { return }
+        let s = mutableSite
+        let rel = s.relativePagePath(for: url)
+        let relPath = String(rel.dropFirst())
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try SiteWorkspace.restore(relPath, to: sha, in: s.localProjectPath)
+                let html = try String(
+                    contentsOfFile: (s.localProjectPath as NSString).appendingPathComponent(relPath),
+                    encoding: .utf8
+                )
+                switch s.target {
+                case .sftp:
+                    let root = s.remoteRoot.hasSuffix("/") ? String(s.remoteRoot.dropLast()) : s.remoteRoot
+                    _ = try SFTP.upload(html: html, to: root + rel, host: s.host, username: s.username, port: s.port)
+                case .cloudflare:
+                    _ = try CloudflarePublisher.deploy(folder: s.localProjectPath, projectName: s.cfProjectName)
+                case .githubPages:
+                    _ = try GitHubPagesPublisher.publish(repo: s.localProjectPath, message: "Roll back \(rel)")
+                }
+                SiteWorkspace.snapshot(s.localProjectPath, message: "Roll back \(rel) to \(sha)")
+                DispatchQueue.main.async { tab.webView.reload() }
+            } catch {
+                DispatchQueue.main.async {
+                    let alert = NSAlert()
+                    alert.messageText = "Roll Back"
+                    alert.informativeText = error.localizedDescription
+                    alert.runModal()
+                }
+            }
         }
     }
 }
@@ -148,11 +286,7 @@ struct TabContentView: View {
                 )
                 Divider()
             }
-            HStack(spacing: 0) {
-                if showSiteSidebar, let site = matchedSite {
-                    SiteSidebar(site: site, tab: tab) { sha in rollbackCurrentPage(to: sha) }
-                    Divider()
-                }
+            Group {
                 if tab.isMobilePreview {
                     ZStack {
                         Color.primary.opacity(0.045)
@@ -495,14 +629,12 @@ struct TabContentView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .navigation) {
-            if matchedSite != nil {
-                Button {
-                    showSiteSidebar.toggle()
-                } label: {
-                    Image(systemName: "sidebar.left")
-                }
-                .help("Show your site's pages and history")
+            Button {
+                showSiteSidebar.toggle()
+            } label: {
+                Image(systemName: "sidebar.left")
             }
+            .help("Show tabs, your site's pages, and history")
             Button {
                 tab.webView.goBack()
             } label: {
@@ -1995,93 +2127,6 @@ enum ThumbnailStore {
 
     static func image(for url: String) -> NSImage? {
         NSImage(contentsOf: path(for: url))
-    }
-}
-
-// MARK: - Site sidebar: every page, thumbnails, history
-
-struct SiteSidebar: View {
-    let site: Site
-    @ObservedObject var tab: Tab
-    let rollback: (String) -> Void
-
-    private var pages: [LinkOption] { LinkSources.pages(for: site) }
-    private var currentRel: String? {
-        tab.webView.url.map { site.relativePagePath(for: $0) }
-    }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(site.name.isEmpty ? site.origin : site.name)
-                    .font(.headline)
-                    .padding(.top, 10)
-
-                ForEach(pages) { page in
-                    Button {
-                        tab.navigate(to: site.origin + page.href)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Group {
-                                if let thumb = ThumbnailStore.image(for: site.origin + page.href) {
-                                    Image(nsImage: thumb)
-                                        .resizable()
-                                        .aspectRatio(contentMode: .fill)
-                                } else {
-                                    ZStack {
-                                        Rectangle().fill(Color.primary.opacity(0.05))
-                                        Image(systemName: "doc.text")
-                                            .foregroundStyle(.tertiary)
-                                    }
-                                }
-                            }
-                            .frame(height: 96)
-                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .stroke(page.href == currentRel ? Color.accentColor : Color.primary.opacity(0.12),
-                                            lineWidth: page.href == currentRel ? 2 : 1)
-                            )
-                            Text(page.label)
-                                .font(.system(size: 11.5, weight: page.href == currentRel ? .semibold : .regular))
-                                .lineLimit(1)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                if let rel = currentRel, !AstroProject.isAstroProject(site.localProjectPath) {
-                    let versions = SiteWorkspace.versions(of: String(rel.dropFirst()), in: site.localProjectPath)
-                    if versions.count > 1 {
-                        Divider().padding(.vertical, 4)
-                        Text("History")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        ForEach(versions) { version in
-                            Button {
-                                rollback(version.sha)
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "clock.arrow.circlepath")
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(.secondary)
-                                    Text(version.date)
-                                        .font(.system(size: 11))
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .help("Restore this page to this version and republish it.")
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .frame(width: 190)
     }
 }
 
