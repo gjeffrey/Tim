@@ -43,7 +43,12 @@ public enum PageComponents {
                   let region = regionBounds(in: html, attrEnd: nameEnd.upperBound)
             else { break }
             let name = String(html[attr.upperBound..<nameEnd.lowerBound])
-            out[name] = String(html[region.inner])
+            let inner = String(html[region.inner])
+            // An empty region is a husk, not an edit — harvesting it would
+            // blank the master and wipe the component from every page.
+            if !inner.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                out[name] = inner
+            }
             search = region.outerEnd
         }
         return out
@@ -84,6 +89,16 @@ public enum PageComponents {
         return nil
     }
 
+    /// Deleting a template component on a page marks the page's body with
+    /// data-tim-omit="name …" — the page keeps its opt-out across Dones.
+    static func omits(_ pageHTML: String, _ name: String) -> Bool {
+        guard let attr = pageHTML.range(of: "data-tim-omit=\""),
+              let end = pageHTML.range(of: "\"", range: attr.upperBound..<pageHTML.endIndex)
+        else { return false }
+        return pageHTML[attr.upperBound..<end.lowerBound]
+            .split(separator: " ").map(String.init).contains(name)
+    }
+
     /// Template components (tpl-*) belong on every page: this injects any
     /// missing ones right after each page's canvas opening tag — objects
     /// carry explicit grid positions, so they land in the same place
@@ -106,7 +121,10 @@ public enum PageComponents {
             else { continue }
             var pageChanged = false
             for name in names where !pageHTML.contains("data-tim-component=\"\(name)\"") {
+                // A page that deleted this component opted out — respect it.
+                guard !omits(pageHTML, name) else { continue }
                 guard let content = html(named: name, in: folder),
+                      !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                       let tagEnd = pageHTML.range(of: ">", range: canvasAttr.upperBound..<pageHTML.endIndex)
                 else { continue }
                 pageHTML.insert(contentsOf: "\n" + stamped(name: name, content: content), at: tagEnd.upperBound)
@@ -137,6 +155,7 @@ public enum PageComponents {
             var pageChanged = false
             for name in names {
                 guard let content = html(named: name, in: folder),
+                      !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                       let updated = replaceRegion(in: pageHTML, name: name, with: content),
                       updated != pageHTML
                 else { continue }

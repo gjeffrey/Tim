@@ -10,6 +10,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     @Published public var title: String = "New Tab"
     @Published public var urlString: String = ""
     @Published public var isEditing: Bool = false
+    /// The loaded page identifies itself as Tim-authored (canvas attribute
+    /// or generator meta) — what lets editing light up on any folder of a
+    /// server we can already write to.
+    @Published public var isTimPage: Bool = false
     @Published public var isLoading: Bool = false
     @Published public var canGoBack: Bool = false
     @Published public var canGoForward: Bool = false
@@ -184,6 +188,13 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           for (var j = 0; j < loading.length; j++) { loading[j].classList.remove('tim-loading'); }
           var chrome = clone.querySelector('#__tim-editor-css');
           if (chrome) { chrome.remove(); }
+          var head = clone.querySelector('head');
+          if (head && !head.querySelector('meta[name="generator"]')) {
+            var gen = document.createElement('meta');
+            gen.setAttribute('name', 'generator');
+            gen.setAttribute('content', 'Tim');
+            head.insertBefore(gen, head.firstChild);
+          }
           return (document.doctype ? '<!DOCTYPE html>\\n' : '') + clone.outerHTML;
         })()
         """
@@ -808,7 +819,25 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           // While editing, delete deletes — it never navigates back.
           e.preventDefault();
           if (sel) {
-            groupAll().forEach(function (member) { member.remove(); });
+            groupAll().forEach(function (member) {
+              // Deleting a component's element takes its wrapper too —
+              // an empty husk would harvest as a blank master and wipe
+              // the component from every page. Template components also
+              // mark this page as opting out, so Done doesn't re-inject.
+              var wrap = member.parentElement && member.parentElement.closest
+                ? member.parentElement.closest('[data-tim-component]') : null;
+              if (wrap) {
+                var cname = wrap.getAttribute('data-tim-component') || '';
+                if (cname.indexOf('tpl-') === 0) {
+                  var omit = (doc.body.getAttribute('data-tim-omit') || '').split(' ').filter(Boolean);
+                  if (omit.indexOf(cname) < 0) { omit.push(cname); }
+                  doc.body.setAttribute('data-tim-omit', omit.join(' '));
+                }
+                wrap.remove();
+              } else {
+                member.remove();
+              }
+            });
             clearGroup();
             sel = null;
             hide();
@@ -869,10 +898,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         var el = tmp.firstElementChild;
         if (!el) { return; }
         // Component wrappers are display:contents — the grid placement
-        // belongs on the element inside, not the wrapper.
+        // belongs on the element inside, not the wrapper. Inserting a
+        // component also clears this page's opt-out for it.
         var placed = el;
-        if (el.getAttribute && el.getAttribute('data-tim-component') && el.firstElementChild) {
-          placed = el.firstElementChild;
+        if (el.getAttribute && el.getAttribute('data-tim-component')) {
+          var cn = el.getAttribute('data-tim-component');
+          var om = (doc.body.getAttribute('data-tim-omit') || '').split(' ').filter(function (n) { return n && n !== cn; });
+          if (om.length) { doc.body.setAttribute('data-tim-omit', om.join(' ')); }
+          else { doc.body.removeAttribute('data-tim-omit'); }
+          if (el.firstElementChild) { placed = el.firstElementChild; }
         }
         var maxRe = 1;
         Array.prototype.forEach.call(canvas.children, function (c) {
@@ -1356,7 +1390,16 @@ extension Tab: WKNavigationDelegate {
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         // Navigating away always leaves edit mode.
         if isEditing { isEditing = false }
+        isTimPage = false
         lastHTTPStatus = 200
+    }
+
+    public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        webView.evaluateJavaScript(
+            "!!(document.querySelector('[data-tim-canvas]') || document.querySelector('meta[name=\"generator\"][content^=\"Tim\"]'))"
+        ) { [weak self] result, _ in
+            self?.isTimPage = (result as? Bool) ?? false
+        }
     }
 
     public func webView(

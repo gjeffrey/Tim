@@ -9,6 +9,7 @@ public enum LocalPage {
         <html lang="en">
         <head>
         <meta charset="utf-8">
+        <meta name="generator" content="Tim">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>\(title)</title>
         <style data-tim-styles>

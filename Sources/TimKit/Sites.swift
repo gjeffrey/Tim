@@ -243,11 +243,51 @@ public final class SiteStore: ObservableObject {
         return sites.first { $0.matches(url) }
     }
 
-    /// Editing is a publishing act: only pages you own are editable —
-    /// pages under a connected site, or local files.
-    public func isEditable(_ url: URL?) -> Bool {
+    /// Credentials belong to the server, not the folder. When a URL lives
+    /// on a host we already publish to over SFTP but outside every
+    /// connected site, derive a sibling site for its top-level folder:
+    /// same credentials, remote root mapped through the shared docroot
+    /// (an origin of …/tim rooted at /home/u/site.com/tim means /timtest
+    /// lives at /home/u/site.com/timtest). Returned unsaved — it becomes
+    /// a real connection the first time it's actually edited.
+    public func derivedSite(for url: URL) -> Site? {
+        guard match(url) == nil, !url.isFileURL,
+              let scheme = url.scheme?.lowercased(),
+              let host = url.host()?.lowercased()
+        else { return nil }
+        for site in sites where site.target == .sftp && !site.remoteRoot.isEmpty {
+            guard let originURL = URL(string: site.origin),
+                  originURL.scheme?.lowercased() == scheme,
+                  originURL.host()?.lowercased() == host,
+                  url.port == originURL.port
+            else { continue }
+            let originPath = (originURL.path.isEmpty || originURL.path == "/") ? "" : originURL.path
+            let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
+            guard originPath.isEmpty || root.hasSuffix(originPath) else { continue }
+            let docroot = originPath.isEmpty ? root : String(root.dropLast(originPath.count))
+            let first = url.path.split(separator: "/").first.map(String.init) ?? ""
+            // A file at the domain root belongs to a site at the domain root.
+            let base = (first.isEmpty || first.contains(".")) ? "" : "/" + first
+            var derived = Site()
+            derived.name = host + base
+            derived.origin = scheme + "://" + host + base
+            derived.target = .sftp
+            derived.host = site.host
+            derived.username = site.username
+            derived.port = site.port
+            derived.remoteRoot = docroot + base
+            derived.localProjectPath = SiteWorkspace.defaultFolder(for: derived.name)
+            return derived
+        }
+        return nil
+    }
+
+    /// Editing is a publishing act: pages under a connected site, local
+    /// files — and any Tim-authored page on a server we can write to.
+    public func isEditable(_ url: URL?, timAuthored: Bool = false) -> Bool {
         guard let url else { return false }
-        return url.isFileURL || match(url) != nil
+        if url.isFileURL || match(url) != nil { return true }
+        return timAuthored && derivedSite(for: url) != nil
     }
 
     public func upsert(_ site: Site) {

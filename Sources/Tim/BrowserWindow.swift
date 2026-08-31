@@ -99,7 +99,7 @@ struct VerticalTabRow: View {
     @State private var hovering = false
 
     private var isEditable: Bool {
-        siteStore.isEditable(URL(string: tab.urlString))
+        siteStore.isEditable(URL(string: tab.urlString), timAuthored: tab.isTimPage)
     }
 
     var body: some View {
@@ -565,8 +565,15 @@ struct TabContentView: View {
     @FocusState private var addressFocused: Bool
 
     private var pageURL: URL? { URL(string: tab.urlString) }
-    private var matchedSite: Site? { siteStore.match(pageURL) }
-    private var isPageEditable: Bool { siteStore.isEditable(pageURL) }
+    private var matchedSite: Site? {
+        if let site = siteStore.match(pageURL) { return site }
+        // Credentials belong to the server: a Tim-authored page on a host
+        // we already publish to is editable, and a missing page there can
+        // be created — no separate connection required.
+        guard tab.isTimPage || tab.lastHTTPStatus == 404, let url = pageURL else { return nil }
+        return siteStore.derivedSite(for: url)
+    }
+    private var isPageEditable: Bool { siteStore.isEditable(pageURL, timAuthored: tab.isTimPage) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -682,7 +689,7 @@ struct TabContentView: View {
             if tab.isEditing {
                 finishEditing()
             } else if isPageEditable {
-                tab.setEditing(true)
+                beginEditing()
             }
         }
         .onReceive(Timer.publish(every: 3, on: .main, in: .common).autoconnect()) { _ in
@@ -706,6 +713,15 @@ struct TabContentView: View {
             if let html, tab.webView.url == url { try? html.write(to: url, atomically: true, encoding: .utf8) }
             completion?()
         }
+    }
+
+    /// Entering edit mode materializes a derived site (a Tim page on a
+    /// server we can write to, but outside every explicit connection):
+    /// it's saved as a real connection and its mirror starts downloading
+    /// while you edit, so Done has the full site to restamp against.
+    private func beginEditing() {
+        if let matched = matchedSite { _ = ensureWorkspace(matched) }
+        tab.setEditing(true)
     }
 
     /// The DOM about to be saved must still belong to the page this edit
@@ -1056,10 +1072,31 @@ struct TabContentView: View {
         var updated = site
         if updated.localProjectPath.isEmpty {
             updated.localProjectPath = SiteWorkspace.defaultFolder(for: updated.name.isEmpty ? updated.origin : updated.name)
+        }
+        let isNew = !siteStore.sites.contains { $0.id == updated.id }
+        if isNew || site.localProjectPath.isEmpty {
             siteStore.upsert(updated)
         }
         SiteWorkspace.ensure(updated.localProjectPath)
+        // A derived site's first real use: quietly pull the server's copy
+        // into the fresh mirror so history, components, and restamping
+        // have the actual site to work with.
+        if isNew { mirrorQuietly(updated) }
         return updated
+    }
+
+    private func mirrorQuietly(_ site: Site) {
+        guard site.target == .sftp, !site.remoteRoot.isEmpty else { return }
+        DispatchQueue.global(qos: .utility).async {
+            _ = try? SFTP.downloadDirectory(
+                remoteRoot: site.remoteRoot, to: site.localProjectPath,
+                host: site.host, username: site.username, port: site.port
+            )
+            SiteWorkspace.snapshot(site.localProjectPath, message: "Connected \(site.name)")
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .timThumbsUpdated, object: nil)
+            }
+        }
     }
 
     /// You browsed to a page on your site that doesn't exist yet — make it
@@ -1335,7 +1372,7 @@ struct TabContentView: View {
                     .buttonStyle(.borderedProminent)
                     .help("Done (⌘E) — your changes are saved")
             } else if isPageEditable, previewSha == nil {
-                Button("Edit") { tab.setEditing(true) }
+                Button("Edit") { beginEditing() }
                     .buttonStyle(.bordered)
                     .tint(.accentColor)
                     .help("Edit This Page (⌘E)")
