@@ -71,6 +71,12 @@ public enum GoogleFonts {
         }
     }
 
+    /// Lookup by name in the loaded catalog (nil until the catalog loads
+    /// or if the family isn't a Google font).
+    public static func catalogFamily(named name: String) -> Family? {
+        memoryCatalog?.first { $0.family == name }
+    }
+
     // MARK: URLs
 
     /// The weights worth shipping: the usual design range, limited to what

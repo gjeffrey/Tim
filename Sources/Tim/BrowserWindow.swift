@@ -276,6 +276,7 @@ struct SiteSection: View {
         guard let site else { pages = []; versions = []; return }
         let rel = currentRel
         DispatchQueue.global(qos: .utility).async {
+            SiteManifest.refreshIfStale(site: site)
             let loadedPages = LinkSources.pages(for: site)
             var loadedVersions: [SiteWorkspace.PageVersion] = []
             if let rel, !AstroProject.isAstroProject(site.localProjectPath) {
@@ -2967,6 +2968,8 @@ struct PageOptionsControls: View {
     @State private var touchIcon: String
     @State private var showIconMaker = false
     @State private var hideFromSearch: Bool
+    @State private var makerRecipe: IconRecipe?
+    @State private var makerImage: NSImage?
 
     init(tab: Tab, info: [String: Any], reload: @escaping () -> Void) {
         self.tab = tab
@@ -3147,7 +3150,7 @@ struct PageOptionsControls: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.primary.opacity(0.12), lineWidth: 1))
                         HStack(spacing: 4) {
-                            Button("Make…") { showIconMaker = true }.controlSize(.mini)
+                            Button("Make…") { prepareIconMaker() }.controlSize(.mini)
                             Button("Choose…") { chooseMetaImage(kind: "touchIcon") }.controlSize(.mini)
                         }
                         if !touchIcon.isEmpty {
@@ -3199,8 +3202,9 @@ struct PageOptionsControls: View {
                     .help("Adds a noindex meta tag — search engines skip this page. Site-wide crawler permissions live in the site's settings.")
             }
             .sheet(isPresented: $showIconMaker) {
-                IconMakerSheet { url in
+                IconMakerSheet(existing: makerRecipe, existingImage: makerImage) { recipe, url in
                     stageAndSet(fileURL: url, kinds: ["touchIcon", "favicon"])
+                    persistIconRecipe(recipe)
                 }
             }
 
@@ -3211,6 +3215,44 @@ struct PageOptionsControls: View {
                 .padding(.horizontal, 2)
         }
         .padding(10)
+    }
+
+    /// Editing an icon means reopening its recipe, not starting over —
+    /// recipes live in the site manifest (tim.json) so they follow the
+    /// site to any Mac; local pages keep theirs in defaults.
+    private func prepareIconMaker() {
+        if let s = currentSite, let url = tab.webView.url {
+            SiteManifest.refreshIfStale(site: s)
+            let rel = s.relativePagePath(for: url)
+            makerRecipe = SiteManifest.load(fromMirror: s.localProjectPath).iconRecipes[rel]
+        } else if let url = tab.webView.url,
+                  let data = UserDefaults.standard.data(forKey: "tim.iconRecipe." + url.absoluteString),
+                  let recipe = try? JSONDecoder().decode(IconRecipe.self, from: data) {
+            makerRecipe = recipe
+        } else {
+            makerRecipe = nil
+        }
+        makerImage = (makerRecipe?.imageBased == true) ? localPreviewImage(for: touchIcon) : nil
+        showIconMaker = true
+    }
+
+    private func persistIconRecipe(_ recipe: IconRecipe) {
+        if let s = currentSite, let url = tab.webView.url, !s.localProjectPath.isEmpty {
+            let rel = s.relativePagePath(for: url)
+            var manifest = SiteManifest.load(fromMirror: s.localProjectPath)
+            manifest.iconRecipes[rel] = recipe
+            manifest.iconRecipesUpdated = Date()
+            let json = manifest.save(toMirror: s.localProjectPath)
+            if s.target == .sftp, let json {
+                let site = s
+                DispatchQueue.global(qos: .utility).async {
+                    let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
+                    _ = try? SFTP.upload(html: json, to: root + "/tim.json", host: site.host, username: site.username, port: site.port)
+                }
+            }
+        } else if let url = tab.webView.url, let data = try? JSONEncoder().encode(recipe) {
+            UserDefaults.standard.set(data, forKey: "tim.iconRecipe." + url.absoluteString)
+        }
     }
 
     private var shareDomain: String {
@@ -3412,25 +3454,53 @@ extension Color {
 }
 
 
-// MARK: - Icon maker: letters or an emoji on a color, or your own image
+// MARK: - Icon maker: an editable recipe — colors, gradients, type
 
 struct IconMakerSheet: View {
-    let onSave: (URL) -> Void
+    let existing: IconRecipe?
+    let existingImage: NSImage?
+    let onSave: (IconRecipe, URL) -> Void
     @Environment(\.dismiss) private var dismiss
 
-    @State private var text = ""
-    @State private var backgroundIndex = 0
+    @State private var text: String
+    @State private var fontFamily: String
+    @State private var textColor: Color
+    @State private var backgroundColor: Color
+    @State private var useGradient: Bool
+    @State private var backgroundEnd: Color
     @State private var picked: NSImage?
+    @State private var fontReady = true
 
-    private let palette: [NSColor] = [
-        NSColor(red: 0.996, green: 0.929, blue: 0.0, alpha: 1),  // Tim yellow
+    private let quickColors: [NSColor] = [
+        NSColor(red: 0.996, green: 0.929, blue: 0.0, alpha: 1),
         .systemBlue, .systemPurple, .systemGreen,
         .systemOrange, .systemPink, .black, .white
     ]
 
+    init(existing: IconRecipe?, existingImage: NSImage?, onSave: @escaping (IconRecipe, URL) -> Void) {
+        self.existing = existing
+        self.existingImage = existingImage
+        self.onSave = onSave
+        let recipe = existing ?? IconRecipe()
+        _text = State(initialValue: recipe.text)
+        _fontFamily = State(initialValue: recipe.fontFamily)
+        _textColor = State(initialValue: recipe.textColorHex.isEmpty
+            ? .white
+            : Color(cssColor: recipe.textColorHex, fallback: .white))
+        _backgroundColor = State(initialValue: Color(cssColor: recipe.backgroundHex, fallback: Color(nsColor: NSColor(red: 0.996, green: 0.929, blue: 0, alpha: 1))))
+        _useGradient = State(initialValue: !recipe.backgroundEndHex.isEmpty)
+        _backgroundEnd = State(initialValue: recipe.backgroundEndHex.isEmpty
+            ? .purple
+            : Color(cssColor: recipe.backgroundEndHex, fallback: .purple))
+        _picked = State(initialValue: (recipe.imageBased ? existingImage : nil))
+        if recipe.textColorHex.isEmpty {
+            _textColor = State(initialValue: .black)
+        }
+    }
+
     var body: some View {
         VStack(spacing: 14) {
-            Text("Make an Icon")
+            Text(existing == nil ? "Make an Icon" : "Edit Icon")
                 .font(.title3.bold())
 
             ZStack {
@@ -3439,45 +3509,81 @@ struct IconMakerSheet: View {
                         .resizable()
                         .aspectRatio(contentMode: .fill)
                 } else {
-                    Rectangle()
-                        .fill(Color(nsColor: palette[backgroundIndex]))
+                    if useGradient {
+                        LinearGradient(
+                            colors: [backgroundColor, backgroundEnd],
+                            startPoint: .topLeading, endPoint: .bottomTrailing
+                        )
+                    } else {
+                        Rectangle().fill(backgroundColor)
+                    }
                     Text(text.isEmpty ? "T" : text)
-                        .font(.system(size: text.count > 2 ? 26 : (text.count == 2 ? 36 : 48), weight: .bold))
-                        .foregroundStyle(luminance(palette[backgroundIndex]) > 0.6 ? Color.black : Color.white)
+                        .font(previewFont)
+                        .foregroundStyle(textColor)
                 }
             }
-            .frame(width: 96, height: 96)
-            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .frame(width: 104, height: 104)
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
                     .stroke(Color.primary.opacity(0.12), lineWidth: 1)
             )
 
             TextField("1–3 letters, or an emoji", text: $text)
                 .textFieldStyle(.roundedBorder)
                 .multilineTextAlignment(.center)
-                .frame(width: 180)
+                .frame(width: 190)
                 .onChange(of: text) { _, value in
                     if value.count > 3 { text = String(value.prefix(3)) }
                     if !value.isEmpty { picked = nil }
                 }
 
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
+                GridRow {
+                    Text("Font").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Menu {
+                        Button("System") { fontFamily = "" }
+                        Divider()
+                        ForEach(FontCatalog.options.filter { $0.googleQuery != nil }) { option in
+                            Button(option.name) { selectFont(option) }
+                        }
+                    } label: {
+                        Text(fontFamily.isEmpty ? "System" : fontFamily)
+                            .font(.system(size: 11.5))
+                            .lineLimit(1)
+                    }
+                    .frame(width: 150, alignment: .leading)
+                }
+                GridRow {
+                    Text("Text").font(.system(size: 11)).foregroundStyle(.secondary)
+                    ColorPicker("", selection: $textColor, supportsOpacity: false)
+                        .labelsHidden()
+                }
+                GridRow {
+                    Text("Fill").font(.system(size: 11)).foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        ColorPicker("", selection: $backgroundColor, supportsOpacity: false)
+                            .labelsHidden()
+                        Toggle("Gradient", isOn: $useGradient)
+                            .font(.system(size: 11))
+                        if useGradient {
+                            ColorPicker("", selection: $backgroundEnd, supportsOpacity: false)
+                                .labelsHidden()
+                        }
+                    }
+                }
+            }
+
             HStack(spacing: 8) {
-                ForEach(Array(palette.enumerated()), id: \.offset) { item in
+                ForEach(Array(quickColors.enumerated()), id: \.offset) { item in
                     Button {
-                        backgroundIndex = item.offset
+                        backgroundColor = Color(nsColor: item.element)
                         picked = nil
                     } label: {
                         Circle()
                             .fill(Color(nsColor: item.element))
-                            .frame(width: 22, height: 22)
-                            .overlay(
-                                Circle().stroke(
-                                    backgroundIndex == item.offset && picked == nil
-                                        ? Color.accentColor : Color.primary.opacity(0.15),
-                                    lineWidth: backgroundIndex == item.offset && picked == nil ? 2 : 1
-                                )
-                            )
+                            .frame(width: 20, height: 20)
+                            .overlay(Circle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
                     }
                     .buttonStyle(.plain)
                 }
@@ -3496,54 +3602,91 @@ struct IconMakerSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
-                Button("Save") {
-                    if let url = renderTimIcon(
-                        text: text,
-                        background: palette[backgroundIndex],
-                        image: picked
-                    ) {
-                        onSave(url)
-                    }
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
+                Button("Save") { save() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
             }
         }
         .padding(20)
-        .frame(width: 300)
+        .frame(width: 320)
     }
 
-    private func luminance(_ color: NSColor) -> CGFloat {
-        let c = color.usingColorSpace(.sRGB) ?? color
-        return 0.299 * c.redComponent + 0.587 * c.greenComponent + 0.114 * c.blueComponent
+    private var previewFont: Font {
+        let size: CGFloat = text.count > 2 ? 28 : (text.count == 2 ? 38 : 50)
+        if fontFamily.isEmpty || !fontReady { return .system(size: size, weight: .bold) }
+        return .custom(fontFamily, size: size)
+    }
+
+    private func selectFont(_ option: FontOption) {
+        fontFamily = option.name
+        fontReady = false
+        GoogleFonts.catalog { _ in
+            if let family = GoogleFonts.catalogFamily(named: option.name) {
+                GoogleFonts.registerForPreview(family) { ok in fontReady = ok }
+            } else {
+                fontReady = true
+            }
+        }
+    }
+
+    private func save() {
+        var recipe = IconRecipe()
+        recipe.text = text.isEmpty ? "T" : text
+        recipe.fontFamily = fontFamily
+        recipe.textColorHex = textColor.hexString
+        recipe.backgroundHex = backgroundColor.hexString
+        recipe.backgroundEndHex = useGradient ? backgroundEnd.hexString : ""
+        recipe.imageBased = picked != nil
+        if let url = renderTimIcon(recipe: recipe, image: picked) {
+            onSave(recipe, url)
+        }
+        dismiss()
     }
 }
 
+func nsColor(fromHex hex: String, fallback: NSColor) -> NSColor {
+    guard hex.hasPrefix("#"), hex.count >= 7,
+          let r = Int(hex.dropFirst().prefix(2), radix: 16),
+          let g = Int(hex.dropFirst(3).prefix(2), radix: 16),
+          let b = Int(hex.dropFirst(5).prefix(2), radix: 16)
+    else { return fallback }
+    return NSColor(srgbRed: CGFloat(r) / 255, green: CGFloat(g) / 255, blue: CGFloat(b) / 255, alpha: 1)
+}
+
 /// Renders the 180×180 PNG used for both apple-touch-icon and favicon.
-func renderTimIcon(text: String, background: NSColor, image: NSImage?) -> URL? {
+func renderTimIcon(recipe: IconRecipe, image: NSImage?) -> URL? {
     let side: CGFloat = 180
     let canvas = NSImage(size: NSSize(width: side, height: side))
     canvas.lockFocus()
+    let full = NSRect(x: 0, y: 0, width: side, height: side)
     if let image, image.size.width > 0, image.size.height > 0 {
-        // Center-crop, aspect fill.
         let scale = max(side / image.size.width, side / image.size.height)
         let width = image.size.width * scale
         let height = image.size.height * scale
         image.draw(in: NSRect(x: (side - width) / 2, y: (side - height) / 2, width: width, height: height))
     } else {
-        background.setFill()
-        NSRect(x: 0, y: 0, width: side, height: side).fill()
-        let display = text.isEmpty ? "T" : text
+        let start = nsColor(fromHex: recipe.backgroundHex, fallback: NSColor(red: 0.996, green: 0.929, blue: 0, alpha: 1))
+        if !recipe.backgroundEndHex.isEmpty,
+           let gradient = NSGradient(starting: start, ending: nsColor(fromHex: recipe.backgroundEndHex, fallback: .systemPurple)) {
+            gradient.draw(in: full, angle: -45)
+        } else {
+            start.setFill()
+            full.fill()
+        }
+        let display = recipe.text.isEmpty ? "T" : recipe.text
         let fontSize: CGFloat = display.count == 1 ? 96 : (display.count == 2 ? 68 : 48)
-        let srgb = background.usingColorSpace(.sRGB) ?? background
+        var font = NSFont.systemFont(ofSize: fontSize, weight: .bold)
+        if !recipe.fontFamily.isEmpty {
+            font = NSFont(name: recipe.fontFamily, size: fontSize)
+                ?? NSFontManager.shared.font(withFamily: recipe.fontFamily, traits: [], weight: 9, size: fontSize)
+                ?? font
+        }
+        let srgb = (nsColor(fromHex: recipe.backgroundHex, fallback: .white).usingColorSpace(.sRGB)) ?? .white
         let luminance = 0.299 * srgb.redComponent + 0.587 * srgb.greenComponent + 0.114 * srgb.blueComponent
-        let foreground: NSColor = luminance > 0.6 ? .black : .white
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: fontSize, weight: .bold),
-            .foregroundColor: foreground
-        ]
-        let string = NSAttributedString(string: display, attributes: attributes)
+        let foreground = recipe.textColorHex.isEmpty
+            ? (luminance > 0.6 ? NSColor.black : NSColor.white)
+            : nsColor(fromHex: recipe.textColorHex, fallback: .white)
+        let string = NSAttributedString(string: display, attributes: [.font: font, .foregroundColor: foreground])
         let size = string.size()
         string.draw(at: NSPoint(x: (side - size.width) / 2, y: (side - size.height) / 2))
     }
