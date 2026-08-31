@@ -14,6 +14,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     /// or generator meta) — what lets editing light up on any folder of a
     /// server we can already write to.
     @Published public var isTimPage: Bool = false
+    var restoringDraft = false
+    /// One-shot: the next page load must not auto-resume a draft (set
+    /// while showing a version preview, which loads over the same URL).
+    public var suppressDraftResume = false
     @Published public var isLoading: Bool = false
     @Published public var canGoBack: Bool = false
     @Published public var canGoForward: Bool = false
@@ -1001,6 +1005,12 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
                 return wrap ? (wrap.getAttribute('data-tim-component') || '') : '';
               })(),
               fontFamily: String(cs.fontFamily || '').split(',')[0].replace(/["']/g, '').trim(),
+              italic: cs.fontStyle === 'italic' ? 1 : 0,
+              underline: (cs.textDecorationLine || '').indexOf('underline') >= 0 ? 1 : 0,
+              strike: (cs.textDecorationLine || '').indexOf('line-through') >= 0 ? 1 : 0,
+              caps: (cs.fontVariantCaps === 'small-caps' || cs.fontVariant === 'small-caps')
+                ? 'small' : (cs.textTransform === 'uppercase' ? 'upper'
+                : (cs.textTransform === 'capitalize' ? 'title' : 'none')),
               lineHeight: (parseFloat(cs.lineHeight) || 1.4 * (parseFloat(cs.fontSize) || 16)) / (parseFloat(cs.fontSize) || 16),
               letterSpacing: cs.letterSpacing === 'normal' ? 0 : (parseFloat(cs.letterSpacing) || 0)
             });
@@ -1020,7 +1030,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       // Page-scoped named styles, the Pages/Keynote way: "Update Style"
       // rewrites the style's rule in a persistent <style> element (saved
       // with the page), so every block carrying the class follows.
-      var TYPO_PROPS = ['fontFamily', 'fontSize', 'fontWeight', 'color', 'lineHeight', 'letterSpacing', 'textAlign'];
+      var TYPO_PROPS = ['fontFamily', 'fontSize', 'fontWeight', 'color', 'lineHeight', 'letterSpacing', 'textAlign',
+                        'fontStyle', 'textDecoration', 'textTransform', 'fontVariant'];
       var styleRules = {};
       (function parseExistingOverrides() {
         var el = doc.querySelector('style[data-tim-style-overrides]');
@@ -1403,6 +1414,27 @@ extension Tab: WKNavigationDelegate {
         ) { [weak self] result, _ in
             self?.isTimPage = (result as? Bool) ?? false
         }
+        // An unfinished edit of this page picks up where it left off.
+        if restoringDraft {
+            restoringDraft = false
+            setEditing(true)
+        } else if suppressDraftResume {
+            suppressDraftResume = false
+        } else if let url = webView.url, !url.isFileURL,
+                  let draft = DraftStore.html(for: url.absoluteString) {
+            restoringDraft = true
+            webView.loadHTMLString(draft, baseURL: url)
+        }
+    }
+
+    /// Stashes the current edit session (called before navigating away,
+    /// and every few seconds while editing).
+    public func stashDraft(_ completion: (() -> Void)? = nil) {
+        guard isEditing, let url = webView.url, !url.isFileURL else { completion?(); return }
+        currentHTML { html in
+            if let html { DraftStore.save(html, for: url.absoluteString) }
+            completion?()
+        }
     }
 
     public func webView(
@@ -1410,14 +1442,27 @@ extension Tab: WKNavigationDelegate {
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
     ) {
-        // While editing, a stray click on a link (a nav object, say) must
-        // never navigate the tab out from under the canvas — that throws
-        // away the session. Links go live again the moment editing ends.
-        if isEditing, navigationAction.targetFrame?.isMainFrame != false,
-           navigationAction.navigationType == .linkActivated
-            || navigationAction.navigationType == .formSubmitted {
-            decisionHandler(.cancel)
-            return
+        if isEditing, navigationAction.targetFrame?.isMainFrame != false {
+            // A stray click on a link (a nav object, say) stays inert while
+            // editing — links go live again the moment editing ends.
+            if navigationAction.navigationType == .linkActivated
+                || navigationAction.navigationType == .formSubmitted {
+                decisionHandler(.cancel)
+                return
+            }
+            // A deliberate navigation (URL bar, sidebar, back/forward):
+            // stash the session as a draft first, then let it through.
+            // Opening the page again resumes editing right where it was.
+            if let target = navigationAction.request.url, !target.isFileURL {
+                decisionHandler(.cancel)
+                let request = navigationAction.request
+                stashDraft { [weak self] in
+                    guard let self else { return }
+                    self.setEditing(false)
+                    self.webView.load(request)
+                }
+                return
+            }
         }
         if let url = navigationAction.request.url,
            navigationAction.targetFrame?.isMainFrame == true,

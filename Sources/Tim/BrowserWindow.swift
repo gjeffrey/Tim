@@ -166,7 +166,8 @@ struct SiteSection: View {
 
                 ForEach(pages) { page in
                     Button {
-                        guard !tab.isEditing else { return }
+                        // Navigating away mid-edit is safe: the session is
+                        // stashed as a draft and resumes on return.
                         tab.navigate(to: site.origin + page.href)
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
@@ -187,9 +188,17 @@ struct SiteSection: View {
                                     .stroke(page.href == currentRel ? Color.accentColor : Color.primary.opacity(0.12),
                                             lineWidth: page.href == currentRel ? 2 : 1)
                             )
-                            Text(page.label)
-                                .font(.system(size: 11.5, weight: page.href == currentRel ? .semibold : .regular))
-                                .lineLimit(1)
+                            HStack(spacing: 5) {
+                                Text(page.label)
+                                    .font(.system(size: 11.5, weight: page.href == currentRel ? .semibold : .regular))
+                                    .lineLimit(1)
+                                if DraftStore.has(site.origin + page.href) {
+                                    Circle()
+                                        .fill(Color.orange)
+                                        .frame(width: 6, height: 6)
+                                        .help("Unsaved changes — open the page to keep editing; Done publishes them.")
+                                }
+                            }
                         }
                         .contentShape(Rectangle())
                     }
@@ -308,6 +317,9 @@ struct SiteSection: View {
                 if !loading { refresh() }
             }
             .onReceive(NotificationCenter.default.publisher(for: .timThumbsUpdated)) { _ in
+                thumbTick += 1
+            }
+            .onReceive(NotificationCenter.default.publisher(for: DraftStore.changed)) { _ in
                 thumbTick += 1
             }
         }
@@ -694,7 +706,13 @@ struct TabContentView: View {
             }
         }
         .onReceive(Timer.publish(every: 3, on: .main, in: .common).autoconnect()) { _ in
-            if tab.isEditing, isPlainLocalPage { savePlainLocalPage() }
+            if tab.isEditing, isPlainLocalPage {
+                savePlainLocalPage()
+            } else if tab.isEditing {
+                // Site pages autosave as drafts: the session survives
+                // navigation, tab closes, even quitting the app.
+                tab.stashDraft()
+            }
         }
     }
 
@@ -787,6 +805,7 @@ struct TabContentView: View {
                             }
                             SiteWorkspace.snapshot(site.localProjectPath, message: "Edit \(site.relativePagePath(for: url))")
                             DispatchQueue.main.async {
+                                DraftStore.clear(for: url.absoluteString)
                                 PageRegistry.record(url: url.absoluteString, title: tab.title)
                                 tab.webView.reload()
                             }
@@ -823,10 +842,21 @@ struct TabContentView: View {
                         in: site.localProjectPath, excludingRel: String(rel.dropFirst())
                     )
                     restamped = Array(Set(restamped + injected))
+                    // Fonts the page uses join the site's cached list in
+                    // tim.json — that's what pins them in every font picker,
+                    // on every Mac, without rescanning pages.
+                    var manifest = SiteManifest.load(fromMirror: site.localProjectPath)
+                    var manifestJSON: String?
+                    if manifest.noteFonts(SiteFonts.families(inPageHTML: html)) {
+                        manifestJSON = manifest.save(toMirror: site.localProjectPath)
+                    }
                     switch site.target {
                     case .sftp:
                         let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
                         _ = try SFTP.upload(html: html, to: root + rel, host: site.host, username: site.username, port: site.port)
+                        if let manifestJSON {
+                            _ = try? SFTP.upload(html: manifestJSON, to: root + "/tim.json", host: site.host, username: site.username, port: site.port)
+                        }
                         for pageRel in restamped {
                             let path = (site.localProjectPath as NSString).appendingPathComponent(pageRel)
                             if let pageHTML = try? String(contentsOfFile: path, encoding: .utf8) {
@@ -840,6 +870,7 @@ struct TabContentView: View {
                     }
                     SiteWorkspace.snapshot(site.localProjectPath, message: "Edit \(rel)")
                     DispatchQueue.main.async {
+                        DraftStore.clear(for: url.absoluteString)
                         PageRegistry.record(url: url.absoluteString, title: tab.title)
                         captureThumbnailSoon()
                     }
@@ -877,7 +908,12 @@ struct TabContentView: View {
                     _ = try GitHubPagesPublisher.publish(repo: site.localProjectPath, message: "Roll back \(rel)")
                 }
                 SiteWorkspace.snapshot(site.localProjectPath, message: "Roll back \(rel) to \(sha)")
-                DispatchQueue.main.async { tab.webView.reload() }
+                DispatchQueue.main.async {
+                    // The restored version is the page now — an old draft
+                    // must not resurrect over it.
+                    DraftStore.clear(for: url.absoluteString)
+                    tab.webView.reload()
+                }
             } catch {
                 DispatchQueue.main.async { publishAlert(error) }
             }
@@ -999,11 +1035,16 @@ struct TabContentView: View {
         DispatchQueue.global(qos: .userInitiated).async {
             guard let html = try? Shell.run("git show \(sha):\(Shell.quoted(rel))", in: site.localProjectPath) else { return }
             DispatchQueue.main.async {
-                if tab.isEditing { tab.setEditing(false) }
-                previewHTML = html
-                previewLabel = label
-                previewSha = sha
-                tab.webView.loadHTMLString(html, baseURL: url)
+                let proceed = {
+                    if tab.isEditing { tab.setEditing(false) }
+                    previewHTML = html
+                    previewLabel = label
+                    previewSha = sha
+                    tab.suppressDraftResume = true
+                    tab.webView.loadHTMLString(html, baseURL: url)
+                }
+                // Mid-edit previewing keeps the session: stash first.
+                if tab.isEditing { tab.stashDraft { proceed() } } else { proceed() }
             }
         }
     }
@@ -3051,6 +3092,10 @@ struct InspectorControls: View {
     @State private var lineHeight: Double
     @State private var letterSpacing: Double
     @State private var pinnedFonts: [String] = []
+    @State private var isItalic: Bool = false
+    @State private var isUnderlined: Bool = false
+    @State private var isStruck: Bool = false
+    @State private var capsMode: String = "none"
     @State private var textColor: Color
     @State private var fillColor: Color
     @State private var radius: Double
@@ -3085,6 +3130,10 @@ struct InspectorControls: View {
         _opacity = State(initialValue: info["opacity"] as? Double ?? 1)
         _hasShadow = State(initialValue: (info["hasShadow"] as? Int) == 1)
         _textShadowOn = State(initialValue: (info["hasTextShadow"] as? Int) == 1)
+        _isItalic = State(initialValue: (info["italic"] as? Int) == 1)
+        _isUnderlined = State(initialValue: (info["underline"] as? Int) == 1)
+        _isStruck = State(initialValue: (info["strike"] as? Int) == 1)
+        _capsMode = State(initialValue: info["caps"] as? String ?? "none")
     }
 
     private var isText: Bool {
@@ -3122,6 +3171,12 @@ struct InspectorControls: View {
             }
         }
         .padding(10)
+        .onAppear {
+            // Warm the pinned list so the font picker opens populated.
+            tab.pageFonts { fonts in
+                pinnedFonts = SiteFonts.used(site: site, pageFonts: fonts)
+            }
+        }
     }
 
     private var isCanvasObject: Bool {
@@ -3338,6 +3393,35 @@ struct InspectorControls: View {
                 Spacer()
             }
 
+            HStack(spacing: 8) {
+                rowLabel("Emphasis")
+                HStack(spacing: 3) {
+                    emphasisButton("italic", on: $isItalic) {
+                        tab.setSelectionStyle("fontStyle", isItalic ? "italic" : "normal")
+                    }
+                    emphasisButton("underline", on: $isUnderlined) { applyDecoration() }
+                    emphasisButton("strikethrough", on: $isStruck) { applyDecoration() }
+                }
+                Spacer()
+            }
+
+            HStack(spacing: 8) {
+                rowLabel("Caps")
+                Picker("", selection: $capsMode) {
+                    Text("None").tag("none")
+                    Text("ALL").tag("upper")
+                    Text("Small").tag("small")
+                    Text("Title").tag("title")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.mini)
+                .onChange(of: capsMode) { _, mode in
+                    tab.setSelectionStyle("textTransform", mode == "upper" ? "uppercase" : (mode == "title" ? "capitalize" : "none"))
+                    tab.setSelectionStyle("fontVariant", mode == "small" ? "small-caps" : "normal")
+                }
+            }
+
             sliderRow("Leading", $lineHeight, 0.8...2.2, 0.05, String(format: "%.2f", lineHeight))
                 .onChange(of: lineHeight) { _, v in tab.setSelectionStyle("lineHeight", String(format: "%.2f", v)) }
 
@@ -3368,6 +3452,27 @@ struct InspectorControls: View {
                 Spacer()
             }
         }
+    }
+
+    private func emphasisButton(_ symbol: String, on: Binding<Bool>, apply: @escaping () -> Void) -> some View {
+        Button {
+            on.wrappedValue.toggle()
+            apply()
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 10))
+                .frame(width: 26, height: 16)
+        }
+        .buttonStyle(.bordered)
+        .tint(on.wrappedValue ? Color.accentColor : nil)
+        .controlSize(.mini)
+    }
+
+    private func applyDecoration() {
+        var parts: [String] = []
+        if isUnderlined { parts.append("underline") }
+        if isStruck { parts.append("line-through") }
+        tab.setSelectionStyle("textDecoration", parts.isEmpty ? "none" : parts.joined(separator: " "))
     }
 
     private func applyTextShadow() {

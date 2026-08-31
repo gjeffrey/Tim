@@ -17,10 +17,25 @@ public enum SiteFonts {
                 }
             }
             let manifest = SiteManifest.load(fromMirror: site.localProjectPath)
+            // The manifest's cached list is the workhorse: every family the
+            // site has ever used, accumulated on Done and synced via tim.json.
+            names += manifest.fonts
             names += manifest.iconRecipes.values.map(\.fontFamily).filter { !$0.isEmpty }
         }
         var seen = Set<String>()
         return names.filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    /// Families a page declares via its data-tim-font links.
+    public static func families(inPageHTML html: String) -> [String] {
+        var out: [String] = []
+        var search = html.startIndex
+        while let r = html.range(of: "data-tim-font=\"", range: search..<html.endIndex) {
+            guard let end = html.range(of: "\"", range: r.upperBound..<html.endIndex) else { break }
+            out.append(String(html[r.upperBound..<end.lowerBound]))
+            search = end.upperBound
+        }
+        return out
     }
 
     static func googleFamilies(inCSS css: String) -> [String] {

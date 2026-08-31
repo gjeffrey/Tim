@@ -20,8 +20,36 @@ public struct SiteManifest: Codable {
     public var updated: Date = Date()
     public var iconRecipesUpdated: Date = Date()
     public var iconRecipes: [String: IconRecipe] = [:]   // keyed by page rel path
+    public var fontsUpdated: Date = Date()
+    public var fonts: [String] = []                      // families in use across the site
 
     public init() {}
+
+    enum CodingKeys: String, CodingKey {
+        case version, updated, iconRecipesUpdated, iconRecipes, fontsUpdated, fonts
+    }
+
+    // decodeIfPresent throughout: a tim.json written by an older build must
+    // keep loading (a decode failure would silently discard the manifest).
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        updated = try c.decodeIfPresent(Date.self, forKey: .updated) ?? Date()
+        iconRecipesUpdated = try c.decodeIfPresent(Date.self, forKey: .iconRecipesUpdated) ?? Date()
+        iconRecipes = try c.decodeIfPresent([String: IconRecipe].self, forKey: .iconRecipes) ?? [:]
+        fontsUpdated = try c.decodeIfPresent(Date.self, forKey: .fontsUpdated) ?? Date()
+        fonts = try c.decodeIfPresent([String].self, forKey: .fonts) ?? []
+    }
+
+    /// Folds newly seen font families into the cached list. Returns true
+    /// when the list changed (the caller saves and republishes tim.json).
+    public mutating func noteFonts(_ families: [String]) -> Bool {
+        let fresh = families.filter { !$0.isEmpty && !fonts.contains($0) }
+        guard !fresh.isEmpty else { return false }
+        fonts += fresh
+        fontsUpdated = Date()
+        return true
+    }
 
     static let coderDate = ISO8601DateFormatter()
 
