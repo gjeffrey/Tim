@@ -3047,6 +3047,7 @@ struct PageOptionsControls: View {
     @State private var hideFromSearch: Bool
     @State private var makerRecipe: IconRecipe?
     @State private var makerImage: NSImage?
+    @State private var editingSiteSettings: Site?
 
     init(tab: Tab, info: [String: Any], reload: @escaping () -> Void) {
         self.tab = tab
@@ -3282,6 +3283,39 @@ struct PageOptionsControls: View {
                 IconMakerSheet(existing: makerRecipe, existingImage: makerImage) { recipe, url in
                     stageAndSet(fileURL: url, kinds: ["touchIcon", "favicon"])
                     persistIconRecipe(recipe)
+                }
+            }
+
+            if let s = currentSite {
+                VStack(alignment: .leading, spacing: 9) {
+                    Text("SITE")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .kerning(0.7)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Image(systemName: s.target.symbol)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        Text(s.name.isEmpty ? s.origin : s.name)
+                            .font(.system(size: 12, weight: .medium))
+                            .lineLimit(1)
+                        Spacer()
+                        Button("Site Settings…") { editingSiteSettings = s }
+                            .controlSize(.small)
+                    }
+                    Text("Connection, crawler permissions, and everything else that applies to every page on this site.")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(Color.primary.opacity(0.12), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                )
+                .sheet(item: $editingSiteSettings) { site in
+                    SiteEditorSheet(site: site, prefillOrigin: nil)
                 }
             }
 
