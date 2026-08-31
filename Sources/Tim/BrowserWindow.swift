@@ -778,31 +778,14 @@ struct TabContentView: View {
                     Image(systemName: "arrow.uturn.forward")
                 }
                 .help("Redo")
-                Button {
-                    finishEditing()
-                } label: {
-                    Text("Done")
-                        .font(.system(size: 12, weight: .semibold))
-                        .padding(.vertical, 4)
-                        .padding(.horizontal, 12)
-                        .background(Capsule().fill(Color.accentColor))
-                        .foregroundStyle(Color.white)
-                }
-                .buttonStyle(.plain)
-                .help("Done (⌘E) — your changes are saved")
+                Button("Done") { finishEditing() }
+                    .buttonStyle(.borderedProminent)
+                    .help("Done (⌘E) — your changes are saved")
             } else if isPageEditable {
-                Button {
-                    tab.setEditing(true)
-                } label: {
-                    Text("Edit")
-                        .font(.system(size: 12, weight: .semibold))
-                        .padding(.vertical, 4)
-                        .padding(.horizontal, 12)
-                        .background(Capsule().fill(Color.accentColor.opacity(0.15)))
-                        .foregroundStyle(Color.accentColor)
-                }
-                .buttonStyle(.plain)
-                .help("Edit This Page (⌘E)")
+                Button("Edit") { tab.setEditing(true) }
+                    .buttonStyle(.bordered)
+                    .tint(.accentColor)
+                    .help("Edit This Page (⌘E)")
             }
 
             Menu {

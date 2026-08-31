@@ -833,14 +833,14 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           var bodyRule = '';
           if (p.bg) { bodyRule += 'background:' + p.bg + ';'; }
           if (p.fg) { bodyRule += 'color:' + p.fg + ';'; }
-          if (bodyRule) { out += scope + '{' + bodyRule + '}\n'; }
-          if (p.link) { out += scope + ' a{color:' + p.link + ';}\n'; }
-          if (p.baseSize != null) { out += 'html:has(' + scope + '){font-size:' + p.baseSize + 'px;}\n'; }
+          if (bodyRule) { out += scope + '{' + bodyRule + '}\\n'; }
+          if (p.link) { out += scope + ' a{color:' + p.link + ';}\\n'; }
+          if (p.baseSize != null) { out += 'html:has(' + scope + '){font-size:' + p.baseSize + 'px;}\\n'; }
           if (p.padY != null || p.marginX != null || p.contentW != null) {
             var pad = p.padY != null ? p.padY : 48;
             var mx = p.marginX != null ? p.marginX : 32;
             var cw = p.contentW != null ? p.contentW : 1320;
-            out += scope + ' .tim-canvas{padding:' + pad + 'px max(' + mx + 'px, calc(50vw - ' + (cw / 2) + 'px));}\n';
+            out += scope + ' .tim-canvas{padding:' + pad + 'px max(' + mx + 'px, calc(50vw - ' + (cw / 2) + 'px));}\\n';
           }
         }
         el.textContent = out;
