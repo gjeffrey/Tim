@@ -26,6 +26,7 @@ extension Notification.Name {
     static let timDuplicatePage = Notification.Name("tim.duplicatePage")
     static let timToggleEdit = Notification.Name("tim.toggleEdit")
     static let timThumbsUpdated = Notification.Name("tim.thumbsUpdated")
+    static let timPreviewVersion = Notification.Name("tim.previewVersion")
 }
 
 struct BrowserWindow: View {
@@ -262,18 +263,42 @@ struct SiteSection: View {
                         .padding(.top, 4)
                     ForEach(versions) { version in
                         Button {
-                            rollback(to: version.sha)
+                            NotificationCenter.default.post(
+                                name: .timPreviewVersion,
+                                object: nil,
+                                userInfo: ["sha": version.sha, "label": historyLabel(version.date)]
+                            )
                         } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "clock.arrow.circlepath")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                                Text(version.date).font(.system(size: 11))
+                            HStack(spacing: 7) {
+                                Group {
+                                    if let thumb = ThumbnailStore.image(for: "version:\(site.localProjectPath):\(version.sha)") {
+                                        Image(nsImage: thumb)
+                                            .resizable()
+                                            .aspectRatio(contentMode: .fill)
+                                    } else {
+                                        ZStack {
+                                            Rectangle().fill(Color.primary.opacity(0.05))
+                                            Image(systemName: "clock.arrow.circlepath")
+                                                .font(.system(size: 9))
+                                                .foregroundStyle(.tertiary)
+                                        }
+                                    }
+                                }
+                                .frame(width: 44, height: 28)
+                                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                        .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+                                )
+                                Text(historyLabel(version.date))
+                                    .font(.system(size: 11))
+                                    .lineLimit(1)
+                                Spacer(minLength: 0)
                             }
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .help("Restore this page to this version and republish it.")
+                        .help("Preview this version — restore it from the panel if it's the one.")
                     }
                 }
             }
@@ -532,6 +557,9 @@ struct TabContentView: View {
     @State private var showConnectSheet = false
     @State private var editingSite: Site?
     @State private var newPageSite: Site?
+    @State private var previewSha: String?
+    @State private var previewLabel = ""
+    @State private var previewHTML = ""
     @AppStorage("tim.siteSidebar") private var showSiteSidebar = true
     @FocusState private var addressFocused: Bool
 
@@ -569,7 +597,15 @@ struct TabContentView: View {
                     WebViewContainer(webView: tab.webView)
                 }
             }
-            if tab.isEditing {
+            if previewSha != nil {
+                Divider()
+                VersionPreviewPane(
+                    dateLabel: previewLabel,
+                    onRestore: { restorePreviewedVersion() },
+                    onRestoreAsNew: { restorePreviewAsNewPage() },
+                    onCancel: { exitVersionPreview() }
+                )
+            } else if tab.isEditing {
                 Divider()
                 InspectorView(
                     tab: tab,
@@ -595,6 +631,7 @@ struct TabContentView: View {
         }
         .onChange(of: tab.urlString) { _, newValue in
             if !addressFocused { addressText = newValue }
+            previewSha = nil
         }
         .onChange(of: tab.isLoading) { _, loading in
             // Thumbnails fall out of browsing: snapshot owned pages on load.
@@ -634,6 +671,11 @@ struct TabContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .timDuplicatePage)) { _ in
             duplicatePage()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .timPreviewVersion)) { note in
+            guard let sha = note.userInfo?["sha"] as? String,
+                  let label = note.userInfo?["label"] as? String else { return }
+            previewVersion(sha: sha, label: label)
         }
         .onReceive(NotificationCenter.default.publisher(for: .timToggleEdit)) { _ in
             if tab.isEditing {
@@ -891,7 +933,96 @@ struct TabContentView: View {
                 if let image {
                     ThumbnailStore.save(image, for: url.absoluteString)
                     NotificationCenter.default.post(name: .timThumbsUpdated, object: nil)
+                    // Pair this thumbnail with the commit it documents (the
+                    // snapshot lands in the background; give it a beat).
+                    if let site = matchedSite, !AstroProject.isAstroProject(site.localProjectPath) {
+                        let rel = String(site.relativePagePath(for: url).dropFirst())
+                        let mirror = site.localProjectPath
+                        let source = ThumbnailStore.path(for: url.absoluteString)
+                        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2.5) {
+                            guard let sha = SiteWorkspace.latestSha(of: rel, in: mirror) else { return }
+                            let destination = ThumbnailStore.path(for: "version:\(mirror):\(sha)")
+                            try? FileManager.default.removeItem(at: destination)
+                            try? FileManager.default.copyItem(at: source, to: destination)
+                            DispatchQueue.main.async {
+                                NotificationCenter.default.post(name: .timThumbsUpdated, object: nil)
+                            }
+                        }
+                    }
                 }
+            }
+        }
+    }
+
+    /// History previews before it restores: load the version into the
+    /// web view (nothing changes anywhere), decide in the panel.
+    private func previewVersion(sha: String, label: String) {
+        guard let url = tab.webView.url, let matched = matchedSite else { return }
+        let site = ensureWorkspace(matched)
+        let rel = String(site.relativePagePath(for: url).dropFirst())
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let html = try? Shell.run("git show \(sha):\(Shell.quoted(rel))", in: site.localProjectPath) else { return }
+            DispatchQueue.main.async {
+                if tab.isEditing { tab.setEditing(false) }
+                previewHTML = html
+                previewLabel = label
+                previewSha = sha
+                tab.webView.loadHTMLString(html, baseURL: url)
+            }
+        }
+    }
+
+    private func exitVersionPreview() {
+        previewSha = nil
+        previewHTML = ""
+        tab.webView.reload()
+    }
+
+    private func restorePreviewedVersion() {
+        guard let sha = previewSha else { return }
+        previewSha = nil
+        rollbackCurrentPage(to: sha)
+    }
+
+    private func restorePreviewAsNewPage() {
+        guard let matched = matchedSite, !previewHTML.isEmpty else { return }
+        let site = ensureWorkspace(matched)
+        let alert = NSAlert()
+        alert.messageText = "Restore as New Page"
+        alert.informativeText = "Name for the page:"
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 22))
+        field.stringValue = "restored"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let slug = field.stringValue.lowercased()
+            .replacingOccurrences(of: " ", with: "-")
+            .filter { $0.isLetter || $0.isNumber || $0 == "-" }
+        guard !slug.isEmpty else { return }
+        let newRel = "/\(slug).html"
+        let html = previewHTML
+        previewSha = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try PageWriter.write(html: html, folder: site.localProjectPath, relativePath: newRel)
+                switch site.target {
+                case .sftp:
+                    let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
+                    _ = try SFTP.upload(html: html, to: root + newRel, host: site.host, username: site.username, port: site.port)
+                case .cloudflare:
+                    _ = try CloudflarePublisher.deploy(folder: site.localProjectPath, projectName: site.cfProjectName)
+                case .githubPages:
+                    _ = try GitHubPagesPublisher.publish(repo: site.localProjectPath, message: "Restore version as \(newRel)")
+                }
+                SiteWorkspace.snapshot(site.localProjectPath, message: "Restore version as \(newRel)")
+                DispatchQueue.main.async {
+                    PageRegistry.record(url: site.origin + newRel, title: slug)
+                    tab.navigate(to: site.origin + newRel)
+                }
+            } catch {
+                DispatchQueue.main.async { publishAlert(error) }
             }
         }
     }
@@ -1186,7 +1317,7 @@ struct TabContentView: View {
                 Button("Done") { finishEditing() }
                     .buttonStyle(.borderedProminent)
                     .help("Done (⌘E) — your changes are saved")
-            } else if isPageEditable {
+            } else if isPageEditable, previewSha == nil {
                 Button("Edit") { tab.setEditing(true) }
                     .buttonStyle(.bordered)
                     .tint(.accentColor)
@@ -2639,6 +2770,78 @@ struct SiteEditorSheet: View {
             }
         }
         dismiss()
+    }
+}
+
+/// Human time for history: relative today, "Yesterday" after, dates beyond.
+func historyLabel(_ date: Date) -> String {
+    let calendar = Calendar.current
+    if calendar.isDateInToday(date) {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(for: date, relativeTo: Date())
+    }
+    let time = date.formatted(date: .omitted, time: .shortened)
+    if calendar.isDateInYesterday(date) { return "Yesterday, \(time)" }
+    return date.formatted(.dateTime.month(.abbreviated).day()) + ", " + time
+}
+
+// MARK: - Version preview: look first, then decide
+
+struct VersionPreviewPane: View {
+    let dateLabel: String
+    let onRestore: () -> Void
+    let onRestoreAsNew: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Spacer().frame(height: 12)
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.system(size: 26, weight: .light))
+                .foregroundStyle(Color.accentColor)
+            VStack(spacing: 3) {
+                Text("Version from")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Text(dateLabel)
+                    .font(.system(size: 14, weight: .semibold))
+            }
+            Text("You're previewing — nothing has changed yet.")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(spacing: 8) {
+                Button {
+                    onRestore()
+                } label: {
+                    Text("Restore This Version")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button {
+                    onRestoreAsNew()
+                } label: {
+                    Text("Restore as New Page…")
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .controlSize(.regular)
+
+            Divider()
+                .padding(.vertical, 2)
+
+            Button("Back to Current") { onCancel() }
+                .controlSize(.small)
+
+            Spacer()
+        }
+        .padding(14)
+        .frame(width: 248)
+        .background(Color.accentColor.opacity(0.04))
     }
 }
 

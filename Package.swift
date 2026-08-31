@@ -12,8 +12,18 @@ let package = Package(
         // The macOS app.
         .executable(name: "Tim", targets: ["Tim"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")
+    ],
     targets: [
         .target(name: "TimKit", path: "Sources/TimKit"),
-        .executableTarget(name: "Tim", dependencies: ["TimKit"], path: "Sources/Tim")
+        .executableTarget(
+            name: "Tim",
+            dependencies: [
+                "TimKit",
+                .product(name: "Sparkle", package: "Sparkle")
+            ],
+            path: "Sources/Tim"
+        )
     ]
 )

@@ -1,11 +1,27 @@
 import SwiftUI
 import AppKit
 import TimKit
+import Sparkle
 
 @main
 struct TimApp: App {
     @StateObject private var store = BrowserStore()
     @StateObject private var siteStore = SiteStore()
+
+    /// Sparkle: feed and public key come from Info.plist (set by
+    /// Scripts/make-app.sh); started lazily so `swift run` stays quiet.
+    private static let updaterController = SPUStandardUpdaterController(
+        startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil
+    )
+    private static var updaterStarted = false
+
+    static func checkForUpdates() {
+        if !updaterStarted {
+            updaterController.startUpdater()
+            updaterStarted = true
+        }
+        updaterController.updater.checkForUpdates()
+    }
 
     init() {
         // Preload picker previews: warm the curated catalog's fonts
@@ -28,6 +44,9 @@ struct TimApp: App {
         }
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { TimApp.checkForUpdates() }
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New Tab") { store.newTab() }
                     .keyboardShortcut("t", modifiers: .command)

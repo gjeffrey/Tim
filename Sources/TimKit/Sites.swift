@@ -170,20 +170,30 @@ public enum SiteWorkspace {
     public struct PageVersion: Identifiable {
         public var id: String { sha }
         public let sha: String
-        public let date: String
+        public let date: Date
     }
 
     /// The invisible git history of one page, newest first.
     public static func versions(of relPath: String, in folder: String) -> [PageVersion] {
         guard let output = try? Shell.run(
-            "git log --format='%h|%ad' --date=format:'%b %e, %H:%M' -- \(Shell.quoted(relPath))",
+            "git log --format='%h|%at' -- \(Shell.quoted(relPath))",
             in: folder
         ) else { return [] }
         return output.split(separator: "\n").compactMap { line in
             let parts = line.split(separator: "|", maxSplits: 1)
-            guard parts.count == 2 else { return nil }
-            return PageVersion(sha: String(parts[0]), date: String(parts[1]))
+            guard parts.count == 2, let timestamp = TimeInterval(parts[1]) else { return nil }
+            return PageVersion(sha: String(parts[0]), date: Date(timeIntervalSince1970: timestamp))
         }
+    }
+
+    /// Latest commit touching one page — pairs saves with their thumbnails.
+    public static func latestSha(of relPath: String, in folder: String) -> String? {
+        guard let output = try? Shell.run(
+            "git log -1 --format=%h -- \(Shell.quoted(relPath))",
+            in: folder
+        ) else { return nil }
+        let sha = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return sha.isEmpty ? nil : sha
     }
 
     /// Restores one page file to a previous version (working tree only —
