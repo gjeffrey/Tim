@@ -210,6 +210,27 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         )
     }
 
+    /// Replaces the live contents of a component region on the current
+    /// page. Completion reports whether the region was found — callers
+    /// insert the component fresh when it wasn't.
+    public func updateComponent(name: String, html: String, _ completion: @escaping (Bool) -> Void) {
+        let js = """
+        (function () {
+          var region = document.querySelector('[data-tim-component=' + JSON.stringify(\(Self.jsLiteral(name))) + ']');
+          if (!region) { return false; }
+          var old = region.firstElementChild;
+          var keepArea = (old && old.style) ? old.style.gridArea : '';
+          region.innerHTML = \(Self.jsLiteral(html));
+          var fresh = region.firstElementChild;
+          if (fresh && keepArea) { fresh.style.gridArea = keepArea; }
+          return true;
+        })()
+        """
+        webView.evaluateJavaScript(js) { result, _ in
+            completion(result as? Bool ?? false)
+        }
+    }
+
     /// Applies a global text style class (tim-style-*) to the selected
     /// object or the paragraph the caret is in.
     public func applyTextStyle(_ styleClass: String) {
@@ -692,7 +713,13 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       function onClick(e) {
         if (!active || drag) { return; }
         if (e.target && e.target.getAttribute && e.target.getAttribute('data-tim-handle')) { return; }
-        if (editingEl && editingEl.contains(e.target)) { return; }
+        if (editingEl && editingEl.contains(e.target)) {
+          // Text editing inside a link (a nav item, say): the caret works,
+          // but the link must not fire and navigate the tab away.
+          var link = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+          if (link) { e.preventDefault(); }
+          return;
+        }
         e.preventDefault(); e.stopPropagation();
         var obj = e.target && e.target.closest ? e.target.closest('.tim-object') : null;
         if (e.shiftKey && obj && sel && obj !== sel && isObject(sel)
@@ -817,13 +844,20 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         tmp.innerHTML = html;
         var el = tmp.firstElementChild;
         if (!el) { return; }
+        // Component wrappers are display:contents — the grid placement
+        // belongs on the element inside, not the wrapper.
+        var placed = el;
+        if (el.getAttribute && el.getAttribute('data-tim-component') && el.firstElementChild) {
+          placed = el.firstElementChild;
+        }
         var maxRe = 1;
         Array.prototype.forEach.call(canvas.children, function (c) {
           var p = placement(c);
           if (p && p.re > maxRe) { maxRe = p.re; }
         });
-        setArea(el, maxRe, 1, maxRe + rowSpan, 1 + colSpan);
+        setArea(placed, maxRe, 1, maxRe + rowSpan, 1 + colSpan);
         canvas.appendChild(el);
+        el = placed;
         var media = (el.matches && el.matches('img,video,audio'))
           ? el
           : (el.querySelector ? el.querySelector('img,video,audio') : null);
@@ -1306,6 +1340,15 @@ extension Tab: WKNavigationDelegate {
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
     ) {
+        // While editing, a stray click on a link (a nav object, say) must
+        // never navigate the tab out from under the canvas — that throws
+        // away the session. Links go live again the moment editing ends.
+        if isEditing, navigationAction.targetFrame?.isMainFrame != false,
+           navigationAction.navigationType == .linkActivated
+            || navigationAction.navigationType == .formSubmitted {
+            decisionHandler(.cancel)
+            return
+        }
         if let url = navigationAction.request.url,
            navigationAction.targetFrame?.isMainFrame == true,
            navigationAction.request.cachePolicy == .useProtocolCachePolicy,
@@ -1340,8 +1383,9 @@ extension Tab: WKUIDelegate {
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        // target=_blank links open in the same tab for now.
-        if navigationAction.targetFrame == nil {
+        // target=_blank links open in the same tab for now — unless we're
+        // editing, where no click may steal the page.
+        if navigationAction.targetFrame == nil, !isEditing {
             webView.load(navigationAction.request)
         }
         return nil

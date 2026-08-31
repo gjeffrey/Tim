@@ -27,6 +27,7 @@ extension Notification.Name {
     static let timToggleEdit = Notification.Name("tim.toggleEdit")
     static let timThumbsUpdated = Notification.Name("tim.thumbsUpdated")
     static let timPreviewVersion = Notification.Name("tim.previewVersion")
+    static let timEditNav = Notification.Name("tim.editNav")
 }
 
 struct BrowserWindow: View {
@@ -1530,6 +1531,9 @@ struct EditingToolbar: View {
         }
         .sheet(item: $navBuilderSite) { navSite in
             NavBuilderSheet(site: navSite, tab: tab)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .timEditNav)) { _ in
+            if let site, tab.isEditing { navBuilderSite = site }
         }
     }
 
@@ -3071,6 +3075,13 @@ struct InspectorControls: View {
 
     private var templateCard: some View {
         card {
+            if (info["templateComponent"] as? String) == "tpl-nav" {
+                Button("Edit Navigation…") {
+                    NotificationCenter.default.post(name: .timEditNav, object: nil)
+                }
+                .font(.system(size: 11))
+                .help("Choose which pages appear, add links, and reorder.")
+            }
             Toggle("On every page", isOn: Binding(
                 get: { onEveryPage },
                 set: { on in
@@ -3978,61 +3989,179 @@ struct NavBuilderSheet: View {
     @ObservedObject var tab: Tab
     @Environment(\.dismiss) private var dismiss
 
-    @State private var pages: [LinkOption] = []
-    @State private var included: Set<String> = []
+    private struct NavItem: Identifiable, Equatable {
+        let id = UUID()
+        var label: String
+        var href: String
+        var enabled: Bool
+        var isPage: Bool
+        var openTag: String?  // the original <a …> tag — styling survives
+    }
+
+    @State private var items: [NavItem] = []
+    @State private var navOpenTag: String?
+    @State private var hasMaster = false
+    @State private var newLabel = ""
+    @State private var newURL = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Navigation")
                 .font(.title3.bold())
-            Text("A menu of your pages — it lives on every page, and editing it anywhere updates it everywhere.")
+            Text("A menu that lives on every page. Toggle pages on and off, add links to anything — even an email address — and drag to reorder.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(pages) { page in
-                        Toggle(page.label, isOn: Binding(
-                            get: { included.contains(page.href) },
-                            set: { on in
-                                if on { included.insert(page.href) } else { included.remove(page.href) }
+            List {
+                ForEach($items) { $item in
+                    HStack(spacing: 8) {
+                        Toggle("", isOn: $item.enabled)
+                            .labelsHidden()
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(item.label)
+                                .font(.system(size: 12))
+                            if !item.isPage {
+                                Text(item.href)
+                                    .font(.system(size: 9.5))
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
                             }
-                        ))
-                        .font(.system(size: 12))
+                        }
+                        Spacer()
+                        if !item.isPage {
+                            Button {
+                                items.removeAll { $0.id == item.id }
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Remove this link")
+                        }
+                        Image(systemName: "line.3.horizontal")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.quaternary)
                     }
                 }
+                .onMove { from, to in items.move(fromOffsets: from, toOffset: to) }
             }
-            .frame(maxHeight: 200)
+            .listStyle(.inset)
+            .frame(height: 220)
+
+            HStack(spacing: 6) {
+                TextField("Label", text: $newLabel)
+                    .frame(width: 90)
+                TextField("URL or email address", text: $newURL)
+                Button("Add") { addCustomLink() }
+                    .disabled(newLabel.trimmingCharacters(in: .whitespaces).isEmpty
+                              || newURL.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            .controlSize(.small)
 
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
-                Button("Insert") { insert() }
+                Button(hasMaster ? "Update" : "Insert") { apply() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(included.isEmpty)
+                    .disabled(!items.contains(where: \.enabled))
             }
         }
         .padding(20)
-        .frame(width: 320)
-        .onAppear {
-            pages = LinkSources.pages(for: site)
-            included = Set(pages.map(\.href))
-        }
+        .frame(width: 400)
+        .onAppear(perform: load)
     }
 
-    private func insert() {
-        let links = pages
-            .filter { included.contains($0.href) }
-            .map { "<a href=\"\(site.origin + $0.href)\" style=\"text-decoration:none;color:inherit;\">\($0.label)</a>" }
-            .joined(separator: "\n  ")
-        let nav = "<nav class=\"tim-object tim-nav tim-text\" style=\"grid-area: 1 / 1 / 3 / 25; display:flex; gap:20px; flex-wrap:wrap; align-items:center; font-weight:500;\">\n  \(links)\n</nav>"
-        // The nav is a template component: saved as the master and injected
-        // into every page on Done; inline edits propagate like any component.
+    /// Seeds the sheet from the existing nav master when there is one —
+    /// its links come back in order, styling intact — and every site page
+    /// not yet in the nav joins the list, toggled off.
+    private func load() {
+        let master = PageComponents.html(named: "tpl-nav", in: site.localProjectPath)
+        let hadMaster = master != nil
+        hasMaster = hadMaster
+        var list: [NavItem] = []
+        if let master {
+            navOpenTag = firstMatch(in: master, pattern: "<nav[^>]*>")
+            for anchor in allMatches(in: master, pattern: "<a\\b[^>]*>[\\s\\S]*?</a>") {
+                let openTag = firstMatch(in: anchor, pattern: "<a\\b[^>]*>") ?? "<a>"
+                let href = firstMatch(in: openTag, pattern: "href=\"([^\"]*)\"", group: 1) ?? ""
+                let label = anchor
+                    .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                list.append(NavItem(label: label.isEmpty ? href : label, href: href,
+                                    enabled: true, isPage: false, openTag: openTag))
+            }
+        }
+        let pages = LinkSources.pages(for: site)
+        for index in list.indices {
+            list[index].isPage = pages.contains { site.origin + $0.href == list[index].href }
+        }
+        for page in pages {
+            let full = site.origin + page.href
+            guard !list.contains(where: { $0.href == full }) else { continue }
+            list.append(NavItem(label: page.label, href: full,
+                                enabled: !hadMaster, isPage: true, openTag: nil))
+        }
+        items = list
+    }
+
+    private func addCustomLink() {
+        var href = newURL.trimmingCharacters(in: .whitespaces)
+        if !href.contains("://"), !href.hasPrefix("mailto:"), !href.hasPrefix("tel:"),
+           !href.hasPrefix("#"), !href.hasPrefix("/") {
+            href = href.contains("@") && !href.contains("/") ? "mailto:" + href : "https://" + href
+        }
+        items.append(NavItem(label: newLabel.trimmingCharacters(in: .whitespaces),
+                             href: href, enabled: true, isPage: false, openTag: nil))
+        newLabel = ""
+        newURL = ""
+    }
+
+    /// Rebuilds the nav from the list, saves the master, and updates the
+    /// live region in place (or inserts one when the page has none). Done
+    /// stamps it across every page as usual.
+    private func apply() {
+        let links = items.filter(\.enabled).map { item -> String in
+            var tag = item.openTag ?? "<a style=\"text-decoration:none;color:inherit;\">"
+            tag = tag.replacingOccurrences(of: "\\s*href=\"[^\"]*\"", with: "", options: .regularExpression)
+            tag = tag.replacingOccurrences(of: "<a", with: "<a href=\"\(item.href)\"")
+            return tag + escapeHTML(item.label) + "</a>"
+        }.joined(separator: "\n  ")
+        let openTag = navOpenTag
+            ?? "<nav class=\"tim-object tim-nav tim-text\" style=\"display:flex; gap:20px; flex-wrap:wrap; align-items:center; font-weight:500;\">"
+        let nav = openTag + "\n  " + links + "\n</nav>"
         try? PageComponents.save(name: "tpl-nav", html: nav, in: site.localProjectPath)
-        tab.insertObject(html: PageComponents.stamped(name: "tpl-nav", content: nav), colSpan: 24, rowSpan: 2)
+        tab.updateComponent(name: "tpl-nav", html: nav) { found in
+            if !found {
+                tab.insertObject(html: PageComponents.stamped(name: "tpl-nav", content: nav),
+                                 colSpan: 24, rowSpan: 2)
+            }
+        }
         dismiss()
+    }
+
+    private func escapeHTML(_ text: String) -> String {
+        text.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
+    private func firstMatch(in text: String, pattern: String, group: Int = 0) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              match.numberOfRanges > group,
+              let range = Range(match.range(at: group), in: text)
+        else { return nil }
+        return String(text[range])
+    }
+
+    private func allMatches(in text: String, pattern: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        return regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap {
+            Range($0.range, in: text).map { String(text[$0]) }
+        }
     }
 }
 
