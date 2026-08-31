@@ -296,6 +296,17 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         webView.evaluateJavaScript("window.__timReplaceSel && window.__timReplaceSel(\(Self.jsLiteral(html)));", completionHandler: nil)
     }
 
+    /// Google Fonts the page already links (data-tim-font).
+    public func pageFonts(_ completion: @escaping ([String]) -> Void) {
+        webView.evaluateJavaScript("window.__timPageFonts ? window.__timPageFonts() : '[]'") { result, _ in
+            guard let json = result as? String,
+                  let data = json.data(using: .utf8),
+                  let array = try? JSONSerialization.jsonObject(with: data) as? [String]
+            else { completion([]); return }
+            completion(array)
+        }
+    }
+
     /// The page's canvas region, serialized for the source round trip.
     public func canvasHTML(_ completion: @escaping (String) -> Void) {
         webView.evaluateJavaScript("window.__timCanvasHTML ? window.__timCanvasHTML() : ''") { result, _ in
@@ -343,6 +354,12 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           var now = node.textContent;
           if (oldValue !== null && now !== oldValue) { out.push([oldValue, now]); }
         });
+        return JSON.stringify(out);
+      };
+      window.__timPageFonts = function () {
+        var out = [];
+        var links = document.querySelectorAll('link[data-tim-font]');
+        for (var i = 0; i < links.length; i++) { out.push(links[i].getAttribute('data-tim-font')); }
         return JSON.stringify(out);
       };
       window.__timCanvasHTML = function () {

@@ -277,6 +277,7 @@ struct SiteSection: View {
         let rel = currentRel
         DispatchQueue.global(qos: .utility).async {
             SiteManifest.refreshIfStale(site: site)
+            GoogleFonts.prewarm(SiteFonts.used(site: site, pageFonts: []))
             let loadedPages = LinkSources.pages(for: site)
             var loadedVersions: [SiteWorkspace.PageVersion] = []
             if let rel, !AstroProject.isAstroProject(site.localProjectPath) {
@@ -1746,7 +1747,7 @@ struct ThemePanel: View {
         .padding(14)
         .frame(width: 340)
         .popover(item: $browsingFor, arrowEdge: .trailing) { target in
-            FontPickerView { family in
+            FontPickerView(pinned: SiteFonts.used(site: site, pageFonts: [])) { family in
                 let option = fontOption(from: family)
                 if !importedFonts.contains(option) { importedFonts.append(option) }
                 if target == .heading { headingFont = option } else { bodyFont = option }
@@ -2745,6 +2746,7 @@ struct InspectorControls: View {
     @State private var weightIndex: Int
     @State private var lineHeight: Double
     @State private var letterSpacing: Double
+    @State private var pinnedFonts: [String] = []
     @State private var textColor: Color
     @State private var fillColor: Color
     @State private var radius: Double
@@ -2845,7 +2847,10 @@ struct InspectorControls: View {
     private var typographyCard: some View {
         card("Typography") {
             Button {
-                showFontPicker = true
+                tab.pageFonts { fonts in
+                    pinnedFonts = SiteFonts.used(site: nil, pageFonts: fonts)
+                    showFontPicker = true
+                }
             } label: {
                 HStack {
                     Text(fontFamilyName.isEmpty ? "System" : fontFamilyName)
@@ -2863,7 +2868,7 @@ struct InspectorControls: View {
             }
             .buttonStyle(.plain)
             .popover(isPresented: $showFontPicker, arrowEdge: .leading) {
-                FontPickerView { family in
+                FontPickerView(pinned: pinnedFonts) { family in
                     fontFamilyName = family.family
                     tab.ensurePageFont(family: family.family, cssURL: GoogleFonts.cssURL(for: family))
                     tab.setSelectionStyle("fontFamily", "'\(family.family)', \(GoogleFonts.genericFallback(family.category))")
@@ -3048,6 +3053,7 @@ struct PageOptionsControls: View {
     @State private var makerRecipe: IconRecipe?
     @State private var makerImage: NSImage?
     @State private var editingSiteSettings: Site?
+    @State private var pinnedFonts: [String] = []
 
     init(tab: Tab, info: [String: Any], reload: @escaping () -> Void) {
         self.tab = tab
@@ -3280,7 +3286,7 @@ struct PageOptionsControls: View {
                     .help("Adds a noindex meta tag — search engines skip this page. Site-wide crawler permissions live in the site's settings.")
             }
             .sheet(isPresented: $showIconMaker) {
-                IconMakerSheet(existing: makerRecipe, existingImage: makerImage) { recipe, url in
+                IconMakerSheet(existing: makerRecipe, existingImage: makerImage, pinned: pinnedFonts) { recipe, url in
                     stageAndSet(fileURL: url, kinds: ["touchIcon", "favicon"])
                     persistIconRecipe(recipe)
                 }
@@ -3343,8 +3349,20 @@ struct PageOptionsControls: View {
         } else {
             makerRecipe = nil
         }
-        makerImage = (makerRecipe?.imageBased == true) ? localPreviewImage(for: touchIcon) : nil
-        showIconMaker = true
+        if makerRecipe == nil, !touchIcon.isEmpty, let image = localPreviewImage(for: touchIcon) {
+            // Icon predates recipes: start from what's there, not a blank.
+            var legacy = IconRecipe()
+            legacy.imageBased = true
+            makerRecipe = legacy
+            makerImage = image
+        } else {
+            makerImage = (makerRecipe?.imageBased == true) ? localPreviewImage(for: touchIcon) : nil
+        }
+        let site = currentSite
+        tab.pageFonts { fonts in
+            pinnedFonts = SiteFonts.used(site: site, pageFonts: fonts)
+            showIconMaker = true
+        }
     }
 
     private func persistIconRecipe(_ recipe: IconRecipe) {
@@ -3570,6 +3588,7 @@ extension Color {
 struct IconMakerSheet: View {
     let existing: IconRecipe?
     let existingImage: NSImage?
+    var pinned: [String] = []
     let onSave: (IconRecipe, URL) -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -3581,6 +3600,7 @@ struct IconMakerSheet: View {
     @State private var backgroundEnd: Color
     @State private var picked: NSImage?
     @State private var fontReady = true
+    @State private var showFontPicker = false
 
     private let quickColors: [NSColor] = [
         NSColor(red: 0.996, green: 0.929, blue: 0.0, alpha: 1),
@@ -3588,9 +3608,10 @@ struct IconMakerSheet: View {
         .systemOrange, .systemPink, .black, .white
     ]
 
-    init(existing: IconRecipe?, existingImage: NSImage?, onSave: @escaping (IconRecipe, URL) -> Void) {
+    init(existing: IconRecipe?, existingImage: NSImage?, pinned: [String] = [], onSave: @escaping (IconRecipe, URL) -> Void) {
         self.existing = existing
         self.existingImage = existingImage
+        self.pinned = pinned
         self.onSave = onSave
         let recipe = existing ?? IconRecipe()
         _text = State(initialValue: recipe.text)
@@ -3652,18 +3673,42 @@ struct IconMakerSheet: View {
             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
                 GridRow {
                     Text("Font").font(.system(size: 11)).foregroundStyle(.secondary)
-                    Menu {
-                        Button("System") { fontFamily = "" }
-                        Divider()
-                        ForEach(FontCatalog.options.filter { $0.googleQuery != nil }) { option in
-                            Button(option.name) { selectFont(option) }
-                        }
+                    Button {
+                        showFontPicker = true
                     } label: {
-                        Text(fontFamily.isEmpty ? "System" : fontFamily)
-                            .font(.system(size: 11.5))
-                            .lineLimit(1)
+                        HStack {
+                            Text(fontFamily.isEmpty ? "System" : fontFamily)
+                                .font(.system(size: 11.5))
+                                .lineLimit(1)
+                            Spacer()
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: 7, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 7)
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(0.06)))
+                        .contentShape(Rectangle())
                     }
-                    .frame(width: 150, alignment: .leading)
+                    .buttonStyle(.plain)
+                    .frame(width: 160, alignment: .leading)
+                    .popover(isPresented: $showFontPicker, arrowEdge: .trailing) {
+                        VStack(spacing: 6) {
+                            Button("Use System Font") {
+                                fontFamily = ""
+                                fontReady = true
+                                showFontPicker = false
+                            }
+                            .controlSize(.small)
+                            FontPickerView(pinned: pinned) { family in
+                                fontFamily = family.family
+                                fontReady = false
+                                GoogleFonts.registerForPreview(family) { ok in fontReady = ok }
+                                showFontPicker = false
+                            }
+                        }
+                        .padding(.top, 8)
+                    }
                 }
                 GridRow {
                     Text("Text").font(.system(size: 11)).foregroundStyle(.secondary)
@@ -3726,18 +3771,6 @@ struct IconMakerSheet: View {
         let size: CGFloat = text.count > 2 ? 28 : (text.count == 2 ? 38 : 50)
         if fontFamily.isEmpty || !fontReady { return .system(size: size, weight: .bold) }
         return .custom(fontFamily, size: size)
-    }
-
-    private func selectFont(_ option: FontOption) {
-        fontFamily = option.name
-        fontReady = false
-        GoogleFonts.catalog { _ in
-            if let family = GoogleFonts.catalogFamily(named: option.name) {
-                GoogleFonts.registerForPreview(family) { ok in fontReady = ok }
-            } else {
-                fontReady = true
-            }
-        }
     }
 
     private func save() {
@@ -3813,6 +3846,7 @@ func renderTimIcon(recipe: IconRecipe, image: NSImage?) -> URL? {
 // MARK: - Google Fonts picker: the whole catalog, each family in its own face
 
 struct FontPickerView: View {
+    var pinned: [String] = []
     let onPick: (GoogleFonts.Family) -> Void
 
     @State private var catalog: [GoogleFonts.Family] = []
@@ -3853,7 +3887,23 @@ struct FontPickerView: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(filtered) { family in
+                        let pinnedFamilies = filtered.filter { pinned.contains($0.family) }
+                        if !pinnedFamilies.isEmpty {
+                            Text("ON THIS SITE")
+                                .font(.system(size: 9, weight: .semibold))
+                                .kerning(0.6)
+                                .foregroundStyle(.secondary)
+                                .padding(.vertical, 4)
+                            ForEach(pinnedFamilies) { family in
+                                FontRow(family: family) { onPick(family) }
+                            }
+                            Text("ALL FONTS")
+                                .font(.system(size: 9, weight: .semibold))
+                                .kerning(0.6)
+                                .foregroundStyle(.secondary)
+                                .padding(.vertical, 4)
+                        }
+                        ForEach(filtered.filter { !pinned.contains($0.family) }) { family in
                             FontRow(family: family) { onPick(family) }
                         }
                     }

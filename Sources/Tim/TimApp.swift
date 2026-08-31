@@ -8,6 +8,9 @@ struct TimApp: App {
     @StateObject private var siteStore = SiteStore()
 
     init() {
+        // Preload picker previews: warm the curated catalog's fonts
+        // (download-once, persistent) so lists render instantly.
+        GoogleFonts.prewarm(FontCatalog.options.compactMap { $0.googleQuery != nil ? $0.name : nil })
         // Running from a Swift Package executable: promote to a regular,
         // focusable app with a menu bar.
         DispatchQueue.main.async {

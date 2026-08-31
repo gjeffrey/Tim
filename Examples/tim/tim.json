@@ -3,13 +3,13 @@
     "\/holland.html" : {
       "backgroundEndHex" : "#CB30E0",
       "backgroundHex" : "#FEED00",
-      "fontFamily" : "Playfair Display",
+      "fontFamily" : "IBM Plex Mono",
       "imageBased" : false,
-      "text" : "HJ",
-      "textColorHex" : "#FFFFFF"
+      "text" : "HWJ",
+      "textColorHex" : "#FFCBE8"
     }
   },
-  "iconRecipesUpdated" : "2026-08-31T21:09:52Z",
-  "updated" : "2026-08-31T21:09:52Z",
+  "iconRecipesUpdated" : "2026-08-31T21:14:19Z",
+  "updated" : "2026-08-31T21:14:19Z",
   "version" : 1
 }

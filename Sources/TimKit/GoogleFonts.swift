@@ -77,6 +77,19 @@ public enum GoogleFonts {
         memoryCatalog?.first { $0.family == name }
     }
 
+    /// Warms the cache for named families (download-once, disk-persistent):
+    /// the curated list at launch, a site's own fonts when it opens.
+    public static func prewarm(_ names: [String]) {
+        guard !names.isEmpty else { return }
+        catalog { families in
+            for name in names {
+                if let family = families.first(where: { $0.family == name }) {
+                    registerForPreview(family) { _ in }
+                }
+            }
+        }
+    }
+
     // MARK: URLs
 
     /// The weights worth shipping: the usual design range, limited to what
