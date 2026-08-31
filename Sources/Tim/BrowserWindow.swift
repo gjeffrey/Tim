@@ -2826,7 +2826,19 @@ struct InspectorControls: View {
             || ["h1", "h2", "h3", "h4", "h5", "h6", "p", "blockquote", "li"].contains(info["tag"] as? String ?? "")
     }
     private var hasOverrides: Bool { (info["overrides"] as? Int) == 1 }
-    private var styleName: String { timStyles.first { $0.cls == styleClass }?.name ?? "Body" }
+    private var selectionCount: Int { info["selCount"] as? Int ?? 1 }
+    private var customStyles: [String] {
+        let fixed = Set(timStyles.map(\.cls))
+        return ((info["customStyles"] as? [String]) ?? []).filter { !fixed.contains($0) }.sorted()
+    }
+    private var styleName: String {
+        timStyles.first { $0.cls == styleClass }?.name ?? styleDisplayName(styleClass)
+    }
+    private func styleDisplayName(_ cls: String) -> String {
+        cls.replacingOccurrences(of: "tim-style-", with: "")
+            .replacingOccurrences(of: "-", with: " ")
+            .capitalized
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -2876,17 +2888,42 @@ struct InspectorControls: View {
 
     private var styleCard: some View {
         card {
-            HStack(spacing: 8) {
+            if selectionCount > 1 {
+                Text("\(selectionCount) objects — edits apply to all")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.accentColor)
+            }
+            HStack(spacing: 6) {
                 rowLabel("Style")
                 Picker("", selection: $styleClass) {
                     ForEach(timStyles, id: \.cls) { style in
                         Text(style.name).tag(style.cls)
+                    }
+                    if !customStyles.isEmpty {
+                        Divider()
+                        ForEach(customStyles, id: \.self) { cls in
+                            Text(styleDisplayName(cls)).tag(cls)
+                        }
                     }
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
                 .controlSize(.small)
                 .onChange(of: styleClass) { _, cls in tab.applyTextStyle(cls) }
+                Menu {
+                    Button("New Style from Selection…") { promptNewStyle() }
+                    if customStyles.contains(styleClass) {
+                        Button("Rename \(styleName)…") { promptRenameStyle() }
+                        Button("Delete \(styleName)", role: .destructive) {
+                            tab.deleteStyle(className: styleClass)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 11))
+                }
+                .menuIndicator(.hidden)
+                .fixedSize()
             }
             if hasOverrides {
                 Divider()
@@ -2913,6 +2950,50 @@ struct InspectorControls: View {
                 }
             }
         }
+    }
+
+    private func styleSlug(_ name: String) -> String {
+        let slug = name.lowercased()
+            .replacingOccurrences(of: " ", with: "-")
+            .filter { $0.isLetter || $0.isNumber || $0 == "-" }
+        return slug.isEmpty ? "style" : slug
+    }
+
+    private func askForName(title: String, message: String, prefill: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 22))
+        field.stringValue = prefill
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let value = field.stringValue.trimmingCharacters(in: .whitespaces)
+        return value.isEmpty ? nil : value
+    }
+
+    private func promptNewStyle() {
+        guard let name = askForName(
+            title: "New Style",
+            message: "The selection's look becomes a named style you can apply anywhere on this page.",
+            prefill: ""
+        ) else { return }
+        let cls = "tim-style-" + styleSlug(name)
+        tab.createStyleFromSelection(className: cls)
+        styleClass = cls
+    }
+
+    private func promptRenameStyle() {
+        guard let name = askForName(
+            title: "Rename Style",
+            message: "Every block using it follows the new name.",
+            prefill: styleDisplayName(styleClass)
+        ) else { return }
+        let newClass = "tim-style-" + styleSlug(name)
+        tab.renameStyle(from: styleClass, to: newClass)
+        styleClass = newClass
     }
 
     // MARK: Typography
@@ -3741,7 +3822,7 @@ struct NavBuilderSheet: View {
     private func insert() {
         let links = pages
             .filter { included.contains($0.href) }
-            .map { "<a href=\"\($0.href)\" style=\"text-decoration:none;color:inherit;\">\($0.label)</a>" }
+            .map { "<a href=\"\(site.origin + $0.href)\" style=\"text-decoration:none;color:inherit;\">\($0.label)</a>" }
             .joined(separator: "\n  ")
         let nav = "<nav class=\"tim-object tim-nav tim-text\" style=\"grid-area: 1 / 1 / 3 / 25; display:flex; gap:20px; flex-wrap:wrap; align-items:center; font-weight:500;\">\n  \(links)\n</nav>"
         // The nav is a template component: saved as the master and injected

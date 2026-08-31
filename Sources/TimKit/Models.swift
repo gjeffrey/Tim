@@ -250,6 +250,21 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         webView.evaluateJavaScript("window.__timUpdateStyleFromSel && window.__timUpdateStyleFromSel();", completionHandler: nil)
     }
 
+    /// Creates a named style from the selection's look and applies it.
+    public func createStyleFromSelection(className: String) {
+        webView.evaluateJavaScript("window.__timCreateStyleFromSel && window.__timCreateStyleFromSel(\(Self.jsLiteral(className)));", completionHandler: nil)
+    }
+
+    /// Renames a custom style everywhere on the page.
+    public func renameStyle(from oldClass: String, to newClass: String) {
+        webView.evaluateJavaScript("window.__timRenameStyle && window.__timRenameStyle(\(Self.jsLiteral(oldClass)), \(Self.jsLiteral(newClass)));", completionHandler: nil)
+    }
+
+    /// Deletes a custom style; its blocks fall back to Body.
+    public func deleteStyle(className: String) {
+        webView.evaluateJavaScript("window.__timDeleteStyle && window.__timDeleteStyle(\(Self.jsLiteral(className)));", completionHandler: nil)
+    }
+
     /// Clears the selection's local typography tweaks so it derives from
     /// its named style again.
     public func revertSelectionToStyle() {
@@ -447,7 +462,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       badge.style.cssText = 'position:absolute;background:#0a84ff;color:#fff;font:11px -apple-system,sans-serif;padding:3px 8px;border-radius:5px;display:none;white-space:nowrap;pointer-events:auto;cursor:grab;';
       var hoverBox = doc.createElement('div');
       hoverBox.style.cssText = 'position:absolute;border:1px dashed rgba(10,132,255,0.55);pointer-events:none;display:none;box-sizing:border-box;';
-      overlay.appendChild(gridBox); overlay.appendChild(hoverBox); overlay.appendChild(box); overlay.appendChild(badge);
+      var groupBox = doc.createElement('div');
+      groupBox.style.cssText = 'position:absolute;pointer-events:none;';
+      overlay.appendChild(gridBox); overlay.appendChild(hoverBox); overlay.appendChild(box); overlay.appendChild(badge); overlay.appendChild(groupBox);
       var handles = {};
       ['w', 'e', 's', 'se'].forEach(function (k) {
         var h = doc.createElement('div');
@@ -459,6 +476,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       doc.body.appendChild(overlay);
 
       var sel = null, drag = null, active = false, editingEl = null;
+      var selGroup = [];
 
       function rectOf(el) {
         var r = el.getBoundingClientRect();
@@ -471,6 +489,21 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       function canvasFor(el) { return el && el.closest ? el.closest('[data-tim-canvas]') : null; }
       function stopTextEditing() {
         if (editingEl) { editingEl.removeAttribute('contenteditable'); editingEl = null; }
+      }
+      function groupAll() { return sel ? [sel].concat(selGroup) : []; }
+      function clearGroup() { selGroup = []; groupBox.innerHTML = ''; }
+      function layoutGroup() {
+        groupBox.innerHTML = '';
+        for (var gi = 0; gi < selGroup.length; gi++) {
+          var gel = selGroup[gi];
+          if (!doc.contains(gel)) { continue; }
+          var gr = rectOf(gel);
+          var gb = doc.createElement('div');
+          gb.style.cssText = 'position:absolute;border:1.5px dashed #0a84ff;box-sizing:border-box;border-radius:3px;';
+          gb.style.left = gr.x + 'px'; gb.style.top = gr.y + 'px';
+          gb.style.width = gr.w + 'px'; gb.style.height = gr.h + 'px';
+          groupBox.appendChild(gb);
+        }
       }
 
       function gridInfo(canvas) {
@@ -544,6 +577,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
 
       function hide() {
         box.style.display = badge.style.display = 'none';
+        groupBox.innerHTML = '';
         hideGrid();
         for (var k in handles) { handles[k].style.display = 'none'; }
       }
@@ -573,6 +607,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           handles.se.style.left = (r.x + r.w - 5) + 'px';
           handles.se.style.top = (r.y + r.h - 5) + 'px';
         }
+        layoutGroup();
       }
 
       function onDown(e) {
@@ -594,8 +629,16 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           var p1 = placement(obj);
           if (canvas2 && p1) {
             stopTextEditing();
+            if (obj !== sel && selGroup.indexOf(obj) < 0) { clearGroup(); }
+            if (selGroup.indexOf(obj) >= 0) {
+              selGroup.splice(selGroup.indexOf(obj), 1);
+              if (sel && sel !== obj) { selGroup.push(sel); }
+            }
             sel = obj;
-            drag = { mode: 'move', canvas: canvas2, sx: e.pageX, sy: e.pageY, p0: p1, moved: false };
+            var items = groupAll().map(function (member) {
+              return { el: member, p: placement(member) };
+            }).filter(function (item) { return !!item.p; });
+            drag = { mode: 'move', canvas: canvas2, sx: e.pageX, sy: e.pageY, p0: p1, items: items, moved: false };
             showGrid(canvas2);
             layout();
             e.preventDefault(); e.stopPropagation();
@@ -613,7 +656,11 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (dc !== 0 || dr !== 0) { drag.moved = true; }
 
         if (drag.mode === 'move') {
-          setArea(sel, p.rs + dr, p.cs + dc, p.re + dr, p.ce + dc);
+          var members = drag.items || [{ el: sel, p: p }];
+          for (var di = 0; di < members.length; di++) {
+            var member = members[di];
+            setArea(member.el, member.p.rs + dr, member.p.cs + dc, member.p.re + dr, member.p.ce + dc);
+          }
         } else if (drag.mode === 'e') {
           setArea(sel, p.rs, p.cs, p.re, Math.max(p.cs + 1, Math.min(COLS + 1, p.ce + dc)));
         } else if (drag.mode === 'w') {
@@ -647,8 +694,18 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (e.target && e.target.getAttribute && e.target.getAttribute('data-tim-handle')) { return; }
         if (editingEl && editingEl.contains(e.target)) { return; }
         e.preventDefault(); e.stopPropagation();
-        stopTextEditing();
         var obj = e.target && e.target.closest ? e.target.closest('.tim-object') : null;
+        if (e.shiftKey && obj && sel && obj !== sel && isObject(sel)
+            && canvasFor(obj) && canvasFor(obj) === canvasFor(sel)) {
+          stopTextEditing();
+          var slot = selGroup.indexOf(obj);
+          if (slot >= 0) { selGroup.splice(slot, 1); } else { selGroup.push(obj); }
+          layout();
+          notifySel(true);
+          return;
+        }
+        stopTextEditing();
+        clearGroup();
         var el = obj || e.target;
         if (!obj) {
           while (el && el !== doc.body) {
@@ -700,7 +757,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           // While editing, delete deletes — it never navigates back.
           e.preventDefault();
           if (sel) {
-            sel.remove();
+            groupAll().forEach(function (member) { member.remove(); });
+            clearGroup();
             sel = null;
             hide();
             notifySel();
@@ -839,6 +897,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
               padding: parseFloat(sel.style.padding) || 0,
               hasShadow: sel.style.boxShadow ? 1 : 0,
               hasTextShadow: sel.style.textShadow ? 1 : 0,
+              selCount: groupAll().length,
+              customStyles: Object.keys(styleRules),
               fill: sel.style.background || '',
               overrides: TYPO_PROPS.some(function (p) { return !!sel.style[p]; }) ? 1 : 0,
               templateComponent: (function () {
@@ -857,7 +917,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       }
       window.__timSetStyle = function (prop, value) {
         if (!sel) { return; }
-        sel.style[prop] = value;
+        groupAll().forEach(function (member) { member.style[prop] = value; });
         layout();
         notifySel();
       };
@@ -894,24 +954,64 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
         return cls;
       }
-      window.__timUpdateStyleFromSel = function () {
-        if (!sel) { return ''; }
-        var cls = selStyleClass();
-        if (!cls) { cls = 'tim-style-body'; sel.classList.add(cls); }
-        var cs = getComputedStyle(sel);
+      function typographyCSS(el) {
+        var cs = getComputedStyle(el);
         var ratio = (parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.4) / (parseFloat(cs.fontSize) || 16);
-        styleRules[cls] = 'font-family:' + cs.fontFamily +
+        return 'font-family:' + cs.fontFamily +
           ';font-size:' + cs.fontSize +
           ';font-weight:' + cs.fontWeight +
           ';color:' + cs.color +
           ';line-height:' + ratio.toFixed(2) +
           ';letter-spacing:' + (cs.letterSpacing === 'normal' ? 'normal' : cs.letterSpacing) +
           ';text-align:' + cs.textAlign + ';';
+      }
+      window.__timUpdateStyleFromSel = function () {
+        if (!sel) { return ''; }
+        var cls = selStyleClass();
+        if (!cls) { cls = 'tim-style-body'; sel.classList.add(cls); }
+        styleRules[cls] = typographyCSS(sel);
         writeOverrides();
         TYPO_PROPS.forEach(function (p) { sel.style[p] = ''; });
         layout();
-        notifySel();
+        notifySel(true);
         return cls;
+      };
+      window.__timCreateStyleFromSel = function (cls) {
+        if (!sel) { return; }
+        styleRules[cls] = typographyCSS(sel);
+        writeOverrides();
+        groupAll().forEach(function (member) {
+          String(member.className || '').split(/\\s+/).forEach(function (c) {
+            if (c.indexOf('tim-style-') === 0) { member.classList.remove(c); }
+          });
+          member.classList.add(cls);
+          TYPO_PROPS.forEach(function (p) { member.style[p] = ''; });
+        });
+        layout();
+        notifySel(true);
+      };
+      window.__timRenameStyle = function (oldCls, newCls) {
+        if (styleRules[oldCls]) {
+          styleRules[newCls] = styleRules[oldCls];
+          delete styleRules[oldCls];
+          writeOverrides();
+        }
+        var renamed = doc.querySelectorAll('.' + oldCls);
+        for (var ri = 0; ri < renamed.length; ri++) {
+          renamed[ri].classList.remove(oldCls);
+          renamed[ri].classList.add(newCls);
+        }
+        notifySel(true);
+      };
+      window.__timDeleteStyle = function (cls) {
+        delete styleRules[cls];
+        writeOverrides();
+        var orphans = doc.querySelectorAll('.' + cls);
+        for (var oi = 0; oi < orphans.length; oi++) {
+          orphans[oi].classList.remove(cls);
+          orphans[oi].classList.add('tim-style-body');
+        }
+        notifySel(true);
       };
       window.__timRevertSel = function () {
         if (!sel) { return; }
@@ -1149,11 +1249,14 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           }
         }
         if (!target || target === doc.body) { return; }
-        String(target.className || '').split(/\\s+/).forEach(function (c) {
-          if (c.indexOf('tim-style-') === 0) { target.classList.remove(c); }
+        var applyTargets = (target === sel) ? groupAll() : [target];
+        applyTargets.forEach(function (member) {
+          String(member.className || '').split(/\\s+/).forEach(function (c) {
+            if (c.indexOf('tim-style-') === 0) { member.classList.remove(c); }
+          });
+          if (cls) { member.classList.add(cls); }
+          TYPO_PROPS.forEach(function (p) { member.style[p] = ''; });
         });
-        if (cls) { target.classList.add(cls); }
-        TYPO_PROPS.forEach(function (p) { target.style[p] = ''; });
         layout();
         notifySel(true);
       };
