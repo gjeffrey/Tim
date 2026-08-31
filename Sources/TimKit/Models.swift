@@ -210,6 +210,21 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         )
     }
 
+    /// The live contents of a component region on the current page, or nil
+    /// when the page has none — the editor seeds from this so it reflects
+    /// unsaved styling and edits, not just the master on disk.
+    public func componentHTML(name: String, _ completion: @escaping (String?) -> Void) {
+        let js = """
+        (function () {
+          var region = document.querySelector('[data-tim-component=' + JSON.stringify(\(Self.jsLiteral(name))) + ']');
+          return region ? region.innerHTML : null;
+        })()
+        """
+        webView.evaluateJavaScript(js) { result, _ in
+            completion(result as? String)
+        }
+    }
+
     /// Replaces the live contents of a component region on the current
     /// page. Completion reports whether the region was found — callers
     /// insert the component fresh when it wasn't.
@@ -218,11 +233,20 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         (function () {
           var region = document.querySelector('[data-tim-component=' + JSON.stringify(\(Self.jsLiteral(name))) + ']');
           if (!region) { return false; }
+          var tmp = document.createElement('div');
+          tmp.innerHTML = \(Self.jsLiteral(html));
+          var fresh = tmp.firstElementChild;
           var old = region.firstElementChild;
-          var keepArea = (old && old.style) ? old.style.gridArea : '';
-          region.innerHTML = \(Self.jsLiteral(html));
-          var fresh = region.firstElementChild;
-          if (fresh && keepArea) { fresh.style.gridArea = keepArea; }
+          if (old && fresh && old.tagName === fresh.tagName) {
+            // The live element is the truth for styling and grid position —
+            // only its contents change.
+            old.innerHTML = fresh.innerHTML;
+          } else {
+            var keepArea = (old && old.style) ? old.style.gridArea : '';
+            region.innerHTML = \(Self.jsLiteral(html));
+            var el = region.firstElementChild;
+            if (el && keepArea) { el.style.gridArea = keepArea; }
+          }
           return true;
         })()
         """

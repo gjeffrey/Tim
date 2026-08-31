@@ -701,9 +701,24 @@ struct TabContentView: View {
     private func savePlainLocalPage(then completion: (() -> Void)? = nil) {
         guard let url = tab.webView.url, url.isFileURL else { completion?(); return }
         tab.currentHTML { html in
-            if let html { try? html.write(to: url, atomically: true, encoding: .utf8) }
+            // Only if the tab is still showing this file — a navigation
+            // mid-save must never write another page's DOM here.
+            if let html, tab.webView.url == url { try? html.write(to: url, atomically: true, encoding: .utf8) }
             completion?()
         }
+    }
+
+    /// The DOM about to be saved must still belong to the page this edit
+    /// session was on. If the tab navigated mid-save (a stray link, a
+    /// redirect), writing would overwrite the page with a different page's
+    /// content — so write nothing and say so.
+    private func stillOn(_ url: URL) -> Bool {
+        if tab.webView.url == url { return true }
+        let alert = NSAlert()
+        alert.messageText = "Nothing was saved"
+        alert.informativeText = "The tab moved to a different page while finishing this edit, so Tim didn't save — that would have overwritten \(url.lastPathComponent) with the wrong page. Go back and edit again."
+        alert.runModal()
+        return false
     }
 
     /// Done means done: local pages save, site pages publish. One action.
@@ -729,6 +744,7 @@ struct TabContentView: View {
             tab.canvasHTML { canvas in
                 tab.collectEdits { edits in
                     tab.setEditing(false)
+                    guard stillOn(url) else { return }
                     let pagePath = ComponentLibrary.pageSource(
                         forRelativePagePath: site.relativePagePath(for: url),
                         projectPath: site.localProjectPath
@@ -770,7 +786,7 @@ struct TabContentView: View {
         tab.setEditing(false)
         ensureAutoSocialCard {
         tab.currentHTML { html in
-            guard let html else { return }
+            guard let html, stillOn(url) else { return }
             let rel = site.relativePagePath(for: url)
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
@@ -4074,11 +4090,18 @@ struct NavBuilderSheet: View {
         .onAppear(perform: load)
     }
 
-    /// Seeds the sheet from the existing nav master when there is one —
-    /// its links come back in order, styling intact — and every site page
-    /// not yet in the nav joins the list, toggled off.
+    /// Seeds the sheet from the nav on the page itself (unsaved styling
+    /// and edits included), falling back to the master on disk — links
+    /// come back in order, styling intact — and every site page not yet
+    /// in the nav joins the list, toggled off.
     private func load() {
-        let master = PageComponents.html(named: "tpl-nav", in: site.localProjectPath)
+        tab.componentHTML(name: "tpl-nav") { live in
+            let source = live ?? PageComponents.html(named: "tpl-nav", in: site.localProjectPath)
+            DispatchQueue.main.async { seed(from: source) }
+        }
+    }
+
+    private func seed(from master: String?) {
         let hadMaster = master != nil
         hasMaster = hadMaster
         var list: [NavItem] = []
