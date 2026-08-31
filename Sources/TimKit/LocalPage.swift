@@ -50,7 +50,7 @@ public enum LocalPage {
           .tim-style-caption { font-size: 0.85rem; opacity: 0.7; line-height: 1.4; }
         </style>
         </head>
-        <body>
+        <body data-tim-template="default">
         <div class="tim-canvas" data-tim-canvas>
           <div class="tim-object tim-text tim-style-title" style="grid-area: 1 / 1 / 3 / 17;">\(title)</div>
           <div class="tim-object tim-text tim-style-body" style="grid-area: 3 / 1 / 6 / 13;">Double-click any text to edit it. Drag objects to move them — everything snaps to the grid. Insert adds text boxes, images, and video. Save writes this file.</div>

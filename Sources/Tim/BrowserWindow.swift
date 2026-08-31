@@ -2285,18 +2285,7 @@ struct InspectorView: View {
                         .id(info["seq"] as? Int ?? 0)
                 }
             } else {
-                VStack(spacing: 10) {
-                    Spacer()
-                    Image(systemName: "cursorarrow.rays")
-                        .font(.system(size: 24, weight: .light))
-                        .foregroundStyle(.tertiary)
-                    Text("Select anything\nto style it")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity)
+                PageOptionsPane(tab: tab)
             }
         }
         .frame(width: 248)
@@ -2560,6 +2549,207 @@ struct InspectorControls: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 32, alignment: .trailing)
         }
+    }
+}
+
+// MARK: - Page pane: no selection = page options (edits the page's template)
+
+struct PageOptionsPane: View {
+    @ObservedObject var tab: Tab
+
+    @State private var info: [String: Any]?
+    @State private var loadCount = 0
+
+    var body: some View {
+        ScrollView {
+            if let info {
+                PageOptionsControls(tab: tab, info: info, reload: reload)
+                    .id(loadCount)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+                    .padding(.top, 48)
+            }
+        }
+        .onAppear { reload() }
+    }
+
+    private func reload() {
+        tab.pageInfo { loaded in
+            info = loaded
+            loadCount += 1
+        }
+    }
+}
+
+struct PageOptionsControls: View {
+    @ObservedObject var tab: Tab
+    let info: [String: Any]
+    let reload: () -> Void
+
+    @State private var template: String
+    @State private var title: String
+    @State private var bg: Color
+    @State private var fg: Color
+    @State private var link: Color
+    @State private var contentW: Double
+    @State private var marginX: Double
+    @State private var padY: Double
+    @State private var baseSize: Double
+
+    init(tab: Tab, info: [String: Any], reload: @escaping () -> Void) {
+        self.tab = tab
+        self.info = info
+        self.reload = reload
+        _template = State(initialValue: info["template"] as? String ?? "default")
+        _title = State(initialValue: info["title"] as? String ?? "")
+        _bg = State(initialValue: Color(cssColor: info["bg"] as? String ?? "", fallback: .white))
+        _fg = State(initialValue: Color(cssColor: info["fg"] as? String ?? "", fallback: .black))
+        _link = State(initialValue: Color(cssColor: info["link"] as? String ?? "", fallback: .blue))
+        _contentW = State(initialValue: min(1680, max(560, info["contentW"] as? Double ?? 1320)))
+        _marginX = State(initialValue: min(120, max(0, info["marginX"] as? Double ?? 32)))
+        _padY = State(initialValue: min(200, max(0, info["padY"] as? Double ?? 48)))
+        _baseSize = State(initialValue: min(22, max(12, info["baseSize"] as? Double ?? 16)))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            card {
+                HStack(spacing: 8) {
+                    rowLabel("Template")
+                    Picker("", selection: $template) {
+                        Text("Default").tag("default")
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .controlSize(.small)
+                }
+                Text("Page options edit this template — every page using it follows. Templates live in your theme, next to styles.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            card("Page") {
+                HStack(spacing: 8) {
+                    rowLabel("Title")
+                    TextField("Untitled", text: $title)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 7)
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(0.06)))
+                        .onChange(of: title) { _, value in tab.setPageOption("title", value) }
+                }
+            }
+
+            card("Colors") {
+                HStack(spacing: 8) {
+                    rowLabel("Background")
+                    ColorPicker("", selection: $bg, supportsOpacity: false)
+                        .labelsHidden()
+                        .onChange(of: bg) { _, c in tab.setPageOption("bg", c.hexString) }
+                    Spacer()
+                }
+                HStack(spacing: 8) {
+                    rowLabel("Text")
+                    ColorPicker("", selection: $fg, supportsOpacity: false)
+                        .labelsHidden()
+                        .onChange(of: fg) { _, c in tab.setPageOption("fg", c.hexString) }
+                    Spacer()
+                }
+                HStack(spacing: 8) {
+                    rowLabel("Links")
+                    ColorPicker("", selection: $link, supportsOpacity: false)
+                        .labelsHidden()
+                        .onChange(of: link) { _, c in tab.setPageOption("link", c.hexString) }
+                    Spacer()
+                }
+                Button("Reset Colors") {
+                    tab.setPageOption("bg", "")
+                    tab.setPageOption("fg", "")
+                    tab.setPageOption("link", "")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { reload() }
+                }
+                .controlSize(.mini)
+            }
+
+            card("Layout") {
+                sliderRow("Width", $contentW, 560...1680, 20, "\(Int(contentW))")
+                    .onChange(of: contentW) { _, v in tab.setPageOption("contentW", "\(Int(v))") }
+                sliderRow("Margins", $marginX, 0...120, 4, "\(Int(marginX))")
+                    .onChange(of: marginX) { _, v in tab.setPageOption("marginX", "\(Int(v))") }
+                sliderRow("Vertical", $padY, 0...200, 8, "\(Int(padY))")
+                    .onChange(of: padY) { _, v in tab.setPageOption("padY", "\(Int(v))") }
+                sliderRow("Base Size", $baseSize, 12...22, 1, "\(Int(baseSize))")
+                    .onChange(of: baseSize) { _, v in tab.setPageOption("baseSize", "\(Int(v))") }
+            }
+
+            Text("Select an object to style it — click empty space to come back to the page.")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 2)
+        }
+        .padding(10)
+    }
+
+    private func card(_ title: String? = nil, @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            if let title {
+                Text(title.uppercased())
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .kerning(0.7)
+                    .foregroundStyle(.secondary)
+            }
+            content()
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(0.045)))
+    }
+
+    private func rowLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .frame(width: 66, alignment: .leading)
+    }
+
+    private func sliderRow(_ name: String, _ value: Binding<Double>, _ range: ClosedRange<Double>, _ step: Double, _ display: String) -> some View {
+        HStack(spacing: 8) {
+            rowLabel(name)
+            Slider(value: value, in: range, step: step)
+                .controlSize(.mini)
+            Text(display)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 34, alignment: .trailing)
+        }
+    }
+}
+
+extension Color {
+    /// Parses CSS "rgb(…)" / "rgba(…)" / "#hex" strings from computed styles.
+    init(cssColor: String, fallback: Color) {
+        let value = cssColor.trimmingCharacters(in: .whitespaces)
+        if value.hasPrefix("rgb") {
+            let numbers = value
+                .split(whereSeparator: { !"0123456789.".contains($0) })
+                .compactMap { Double($0) }
+            if numbers.count >= 3 {
+                self = Color(.sRGB, red: numbers[0] / 255, green: numbers[1] / 255, blue: numbers[2] / 255, opacity: 1)
+                return
+            }
+        }
+        if value.hasPrefix("#"), value.count >= 7,
+           let r = Int(value.dropFirst().prefix(2), radix: 16),
+           let g = Int(value.dropFirst(3).prefix(2), radix: 16),
+           let b = Int(value.dropFirst(5).prefix(2), radix: 16) {
+            self = Color(.sRGB, red: Double(r) / 255, green: Double(g) / 255, blue: Double(b) / 255, opacity: 1)
+            return
+        }
+        self = fallback
     }
 }
 

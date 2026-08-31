@@ -136,7 +136,7 @@ public enum ComponentLibrary {
             source = """
             <html>
               <head><title>\(title)</title></head>
-              <body>
+              <body data-tim-template="default">
             \(body)
               </body>
             </html>

@@ -207,6 +207,26 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         webView.evaluateJavaScript("window.__timApplyStyle && window.__timApplyStyle(\(Self.jsLiteral(styleClass)));", completionHandler: nil)
     }
 
+    /// The page's template and its options (background, colors, layout).
+    public func pageInfo(_ completion: @escaping ([String: Any]) -> Void) {
+        webView.evaluateJavaScript("window.__timPageInfo ? window.__timPageInfo() : ''") { result, _ in
+            guard let json = result as? String, !json.isEmpty,
+                  let data = json.data(using: .utf8),
+                  let info = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            else { completion([:]); return }
+            completion(info)
+        }
+    }
+
+    /// Edits a page option — applied to the page's template, so every page
+    /// on that template follows.
+    public func setPageOption(_ property: String, _ value: String) {
+        webView.evaluateJavaScript(
+            "window.__timSetPageOption && window.__timSetPageOption(\(Self.jsLiteral(property)), \(Self.jsLiteral(value)));",
+            completionHandler: nil
+        )
+    }
+
     /// Pages-style "Update Style": the selection's current look becomes
     /// the definition of its named style — every block using it follows.
     public func updateStyleFromSelection() {
@@ -786,6 +806,75 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         TYPO_PROPS.forEach(function (p) { sel.style[p] = ''; });
         layout();
         notifySel();
+      };
+
+      // Templates: named page-option sets, contained by the theme. Each
+      // page's body carries data-tim-template; page options edit the
+      // template's rule, so every page on that template follows. v1 ships
+      // one template, "default" — deliberately blank until edited.
+      var templateProps = {};
+      (function parseTemplates() {
+        var el = doc.querySelector('style[data-tim-templates]');
+        if (!el) { return; }
+        try { templateProps = JSON.parse(el.getAttribute('data-props') || '{}'); } catch (e) {}
+      })();
+      function writeTemplates() {
+        var el = doc.querySelector('style[data-tim-templates]');
+        if (!el) {
+          el = doc.createElement('style');
+          el.setAttribute('data-tim-templates', '');
+          doc.head.appendChild(el);
+        }
+        el.setAttribute('data-props', JSON.stringify(templateProps));
+        var out = '';
+        for (var name in templateProps) {
+          var p = templateProps[name];
+          var scope = 'body[data-tim-template="' + name + '"]';
+          var bodyRule = '';
+          if (p.bg) { bodyRule += 'background:' + p.bg + ';'; }
+          if (p.fg) { bodyRule += 'color:' + p.fg + ';'; }
+          if (bodyRule) { out += scope + '{' + bodyRule + '}\n'; }
+          if (p.link) { out += scope + ' a{color:' + p.link + ';}\n'; }
+          if (p.baseSize != null) { out += 'html:has(' + scope + '){font-size:' + p.baseSize + 'px;}\n'; }
+          if (p.padY != null || p.marginX != null || p.contentW != null) {
+            var pad = p.padY != null ? p.padY : 48;
+            var mx = p.marginX != null ? p.marginX : 32;
+            var cw = p.contentW != null ? p.contentW : 1320;
+            out += scope + ' .tim-canvas{padding:' + pad + 'px max(' + mx + 'px, calc(50vw - ' + (cw / 2) + 'px));}\n';
+          }
+        }
+        el.textContent = out;
+      }
+      var NUMERIC_PAGE_PROPS = ['contentW', 'marginX', 'padY', 'baseSize'];
+      window.__timSetPageOption = function (prop, value) {
+        if (prop === 'title') { doc.title = value; return; }
+        if (!doc.body.getAttribute('data-tim-template')) {
+          doc.body.setAttribute('data-tim-template', 'default');
+        }
+        var name = doc.body.getAttribute('data-tim-template');
+        if (!templateProps[name]) { templateProps[name] = {}; }
+        if (value === '' || value === null) {
+          delete templateProps[name][prop];
+        } else {
+          templateProps[name][prop] = NUMERIC_PAGE_PROPS.indexOf(prop) >= 0 ? parseFloat(value) : value;
+        }
+        writeTemplates();
+      };
+      window.__timPageInfo = function () {
+        var name = doc.body.getAttribute('data-tim-template') || 'default';
+        var p = templateProps[name] || {};
+        var cs = getComputedStyle(doc.body);
+        return JSON.stringify({
+          template: name,
+          title: doc.title || '',
+          bg: p.bg || cs.backgroundColor,
+          fg: p.fg || cs.color,
+          link: p.link || '',
+          contentW: p.contentW != null ? p.contentW : 1320,
+          marginX: p.marginX != null ? p.marginX : 32,
+          padY: p.padY != null ? p.padY : 48,
+          baseSize: p.baseSize != null ? p.baseSize : (parseFloat(getComputedStyle(doc.documentElement).fontSize) || 16)
+        });
       };
 
       window.__timEnsureFont = function (family, url) {
