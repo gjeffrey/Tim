@@ -91,7 +91,7 @@ public enum LinkSources {
         else { return [] }
         return subpaths
             .filter {
-                $0.hasSuffix(".html") && !$0.hasPrefix(".") && !$0.hasPrefix("_hidden/")
+                $0.hasSuffix(".html") && !$0.hasPrefix(".") && !$0.hasPrefix("_hidden/") && !$0.hasPrefix("_h/")
                     && !$0.contains(".git") && !$0.contains("node_modules")
             }
             .sorted()
@@ -104,21 +104,37 @@ public enum LinkSources {
             }
     }
 
-    /// Hidden pages: unpublished but kept — they live in the mirror's
-    /// _hidden/ folder, off the server entirely until shown again.
+    /// Hidden pages: off the site but still on the server, parked under a
+    /// secret random token (_h/<token>/…) — unlisted and unguessable, and
+    /// synced to any Mac that refreshes the site's local copy. (Legacy
+    /// local-only _hidden/ entries are still listed.)
     public static func hiddenPages(for site: Site) -> [LinkOption] {
-        let root = (site.localProjectPath as NSString).appendingPathComponent("_hidden")
-        guard let subpaths = try? FileManager.default.subpathsOfDirectory(atPath: root) else { return [] }
-        return subpaths
-            .filter { $0.hasSuffix(".html") && !$0.hasPrefix(".") }
-            .sorted()
-            .map { rel in
-                var name = (rel as NSString).deletingPathExtension
-                if name == "index" { name = "Home" }
-                name = name.replacingOccurrences(of: "/index", with: "")
-                    .replacingOccurrences(of: "-", with: " ")
-                return LinkOption(label: name.capitalized, href: "/" + rel)
+        let fm = FileManager.default
+        var options: [LinkOption] = []
+        let tokenRoot = (site.localProjectPath as NSString).appendingPathComponent("_h")
+        if let subpaths = try? fm.subpathsOfDirectory(atPath: tokenRoot) {
+            for rel in subpaths where rel.hasSuffix(".html") && !rel.hasPrefix(".") {
+                let parts = rel.split(separator: "/").map(String.init)
+                guard parts.count >= 2 else { continue }
+                let stem = (parts.dropFirst().joined(separator: "/") as NSString).deletingPathExtension
+                options.append(LinkOption(label: prettyName(stem), href: "/_h/" + rel))
             }
+        }
+        let legacyRoot = (site.localProjectPath as NSString).appendingPathComponent("_hidden")
+        if let subpaths = try? fm.subpathsOfDirectory(atPath: legacyRoot) {
+            for rel in subpaths where rel.hasSuffix(".html") && !rel.hasPrefix(".") {
+                options.append(LinkOption(label: prettyName((rel as NSString).deletingPathExtension), href: "/_hidden/" + rel))
+            }
+        }
+        return options.sorted { $0.label < $1.label }
+    }
+
+    static func prettyName(_ stem: String) -> String {
+        var name = stem
+        if name == "index" { name = "Home" }
+        return name.replacingOccurrences(of: "/index", with: "")
+            .replacingOccurrences(of: "-", with: " ")
+            .capitalized
     }
 
     /// Pages you've made elsewhere — everything in the registry that isn't

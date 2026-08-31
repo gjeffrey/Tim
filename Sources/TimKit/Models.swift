@@ -236,6 +236,14 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         )
     }
 
+    /// Sharing & search metadata: description, social image, favicon.
+    public func setPageMeta(_ kind: String, _ value: String) {
+        webView.evaluateJavaScript(
+            "window.__timSetMeta && window.__timSetMeta(\(Self.jsLiteral(kind)), \(Self.jsLiteral(value)));",
+            completionHandler: nil
+        )
+    }
+
     /// Pages-style "Update Style": the selection's current look becomes
     /// the definition of its named style — every block using it follows.
     public func updateStyleFromSelection() {
@@ -917,9 +925,44 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
         el.textContent = out;
       }
+      function upsertMeta(attr, key, content) {
+        var el = doc.querySelector('meta[' + attr + '="' + key + '"]');
+        if (!content) { if (el) { el.remove(); } return; }
+        if (!el) {
+          el = doc.createElement('meta');
+          el.setAttribute(attr, key);
+          doc.head.appendChild(el);
+        }
+        el.setAttribute('content', content);
+      }
+      // Sharing & search metadata — what the modern web reads before
+      // anyone reads the page: description, social card image, favicon.
+      window.__timSetMeta = function (kind, value) {
+        if (kind === 'description') {
+          upsertMeta('name', 'description', value);
+          upsertMeta('property', 'og:description', value);
+        } else if (kind === 'ogImage') {
+          upsertMeta('property', 'og:image', value);
+          upsertMeta('name', 'twitter:image', value);
+          upsertMeta('name', 'twitter:card', value ? 'summary_large_image' : '');
+        } else if (kind === 'favicon') {
+          var link = doc.querySelector('link[rel="icon"]');
+          if (!value) { if (link) { link.remove(); } return; }
+          if (!link) {
+            link = doc.createElement('link');
+            link.rel = 'icon';
+            doc.head.appendChild(link);
+          }
+          link.setAttribute('href', value);
+        }
+      };
       var NUMERIC_PAGE_PROPS = ['contentW', 'marginX', 'padY', 'baseSize'];
       window.__timSetPageOption = function (prop, value) {
-        if (prop === 'title') { doc.title = value; return; }
+        if (prop === 'title') {
+          doc.title = value;
+          upsertMeta('property', 'og:title', value);
+          return;
+        }
         if (!doc.body.getAttribute('data-tim-template')) {
           doc.body.setAttribute('data-tim-template', 'default');
         }
@@ -945,7 +988,19 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           contentW: p.contentW != null ? p.contentW : 1320,
           marginX: p.marginX != null ? p.marginX : 32,
           padY: p.padY != null ? p.padY : 48,
-          baseSize: p.baseSize != null ? p.baseSize : (parseFloat(getComputedStyle(doc.documentElement).fontSize) || 16)
+          baseSize: p.baseSize != null ? p.baseSize : (parseFloat(getComputedStyle(doc.documentElement).fontSize) || 16),
+          description: (function () {
+            var m = doc.querySelector('meta[name="description"]');
+            return m ? (m.getAttribute('content') || '') : '';
+          })(),
+          ogImage: (function () {
+            var m = doc.querySelector('meta[property="og:image"]');
+            return m ? (m.getAttribute('content') || '') : '';
+          })(),
+          favicon: (function () {
+            var l = doc.querySelector('link[rel="icon"]');
+            return l ? (l.getAttribute('href') || '') : '';
+          })()
         });
       };
 

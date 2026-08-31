@@ -227,10 +227,16 @@ struct SiteSection: View {
                         .contentShape(Rectangle())
                         .contextMenu {
                             Button("Show Page") { showPage(page) }
+                            if !page.href.hasPrefix("/_hidden/") {
+                                Button("Copy Secret Link") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(site.origin + page.href, forType: .string)
+                                }
+                            }
                             Divider()
                             Button("Delete Page…", role: .destructive) { deletePage(page, hidden: true) }
                         }
-                        .help("Off the server, kept in your local copy. Right-click to show it again.")
+                        .help("On your server at a secret address — unlisted and unguessable, but anyone with the link can open it. Delete fully removes it.")
                     }
                 }
 
@@ -312,7 +318,11 @@ struct SiteSection: View {
         let wasCurrent = currentRel == rel && !hidden
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let localPath = s.localProjectPath + (hidden ? "/_hidden" : "") + rel
+                let localPath = s.localProjectPath + rel
+                if hidden, rel.hasPrefix("/_h/") {
+                    let root = s.remoteRoot.hasSuffix("/") ? String(s.remoteRoot.dropLast()) : s.remoteRoot
+                    _ = try? SFTP.run(batch: "-rm \"\(root + rel)\"\n", host: s.host, username: s.username, port: s.port)
+                }
                 if !hidden {
                     switch s.target {
                     case .sftp:
@@ -345,8 +355,11 @@ struct SiteSection: View {
         }
     }
 
-    /// Hidden = unpublished but kept: the page leaves the server entirely
-    /// and lives in the mirror's _hidden/ folder until shown again.
+    /// Hidden = off your site, parked on the server at a long secret
+    /// address (/_h/<random token>/…). Unlisted and effectively impossible
+    /// to guess — but anyone with the link can open it, and only Delete
+    /// truly removes it. Because it stays on the server, it follows you to
+    /// any Mac that refreshes the site's local copy.
     private func hidePage(_ page: LinkOption) {
         guard var mutableSite = site else { return }
         if mutableSite.localProjectPath.isEmpty {
@@ -358,12 +371,31 @@ struct SiteSection: View {
         SiteWorkspace.ensure(mutableSite.localProjectPath)
         let s = mutableSite
         let rel = page.href
+
+        let alert = NSAlert()
+        alert.messageText = "Hide \u{201C}\(page.label)\u{201D}?"
+        alert.informativeText = "It moves to a long secret address on your server — off your site, unlisted, and effectively impossible to guess. But it isn't truly private: anyone who has the link can still open it. Delete is the only way to fully remove it."
+        alert.addButton(withTitle: "Hide")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let token = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        let hiddenRel = "/_h/\(token)" + rel
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 let root = s.remoteRoot.hasSuffix("/") ? String(s.remoteRoot.dropLast()) : s.remoteRoot
-                _ = try? SFTP.run(batch: "-rm \"\(root + rel)\"\n", host: s.host, username: s.username, port: s.port)
+                // mkdir the token path, then move the file server-side.
+                var batch = ""
+                var cumulative = root
+                for component in hiddenRel.split(separator: "/").dropLast() {
+                    cumulative += "/" + component
+                    batch += "-mkdir \"\(cumulative)\"\n"
+                }
+                batch += "rename \"\(root + rel)\" \"\(root + hiddenRel)\"\n"
+                _ = try SFTP.run(batch: batch, host: s.host, username: s.username, port: s.port)
+
                 let from = s.localProjectPath + rel
-                let to = s.localProjectPath + "/_hidden" + rel
+                let to = s.localProjectPath + hiddenRel
                 try FileManager.default.createDirectory(
                     atPath: (to as NSString).deletingLastPathComponent,
                     withIntermediateDirectories: true
@@ -374,10 +406,10 @@ struct SiteSection: View {
                 DispatchQueue.main.async { refresh() }
             } catch {
                 DispatchQueue.main.async {
-                    let alert = NSAlert()
-                    alert.messageText = "Hide Page"
-                    alert.informativeText = error.localizedDescription
-                    alert.runModal()
+                    let failure = NSAlert()
+                    failure.messageText = "Hide Page"
+                    failure.informativeText = error.localizedDescription
+                    failure.runModal()
                 }
             }
         }
@@ -385,10 +417,14 @@ struct SiteSection: View {
 
     private func showPage(_ page: LinkOption) {
         guard let s = site else { return }
-        let rel = page.href
+        let hiddenRel = page.href
+        let parts = hiddenRel.split(separator: "/").map(String.init)
+        let isLegacy = parts.first == "_hidden"
+        let rel = "/" + parts.dropFirst(isLegacy ? 1 : 2).joined(separator: "/")
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let from = s.localProjectPath + "/_hidden" + rel
+                let root = s.remoteRoot.hasSuffix("/") ? String(s.remoteRoot.dropLast()) : s.remoteRoot
+                let from = s.localProjectPath + hiddenRel
                 let to = s.localProjectPath + rel
                 try FileManager.default.createDirectory(
                     atPath: (to as NSString).deletingLastPathComponent,
@@ -396,17 +432,29 @@ struct SiteSection: View {
                 )
                 try? FileManager.default.removeItem(atPath: to)
                 try FileManager.default.moveItem(atPath: from, toPath: to)
-                let html = try String(contentsOfFile: to, encoding: .utf8)
-                let root = s.remoteRoot.hasSuffix("/") ? String(s.remoteRoot.dropLast()) : s.remoteRoot
-                _ = try SFTP.upload(html: html, to: root + rel, host: s.host, username: s.username, port: s.port)
+                if isLegacy {
+                    let html = try String(contentsOfFile: to, encoding: .utf8)
+                    _ = try SFTP.upload(html: html, to: root + rel, host: s.host, username: s.username, port: s.port)
+                } else {
+                    do {
+                        _ = try SFTP.run(
+                            batch: "rename \"\(root + hiddenRel)\" \"\(root + rel)\"\n",
+                            host: s.host, username: s.username, port: s.port
+                        )
+                    } catch {
+                        // Server copy missing? Publish from the mirror.
+                        let html = try String(contentsOfFile: to, encoding: .utf8)
+                        _ = try SFTP.upload(html: html, to: root + rel, host: s.host, username: s.username, port: s.port)
+                    }
+                }
                 SiteWorkspace.snapshot(s.localProjectPath, message: "Show \(rel)")
                 DispatchQueue.main.async { refresh() }
             } catch {
                 DispatchQueue.main.async {
-                    let alert = NSAlert()
-                    alert.messageText = "Show Page"
-                    alert.informativeText = error.localizedDescription
-                    alert.runModal()
+                    let failure = NSAlert()
+                    failure.messageText = "Show Page"
+                    failure.informativeText = error.localizedDescription
+                    failure.runModal()
                 }
             }
         }
@@ -1291,7 +1339,7 @@ struct EditingToolbar: View {
         }
     }
 
-    private static func stage(fileURL: URL, site: Site?, pageURL: URL?) throws -> String {
+    static func stage(fileURL: URL, site: Site?, pageURL: URL?) throws -> String {
         let fm = FileManager.default
         let name = fileURL.lastPathComponent
         if let site, !site.localProjectPath.isEmpty {
@@ -2872,6 +2920,7 @@ struct PageOptionsControls: View {
     @ObservedObject var tab: Tab
     let info: [String: Any]
     let reload: () -> Void
+    @EnvironmentObject var siteStore: SiteStore
 
     @State private var template: String
     @State private var title: String
@@ -2882,6 +2931,9 @@ struct PageOptionsControls: View {
     @State private var marginX: Double
     @State private var padY: Double
     @State private var baseSize: Double
+    @State private var descriptionText: String
+    @State private var ogImage: String
+    @State private var favicon: String
 
     init(tab: Tab, info: [String: Any], reload: @escaping () -> Void) {
         self.tab = tab
@@ -2896,7 +2948,12 @@ struct PageOptionsControls: View {
         _marginX = State(initialValue: min(120, max(0, info["marginX"] as? Double ?? 32)))
         _padY = State(initialValue: min(200, max(0, info["padY"] as? Double ?? 48)))
         _baseSize = State(initialValue: min(22, max(12, info["baseSize"] as? Double ?? 16)))
+        _descriptionText = State(initialValue: info["description"] as? String ?? "")
+        _ogImage = State(initialValue: info["ogImage"] as? String ?? "")
+        _favicon = State(initialValue: info["favicon"] as? String ?? "")
     }
+
+    private var currentSite: Site? { siteStore.match(tab.webView.url) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -2971,6 +3028,32 @@ struct PageOptionsControls: View {
                     .onChange(of: baseSize) { _, v in tab.setPageOption("baseSize", "\(Int(v))") }
             }
 
+            card("Sharing & Search") {
+                Text("Description")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                TextField("What this page is about — search results and link previews show this.", text: $descriptionText, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .lineLimit(2...4)
+                    .padding(6)
+                    .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(0.06)))
+                    .onChange(of: descriptionText) { _, value in tab.setPageMeta("description", value) }
+
+                metaFileRow(
+                    label: "Social Image",
+                    value: ogImage,
+                    hint: "Shown when this page is shared or texted.",
+                    kind: "ogImage"
+                )
+                metaFileRow(
+                    label: "Favicon",
+                    value: favicon,
+                    hint: "The little icon in tabs and bookmarks.",
+                    kind: "favicon"
+                )
+            }
+
             Text("Select an object to style it — click empty space to come back to the page.")
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
@@ -2978,6 +3061,72 @@ struct PageOptionsControls: View {
                 .padding(.horizontal, 2)
         }
         .padding(10)
+    }
+
+    private func metaFileRow(label: String, value: String, hint: String, kind: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                rowLabel(label)
+                Button("Choose…") { chooseMetaImage(kind: kind) }
+                    .controlSize(.mini)
+                if !value.isEmpty {
+                    Button("Clear") {
+                        tab.setPageMeta(kind, "")
+                        if kind == "ogImage" { ogImage = "" } else { favicon = "" }
+                    }
+                    .controlSize(.mini)
+                }
+                Spacer()
+            }
+            Text(value.isEmpty ? hint : value)
+                .font(.system(size: 9.5))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+    }
+
+    /// Stages the picked image like any media (mirror + upload), then
+    /// points the metadata at it — absolute URL for the social image, so
+    /// link scrapers can fetch it.
+    private func chooseMetaImage(kind: String) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let fileURL = panel.url else { return }
+
+        var resolvedSite = currentSite
+        if var s = resolvedSite {
+            if s.localProjectPath.isEmpty {
+                s.localProjectPath = SiteWorkspace.defaultFolder(for: s.name.isEmpty ? s.origin : s.name)
+                siteStore.upsert(s)
+            }
+            SiteWorkspace.ensure(s.localProjectPath)
+            resolvedSite = s
+        }
+        let pageURL = tab.webView.url
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let staged = try EditingToolbar.stage(fileURL: fileURL, site: resolvedSite, pageURL: pageURL)
+                let value: String
+                if kind == "ogImage", let s = resolvedSite, s.origin.hasPrefix("http") {
+                    value = s.origin + "/" + staged
+                } else {
+                    value = staged
+                }
+                DispatchQueue.main.async {
+                    tab.setPageMeta(kind, value)
+                    if kind == "ogImage" { ogImage = value } else { favicon = value }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    let alert = NSAlert()
+                    alert.messageText = "Add Image"
+                    alert.informativeText = error.localizedDescription
+                    alert.runModal()
+                }
+            }
+        }
     }
 
     private func card(_ title: String? = nil, @ViewBuilder content: () -> some View) -> some View {
