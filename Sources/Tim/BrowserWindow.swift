@@ -11,6 +11,7 @@ extension Notification.Name {
     static let timOpenPage = Notification.Name("tim.openPage")
     static let timDuplicatePage = Notification.Name("tim.duplicatePage")
     static let timToggleEdit = Notification.Name("tim.toggleEdit")
+    static let timThumbsUpdated = Notification.Name("tim.thumbsUpdated")
 }
 
 struct BrowserWindow: View {
@@ -122,8 +123,10 @@ struct SiteSection: View {
     @EnvironmentObject var siteStore: SiteStore
 
     @State private var pages: [LinkOption] = []
+    @State private var hiddenPages: [LinkOption] = []
     @State private var versions: [SiteWorkspace.PageVersion] = []
     @State private var showNewPage = false
+    @State private var thumbTick = 0
 
     private var site: Site? { siteStore.match(URL(string: tab.urlString)) }
     private var currentRel: String? {
@@ -137,6 +140,7 @@ struct SiteSection: View {
                 Text(site.name.isEmpty ? site.origin : site.name)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
+                    .id(thumbTick)
 
                 ForEach(pages) { page in
                     Button {
@@ -167,6 +171,11 @@ struct SiteSection: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .contextMenu {
+                        if site.target == .sftp {
+                            Button("Hide Page") { hidePage(page) }
+                        }
+                    }
                 }
 
                 Button {
@@ -180,6 +189,39 @@ struct SiteSection: View {
                 .buttonStyle(.plain)
                 .sheet(isPresented: $showNewPage) {
                     NewPageSheet(site: site, tab: tab)
+                }
+
+                Button {
+                    NotificationCenter.default.post(name: .timDuplicatePage, object: nil)
+                } label: {
+                    Label("Duplicate Page…", systemImage: "plus.square.on.square")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+
+                if site.target == .sftp, !hiddenPages.isEmpty {
+                    Text("Hidden")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                    ForEach(hiddenPages) { page in
+                        HStack(spacing: 6) {
+                            Image(systemName: "eye.slash")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.tertiary)
+                            Text(page.label)
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                        .contextMenu {
+                            Button("Show Page") { showPage(page) }
+                        }
+                        .help("Off the server, kept in your local copy. Right-click to show it again.")
+                    }
                 }
 
                 if versions.count > 1 {
@@ -208,6 +250,9 @@ struct SiteSection: View {
             .onChange(of: tab.isLoading) { _, loading in
                 if !loading { refresh() }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .timThumbsUpdated)) { _ in
+                thumbTick += 1
+            }
         }
     }
 
@@ -220,9 +265,79 @@ struct SiteSection: View {
             if let rel, !AstroProject.isAstroProject(site.localProjectPath) {
                 loadedVersions = SiteWorkspace.versions(of: String(rel.dropFirst()), in: site.localProjectPath)
             }
+            let loadedHidden = AstroProject.isAstroProject(site.localProjectPath)
+                ? [] : LinkSources.hiddenPages(for: site)
             DispatchQueue.main.async {
                 pages = loadedPages
+                hiddenPages = loadedHidden
                 versions = loadedVersions
+            }
+        }
+    }
+
+    /// Hidden = unpublished but kept: the page leaves the server entirely
+    /// and lives in the mirror's _hidden/ folder until shown again.
+    private func hidePage(_ page: LinkOption) {
+        guard var mutableSite = site else { return }
+        if mutableSite.localProjectPath.isEmpty {
+            mutableSite.localProjectPath = SiteWorkspace.defaultFolder(
+                for: mutableSite.name.isEmpty ? mutableSite.origin : mutableSite.name
+            )
+            siteStore.upsert(mutableSite)
+        }
+        SiteWorkspace.ensure(mutableSite.localProjectPath)
+        let s = mutableSite
+        let rel = page.href
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let root = s.remoteRoot.hasSuffix("/") ? String(s.remoteRoot.dropLast()) : s.remoteRoot
+                _ = try? SFTP.run(batch: "-rm \"\(root + rel)\"\n", host: s.host, username: s.username, port: s.port)
+                let from = s.localProjectPath + rel
+                let to = s.localProjectPath + "/_hidden" + rel
+                try FileManager.default.createDirectory(
+                    atPath: (to as NSString).deletingLastPathComponent,
+                    withIntermediateDirectories: true
+                )
+                try? FileManager.default.removeItem(atPath: to)
+                try FileManager.default.moveItem(atPath: from, toPath: to)
+                SiteWorkspace.snapshot(s.localProjectPath, message: "Hide \(rel)")
+                DispatchQueue.main.async { refresh() }
+            } catch {
+                DispatchQueue.main.async {
+                    let alert = NSAlert()
+                    alert.messageText = "Hide Page"
+                    alert.informativeText = error.localizedDescription
+                    alert.runModal()
+                }
+            }
+        }
+    }
+
+    private func showPage(_ page: LinkOption) {
+        guard let s = site else { return }
+        let rel = page.href
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let from = s.localProjectPath + "/_hidden" + rel
+                let to = s.localProjectPath + rel
+                try FileManager.default.createDirectory(
+                    atPath: (to as NSString).deletingLastPathComponent,
+                    withIntermediateDirectories: true
+                )
+                try? FileManager.default.removeItem(atPath: to)
+                try FileManager.default.moveItem(atPath: from, toPath: to)
+                let html = try String(contentsOfFile: to, encoding: .utf8)
+                let root = s.remoteRoot.hasSuffix("/") ? String(s.remoteRoot.dropLast()) : s.remoteRoot
+                _ = try SFTP.upload(html: html, to: root + rel, host: s.host, username: s.username, port: s.port)
+                SiteWorkspace.snapshot(s.localProjectPath, message: "Show \(rel)")
+                DispatchQueue.main.async { refresh() }
+            } catch {
+                DispatchQueue.main.async {
+                    let alert = NSAlert()
+                    alert.messageText = "Show Page"
+                    alert.informativeText = error.localizedDescription
+                    alert.runModal()
+                }
             }
         }
     }
@@ -349,7 +464,10 @@ struct TabContentView: View {
             config.snapshotWidth = 280
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                 tab.webView.takeSnapshot(with: config) { image, _ in
-                    if let image { ThumbnailStore.save(image, for: url.absoluteString) }
+                    if let image {
+                        ThumbnailStore.save(image, for: url.absoluteString)
+                        NotificationCenter.default.post(name: .timThumbsUpdated, object: nil)
+                    }
                 }
             }
         }
@@ -414,6 +532,7 @@ struct TabContentView: View {
             savePlainLocalPage {
                 PageRegistry.record(url: url.absoluteString, title: tab.title)
                 tab.setEditing(false)
+                captureThumbnailSoon()
             }
             return
         }
@@ -500,6 +619,7 @@ struct TabContentView: View {
                     SiteWorkspace.snapshot(site.localProjectPath, message: "Edit \(rel)")
                     DispatchQueue.main.async {
                         PageRegistry.record(url: url.absoluteString, title: tab.title)
+                        captureThumbnailSoon()
                     }
                 } catch {
                     DispatchQueue.main.async { publishAlert(error) }
@@ -537,6 +657,21 @@ struct TabContentView: View {
                 DispatchQueue.main.async { tab.webView.reload() }
             } catch {
                 DispatchQueue.main.async { publishAlert(error) }
+            }
+        }
+    }
+
+    /// The sidebar thumbnail should show what you just saved.
+    private func captureThumbnailSoon() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            guard let url = tab.webView.url else { return }
+            let config = WKSnapshotConfiguration()
+            config.snapshotWidth = 280
+            tab.webView.takeSnapshot(with: config) { image, _ in
+                if let image {
+                    ThumbnailStore.save(image, for: url.absoluteString)
+                    NotificationCenter.default.post(name: .timThumbsUpdated, object: nil)
+                }
             }
         }
     }
@@ -651,6 +786,49 @@ struct TabContentView: View {
             DispatchQueue.global(qos: .userInitiated).async {
                 _ = try? AstroProject.build(projectPath: project)
                 DispatchQueue.main.async { tab.navigate(to: origin + "/" + stem + ".html") }
+            }
+        } else if let matched = matchedSite {
+            // Plain site page: name the copy, publish it alongside.
+            let site = ensureWorkspace(matched)
+            let rel = site.relativePagePath(for: url)
+            let stem = ((rel as NSString).lastPathComponent as NSString).deletingPathExtension
+            let alert = NSAlert()
+            alert.messageText = "Duplicate Page"
+            alert.informativeText = "Name for the copy:"
+            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 22))
+            field.stringValue = stem + "-copy"
+            alert.accessoryView = field
+            alert.window.initialFirstResponder = field
+            alert.addButton(withTitle: "Duplicate")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            let slug = field.stringValue.lowercased()
+                .replacingOccurrences(of: " ", with: "-")
+                .filter { $0.isLetter || $0.isNumber || $0 == "-" }
+            guard !slug.isEmpty else { return }
+            let newRel = "/\(slug).html"
+            let sourcePath = (site.localProjectPath as NSString).appendingPathComponent(String(rel.dropFirst()))
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let html = try String(contentsOfFile: sourcePath, encoding: .utf8)
+                    try PageWriter.write(html: html, folder: site.localProjectPath, relativePath: newRel)
+                    switch site.target {
+                    case .sftp:
+                        let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
+                        _ = try SFTP.upload(html: html, to: root + newRel, host: site.host, username: site.username, port: site.port)
+                    case .cloudflare:
+                        _ = try CloudflarePublisher.deploy(folder: site.localProjectPath, projectName: site.cfProjectName)
+                    case .githubPages:
+                        _ = try GitHubPagesPublisher.publish(repo: site.localProjectPath, message: "Duplicate \(rel) as \(newRel)")
+                    }
+                    SiteWorkspace.snapshot(site.localProjectPath, message: "Duplicate \(rel) as \(newRel)")
+                    DispatchQueue.main.async {
+                        PageRegistry.record(url: site.origin + newRel, title: slug)
+                        tab.navigate(to: site.origin + newRel)
+                    }
+                } catch {
+                    DispatchQueue.main.async { publishAlert(error) }
+                }
             }
         } else if url.isFileURL {
             let panel = NSSavePanel()

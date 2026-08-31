@@ -91,9 +91,26 @@ public enum LinkSources {
         else { return [] }
         return subpaths
             .filter {
-                $0.hasSuffix(".html") && !$0.hasPrefix(".")
+                $0.hasSuffix(".html") && !$0.hasPrefix(".") && !$0.hasPrefix("_hidden/")
                     && !$0.contains(".git") && !$0.contains("node_modules")
             }
+            .sorted()
+            .map { rel in
+                var name = (rel as NSString).deletingPathExtension
+                if name == "index" { name = "Home" }
+                name = name.replacingOccurrences(of: "/index", with: "")
+                    .replacingOccurrences(of: "-", with: " ")
+                return LinkOption(label: name.capitalized, href: "/" + rel)
+            }
+    }
+
+    /// Hidden pages: unpublished but kept — they live in the mirror's
+    /// _hidden/ folder, off the server entirely until shown again.
+    public static func hiddenPages(for site: Site) -> [LinkOption] {
+        let root = (site.localProjectPath as NSString).appendingPathComponent("_hidden")
+        guard let subpaths = try? FileManager.default.subpathsOfDirectory(atPath: root) else { return [] }
+        return subpaths
+            .filter { $0.hasSuffix(".html") && !$0.hasPrefix(".") }
             .sorted()
             .map { rel in
                 var name = (rel as NSString).deletingPathExtension

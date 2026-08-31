@@ -182,6 +182,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           for (var i = 0; i < editables.length; i++) { editables[i].removeAttribute('contenteditable'); }
           var loading = clone.querySelectorAll('.tim-loading');
           for (var j = 0; j < loading.length; j++) { loading[j].classList.remove('tim-loading'); }
+          var chrome = clone.querySelector('#__tim-editor-css');
+          if (chrome) { chrome.remove(); }
           return (document.doctype ? '<!DOCTYPE html>\\n' : '') + clone.outerHTML;
         })()
         """
@@ -343,6 +345,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         for (var j = 0; j < editables.length; j++) { editables[j].removeAttribute('contenteditable'); }
         var loading = clone.querySelectorAll('.tim-loading');
         for (var k = 0; k < loading.length; k++) { loading[k].classList.remove('tim-loading'); }
+        var chrome = clone.querySelector('#__tim-editor-css');
+        if (chrome) { chrome.remove(); }
         return clone.outerHTML;
       };
     })();
@@ -382,6 +386,19 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       }
 
       var COLS = 24;
+
+      // Editor chrome styles: ALWAYS (re)injected so every page gets the
+      // current rules, and stripped from saves like the overlay itself.
+      var editorCSS = doc.getElementById('__tim-editor-css');
+      if (!editorCSS) {
+        editorCSS = doc.createElement('style');
+        editorCSS.id = '__tim-editor-css';
+        doc.head.appendChild(editorCSS);
+      }
+      editorCSS.textContent =
+        'html.tim-editing .tim-object{cursor:grab}' +
+        'html.tim-editing .tim-object:active{cursor:grabbing}' +
+        '.tim-object.tim-loading{background:rgba(10,132,255,0.07);outline:1.5px dashed rgba(10,132,255,0.45);outline-offset:-1px;border-radius:6px;min-height:48px}';
 
       var overlay = doc.createElement('div');
       overlay.id = '__tim-overlay';
