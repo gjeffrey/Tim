@@ -945,6 +945,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           upsertMeta('property', 'og:image', value);
           upsertMeta('name', 'twitter:image', value);
           upsertMeta('name', 'twitter:card', value ? 'summary_large_image' : '');
+        } else if (kind === 'robots') {
+          upsertMeta('name', 'robots', value);
         } else if (kind === 'touchIcon') {
           var touch = doc.querySelector('link[rel="apple-touch-icon"]');
           if (!value) { if (touch) { touch.remove(); } return; }
@@ -1013,6 +1015,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           touchIcon: (function () {
             var l = doc.querySelector('link[rel="apple-touch-icon"]');
             return l ? (l.getAttribute('href') || '') : '';
+          })(),
+          robotsMeta: (function () {
+            var m = doc.querySelector('meta[name="robots"]');
+            return m ? (m.getAttribute('content') || '') : '';
           })()
         });
       };

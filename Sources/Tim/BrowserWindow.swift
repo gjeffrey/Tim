@@ -2345,6 +2345,21 @@ struct SiteEditorSheet: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            if Robots.state(inMirror: draft.localProjectPath) == .foreign {
+                Text("This site has its own robots.txt — Tim won't change it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Toggle("Allow search engines", isOn: $draft.allowSearchEngines)
+                    .font(.system(size: 12))
+                Toggle("Allow AI crawlers", isOn: $draft.allowAICrawlers)
+                    .font(.system(size: 12))
+                Text("Written as robots.txt on your site. Honor-system: well-behaved crawlers respect it; it's a request, not a lock.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             if AstroProject.isAstroProject(draft.localProjectPath) {
                 Label("Astro project detected — Tim will edit source, rebuild, and deploy dist/.", systemImage: "sparkles")
                     .font(.caption)
@@ -2480,6 +2495,21 @@ struct SiteEditorSheet: View {
         }
         let isNewSFTPSite = site == nil && draft.target == .sftp && !draft.host.isEmpty
         siteStore.upsert(draft)
+        // Crawler permissions become robots.txt in the mirror (and on the
+        // server for SFTP sites; other targets carry it on next deploy).
+        if !draft.localProjectPath.isEmpty,
+           let robots = Robots.write(
+               allowSearch: draft.allowSearchEngines,
+               allowAI: draft.allowAICrawlers,
+               toMirror: draft.localProjectPath
+           ),
+           draft.target == .sftp, !draft.host.isEmpty {
+            let s = draft
+            DispatchQueue.global(qos: .utility).async {
+                let root = s.remoteRoot.hasSuffix("/") ? String(s.remoteRoot.dropLast()) : s.remoteRoot
+                _ = try? SFTP.upload(html: robots, to: root + "/robots.txt", host: s.host, username: s.username, port: s.port)
+            }
+        }
         // Connecting an existing site pulls it down automatically — the
         // mirror fills itself; no manual download step.
         if isNewSFTPSite {
@@ -2936,6 +2966,7 @@ struct PageOptionsControls: View {
     @State private var favicon: String
     @State private var touchIcon: String
     @State private var showIconMaker = false
+    @State private var hideFromSearch: Bool
 
     init(tab: Tab, info: [String: Any], reload: @escaping () -> Void) {
         self.tab = tab
@@ -2954,6 +2985,7 @@ struct PageOptionsControls: View {
         _ogImage = State(initialValue: info["ogImage"] as? String ?? "")
         _favicon = State(initialValue: info["favicon"] as? String ?? "")
         _touchIcon = State(initialValue: info["touchIcon"] as? String ?? "")
+        _hideFromSearch = State(initialValue: (info["robotsMeta"] as? String ?? "").contains("noindex"))
     }
 
     private var currentSite: Site? { siteStore.match(tab.webView.url) }
@@ -3089,6 +3121,12 @@ struct PageOptionsControls: View {
                     hint: "The little icon in tabs and bookmarks.",
                     kind: "favicon"
                 )
+                Toggle("Hide this page from search engines", isOn: $hideFromSearch)
+                    .font(.system(size: 11))
+                    .onChange(of: hideFromSearch) { _, on in
+                        tab.setPageMeta("robots", on ? "noindex, nofollow" : "")
+                    }
+                    .help("Adds a noindex meta tag — search engines skip this page. Site-wide crawler permissions live in the site's settings.")
             }
             .sheet(isPresented: $showIconMaker) {
                 IconMakerSheet { url in

@@ -45,10 +45,15 @@ public struct Site: Codable, Identifiable, Equatable {
     // GitHub Pages, and (later) the framework project for any target.
     public var localProjectPath: String = ""
 
+    // Crawler permissions (expressed as robots.txt; honor-system).
+    public var allowSearchEngines: Bool = true
+    public var allowAICrawlers: Bool = true
+
     public init() {}
 
     enum CodingKeys: String, CodingKey {
         case id, name, origin, target, host, username, port, remoteRoot, cfProjectName, localProjectPath
+        case allowSearchEngines, allowAICrawlers
     }
 
     // decodeIfPresent throughout so sites saved by older builds keep loading.
@@ -64,6 +69,8 @@ public struct Site: Codable, Identifiable, Equatable {
         remoteRoot = try c.decodeIfPresent(String.self, forKey: .remoteRoot) ?? ""
         cfProjectName = try c.decodeIfPresent(String.self, forKey: .cfProjectName) ?? ""
         localProjectPath = try c.decodeIfPresent(String.self, forKey: .localProjectPath) ?? ""
+        allowSearchEngines = try c.decodeIfPresent(Bool.self, forKey: .allowSearchEngines) ?? true
+        allowAICrawlers = try c.decodeIfPresent(Bool.self, forKey: .allowAICrawlers) ?? true
     }
 
     /// Does this URL live under the site's origin?
