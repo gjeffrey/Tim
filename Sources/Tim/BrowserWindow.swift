@@ -329,6 +329,9 @@ struct TabContentView: View {
         .navigationTitle("")
         .toolbar { toolbarContent }
         .onAppear {
+            // Your own pages always load fresh — never a stale cached copy
+            // of something you just published.
+            tab.cacheBypass = { url in siteStore.match(url) != nil }
             addressText = tab.urlString
             if tab.urlString.isEmpty {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {

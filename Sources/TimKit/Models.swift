@@ -22,6 +22,11 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     public let webView: WKWebView
     private var observations: [NSKeyValueObservation] = []
 
+    /// When set (the app wires it to connected sites), main-frame loads of
+    /// matching URLs bypass the HTTP cache — pages you publish are always
+    /// shown fresh when you come back to them.
+    public var cacheBypass: ((URL) -> Bool)?
+
     public override init() {
         let configuration = WKWebViewConfiguration()
         // Render exactly like Safari. The engine already is Safari's WebKit,
@@ -175,6 +180,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           if (overlay) { overlay.remove(); }
           var editables = clone.querySelectorAll('[contenteditable]');
           for (var i = 0; i < editables.length; i++) { editables[i].removeAttribute('contenteditable'); }
+          var loading = clone.querySelectorAll('.tim-loading');
+          for (var j = 0; j < loading.length; j++) { loading[j].classList.remove('tim-loading'); }
           return (document.doctype ? '<!DOCTYPE html>\\n' : '') + clone.outerHTML;
         })()
         """
@@ -334,6 +341,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         var clone = canvas.cloneNode(true);
         var editables = clone.querySelectorAll('[contenteditable]');
         for (var j = 0; j < editables.length; j++) { editables[j].removeAttribute('contenteditable'); }
+        var loading = clone.querySelectorAll('.tim-loading');
+        for (var k = 0; k < loading.length; k++) { loading[k].classList.remove('tim-loading'); }
         return clone.outerHTML;
       };
     })();
@@ -362,6 +371,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           '.tim-canvas img.tim-object{width:100%;height:100%;object-fit:cover;display:block}' +
           '.tim-canvas video.tim-object{width:100%;display:block}' +
           '.tim-canvas audio.tim-object{width:100%}' +
+          '.tim-object.tim-loading{background:rgba(10,132,255,0.07);outline:1.5px dashed rgba(10,132,255,0.45);outline-offset:-1px;border-radius:6px;min-height:48px}' +
           '@media (max-width:700px){.tim-canvas{grid-template-columns:1fr;grid-auto-rows:auto;padding:24px 16px;min-height:0}.tim-canvas>.tim-object{grid-area:auto !important}}' +
           '.tim-style-title{font-family:var(--tim-font-heading,inherit);font-size:2.5rem;font-weight:700;line-height:1.15}' +
           '.tim-style-heading{font-family:var(--tim-font-heading,inherit);font-size:1.6rem;font-weight:700;line-height:1.25}' +
@@ -704,6 +714,18 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         });
         setArea(el, maxRe, 1, maxRe + rowSpan, 1 + colSpan);
         canvas.appendChild(el);
+        var media = (el.matches && el.matches('img,video,audio'))
+          ? el
+          : (el.querySelector ? el.querySelector('img,video,audio') : null);
+        if (media) {
+          el.classList.add('tim-loading');
+          var settle = function () { el.classList.remove('tim-loading'); layout(); };
+          media.addEventListener('load', settle);
+          media.addEventListener('loadeddata', settle);
+          media.addEventListener('canplay', settle);
+          media.addEventListener('error', settle);
+          if ((media.tagName === 'IMG' && media.complete) || media.readyState >= 2) { settle(); }
+        }
         stopTextEditing();
         sel = el;
         fitSpan(el);
@@ -1032,6 +1054,24 @@ extension Tab: WKNavigationDelegate {
         // Navigating away always leaves edit mode.
         if isEditing { isEditing = false }
         lastHTTPStatus = 200
+    }
+
+    public func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+        if let url = navigationAction.request.url,
+           navigationAction.targetFrame?.isMainFrame == true,
+           navigationAction.request.cachePolicy == .useProtocolCachePolicy,
+           cacheBypass?(url) == true {
+            decisionHandler(.cancel)
+            var request = navigationAction.request
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            webView.load(request)
+            return
+        }
+        decisionHandler(.allow)
     }
 
     public func webView(
