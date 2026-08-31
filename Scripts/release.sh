@@ -14,7 +14,24 @@ set -e
 cd "$(dirname "$0")/.."
 
 IDENTITY="Developer ID Application: Gabriel Jeffrey (VDNJRV3PR9)"
-PROFILE="TimNotary"
+
+# Notary auth, in order of preference: a keychain profile (TimNotary, or
+# the one Little Ripper set up), else the App Store Connect API key file
+# Loch uses (key file + NOTARY_ISSUER_ID env), else skip with instructions.
+NOTARY_AUTH=()
+for profile in TimNotary littleripper-notary; do
+    if xcrun notarytool history --keychain-profile "$profile" >/dev/null 2>&1; then
+        NOTARY_AUTH=(--keychain-profile "$profile")
+        echo "▸ Notary auth: keychain profile $profile"
+        break
+    fi
+done
+KEY_ID="${NOTARY_KEY_ID:-A634227VQG}"
+KEY_FILE="$HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8"
+if [ ${#NOTARY_AUTH[@]} -eq 0 ] && [ -f "$KEY_FILE" ] && [ -n "$NOTARY_ISSUER_ID" ]; then
+    NOTARY_AUTH=(--key "$KEY_FILE" --key-id "$KEY_ID" --issuer "$NOTARY_ISSUER_ID")
+    echo "▸ Notary auth: API key $KEY_ID"
+fi
 SFTP_DEST="dh_xvreha@pdx1-shared-a1-34.dreamhost.com"
 REMOTE_ROOT="/home/dh_xvreha/gabrieljeffrey.com/tim"
 RELEASES_DIR="Releases"
@@ -41,15 +58,16 @@ ZIP="$RELEASES_DIR/Tim.zip"
 rm -f "$ZIP"
 ditto -c -k --keepParent "Tim.app" "$ZIP"
 
-if xcrun notarytool history --keychain-profile "$PROFILE" >/dev/null 2>&1; then
+if [ ${#NOTARY_AUTH[@]} -gt 0 ]; then
     echo "== Notarizing"
-    xcrun notarytool submit "$ZIP" --keychain-profile "$PROFILE" --wait
+    xcrun notarytool submit "$ZIP" "${NOTARY_AUTH[@]}" --wait
     xcrun stapler staple "Tim.app"
     rm -f "$ZIP"
     ditto -c -k --keepParent "Tim.app" "$ZIP"
 else
-    echo "!! Skipping notarization — no '$PROFILE' keychain profile."
-    echo "   Run: xcrun notarytool store-credentials $PROFILE --apple-id <id> --team-id VDNJRV3PR9"
+    echo "!! Skipping notarization — no notary credentials found."
+    echo "   Either: xcrun notarytool store-credentials TimNotary --apple-id <id> --team-id VDNJRV3PR9"
+    echo "   or set NOTARY_ISSUER_ID (with AuthKey_${KEY_ID}.p8 in ~/.appstoreconnect/private_keys)."
 fi
 
 echo "== Appcast"
