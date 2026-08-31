@@ -1321,6 +1321,12 @@ struct ThemePanel: View {
     @State private var importedFonts: [FontOption] = []
     @State private var isApplying = false
     @State private var status: String?
+    @State private var browsingFor: FontTarget?
+
+    enum FontTarget: String, Identifiable {
+        case heading, body
+        var id: String { rawValue }
+    }
 
     private var allFonts: [FontOption] { FontCatalog.options + importedFonts }
 
@@ -1332,11 +1338,11 @@ struct ThemePanel: View {
             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 10) {
                 GridRow {
                     Text("Headings")
-                    fontPicker(selection: $headingFont)
+                    fontPicker(selection: $headingFont, target: .heading)
                 }
                 GridRow {
                     Text("Body")
-                    fontPicker(selection: $bodyFont)
+                    fontPicker(selection: $bodyFont, target: .body)
                 }
                 GridRow {
                     Text("Accent")
@@ -1375,18 +1381,37 @@ struct ThemePanel: View {
         }
         .padding(14)
         .frame(width: 340)
+        .popover(item: $browsingFor, arrowEdge: .trailing) { target in
+            FontPickerView { family in
+                let option = fontOption(from: family)
+                if !importedFonts.contains(option) { importedFonts.append(option) }
+                if target == .heading { headingFont = option } else { bodyFont = option }
+                browsingFor = nil
+            }
+        }
     }
 
-    private func fontPicker(selection: Binding<FontOption>) -> some View {
+    private func fontPicker(selection: Binding<FontOption>, target: FontTarget) -> some View {
         Menu {
             ForEach(allFonts) { font in
                 Button(font.name) { selection.wrappedValue = font }
             }
+            Divider()
+            Button("Browse Google Fonts…") { browsingFor = target }
         } label: {
             Text(selection.wrappedValue.name)
                 .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func fontOption(from family: GoogleFonts.Family) -> FontOption {
+        FontOption(
+            name: family.family,
+            family: "'\(family.family)'",
+            fallback: GoogleFonts.genericFallback(family.category),
+            googleQuery: GoogleFonts.query(for: family)
+        )
     }
 
     private func importFont() {
@@ -2273,6 +2298,10 @@ struct InspectorControls: View {
 
     @State private var fontSize: Double = 16
     @State private var weightIndex = 0
+    @State private var fontFamilyName = ""
+    @State private var lineHeight: Double = 1.4
+    @State private var letterSpacing: Double = 0
+    @State private var showFontPicker = false
     @State private var radius: Double = 0
     @State private var opacity: Double = 1
     @State private var padding: Double = 0
@@ -2294,6 +2323,33 @@ struct InspectorControls: View {
 
             if isText {
                 VStack(alignment: .leading, spacing: 8) {
+                    label("Font")
+                    Button {
+                        showFontPicker = true
+                    } label: {
+                        HStack {
+                            Text(fontFamilyName.isEmpty ? "System" : fontFamilyName)
+                                .lineLimit(1)
+                            Spacer()
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 5)
+                        .padding(.horizontal, 8)
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(0.06)))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .popover(isPresented: $showFontPicker, arrowEdge: .leading) {
+                        FontPickerView { family in
+                            fontFamilyName = family.family
+                            tab.ensurePageFont(family: family.family, cssURL: GoogleFonts.cssURL(for: family))
+                            tab.setSelectionStyle("fontFamily", "'\(family.family)', \(GoogleFonts.genericFallback(family.category))")
+                            showFontPicker = false
+                        }
+                    }
+
                     label("Size — \(Int(fontSize))")
                     Slider(value: $fontSize, in: 10...96, step: 1)
                         .onChange(of: fontSize) { _, v in tab.setSelectionStyle("fontSize", "\(Int(v))px") }
@@ -2316,6 +2372,14 @@ struct InspectorControls: View {
                         ColorPicker("", selection: $textColor, supportsOpacity: false).labelsHidden()
                             .onChange(of: textColor) { _, c in tab.setSelectionStyle("color", c.hexString) }
                     }
+                    label(String(format: "Line Height — %.2f", lineHeight))
+                    Slider(value: $lineHeight, in: 1.0...2.2, step: 0.05)
+                        .onChange(of: lineHeight) { _, v in tab.setSelectionStyle("lineHeight", String(format: "%.2f", v)) }
+                    label(String(format: "Letter Spacing — %.1f", letterSpacing))
+                    Slider(value: $letterSpacing, in: -2...8, step: 0.5)
+                        .onChange(of: letterSpacing) { _, v in
+                            tab.setSelectionStyle("letterSpacing", v == 0 ? "normal" : String(format: "%.1fpx", v))
+                        }
                 }
                 Divider()
             }
@@ -2353,11 +2417,111 @@ struct InspectorControls: View {
             opacity = info["opacity"] as? Double ?? 1
             padding = info["padding"] as? Double ?? 0
             hasShadow = (info["hasShadow"] as? Int) == 1
+            fontFamilyName = (info["fontFamily"] as? String).flatMap { $0.hasPrefix("-apple-") ? "" : $0 } ?? ""
+            lineHeight = min(2.2, max(1.0, info["lineHeight"] as? Double ?? 1.4))
+            letterSpacing = min(8, max(-2, info["letterSpacing"] as? Double ?? 0))
         }
     }
 
     private func label(_ text: String) -> some View {
         Text(text).font(.caption).foregroundStyle(.secondary)
+    }
+}
+
+
+// MARK: - Google Fonts picker: the whole catalog, each family in its own face
+
+struct FontPickerView: View {
+    let onPick: (GoogleFonts.Family) -> Void
+
+    @State private var catalog: [GoogleFonts.Family] = []
+    @State private var search = ""
+    @State private var category = "all"
+
+    private let categories: [(String, String)] = [
+        ("all", "All"), ("sans-serif", "Sans"), ("serif", "Serif"),
+        ("display", "Display"), ("handwriting", "Script"), ("monospace", "Mono")
+    ]
+
+    private var filtered: [GoogleFonts.Family] {
+        catalog.filter { family in
+            (category == "all" || family.category == category)
+                && (search.isEmpty || family.family.localizedCaseInsensitiveContains(search))
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            TextField("Search Google Fonts", text: $search)
+                .textFieldStyle(.roundedBorder)
+            Picker("", selection: $category) {
+                ForEach(categories, id: \.0) { pair in
+                    Text(pair.1).tag(pair.0)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            if catalog.isEmpty {
+                Spacer()
+                ProgressView()
+                Text("Loading the catalog…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(filtered) { family in
+                            FontRow(family: family) { onPick(family) }
+                        }
+                    }
+                }
+            }
+
+            Text(catalog.isEmpty ? " " : "\(filtered.count) families · previews load as you scroll")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(10)
+        .frame(width: 300, height: 430)
+        .onAppear {
+            GoogleFonts.catalog { catalog = $0 }
+        }
+    }
+}
+
+struct FontRow: View {
+    let family: GoogleFonts.Family
+    let pick: () -> Void
+
+    @State private var ready = false
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: pick) {
+            HStack {
+                Text(family.family)
+                    .font(ready ? .custom(family.family, size: 15) : .system(size: 13))
+                    .lineLimit(1)
+                Spacer(minLength: 10)
+                Text("Aa")
+                    .font(ready ? .custom(family.family, size: 17) : .system(size: 14))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(hovering ? Color.primary.opacity(0.06) : .clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .onAppear {
+            GoogleFonts.registerForPreview(family) { ok in ready = ok }
+        }
     }
 }
 

@@ -207,6 +207,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         webView.evaluateJavaScript("window.__timApplyStyle && window.__timApplyStyle(\(Self.jsLiteral(styleClass)));", completionHandler: nil)
     }
 
+    /// Makes sure the page loads a Google Font (a <link> that persists
+    /// when the page is saved), so styled text renders after publish.
+    public func ensurePageFont(family: String, cssURL: String) {
+        webView.evaluateJavaScript(
+            "window.__timEnsureFont && window.__timEnsureFont(\(Self.jsLiteral(family)), \(Self.jsLiteral(cssURL)));",
+            completionHandler: nil
+        )
+    }
+
     /// Live styling from the Inspector: sets one CSS property on the
     /// selected element (design vocabulary in the UI, CSS underneath).
     public func setSelectionStyle(_ property: String, _ value: String) {
@@ -685,7 +694,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
               opacity: parseFloat(cs.opacity) || 1,
               padding: parseFloat(sel.style.padding) || 0,
               hasShadow: sel.style.boxShadow ? 1 : 0,
-              fill: sel.style.background || ''
+              fill: sel.style.background || '',
+              fontFamily: String(cs.fontFamily || '').split(',')[0].replace(/["']/g, '').trim(),
+              lineHeight: (parseFloat(cs.lineHeight) || 1.4 * (parseFloat(cs.fontSize) || 16)) / (parseFloat(cs.fontSize) || 16),
+              letterSpacing: cs.letterSpacing === 'normal' ? 0 : (parseFloat(cs.letterSpacing) || 0)
             });
           }
           if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.timSel) {
@@ -697,6 +709,16 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (!sel) { return; }
         sel.style[prop] = value;
         layout();
+      };
+
+      window.__timEnsureFont = function (family, url) {
+        if (!doc.querySelector('link[data-tim-font="' + family + '"]')) {
+          var link = doc.createElement('link');
+          link.rel = 'stylesheet';
+          link.href = url;
+          link.setAttribute('data-tim-font', family);
+          doc.head.appendChild(link);
+        }
       };
 
       window.__timSelHTML = function () { return sel ? sel.outerHTML : ''; };
