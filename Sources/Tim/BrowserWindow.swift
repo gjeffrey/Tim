@@ -3075,7 +3075,8 @@ struct PageOptionsControls: View {
                     .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(0.06)))
                     .onChange(of: descriptionText) { _, value in tab.setPageMeta("description", value) }
 
-                VStack(alignment: .leading, spacing: 4) {
+                // Social image — previewed as the share card it becomes.
+                VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
                         rowLabel("Social Image")
                         Button("Thumbnail") { useThumbnailAsSocial() }
@@ -3089,38 +3090,107 @@ struct PageOptionsControls: View {
                         }
                         Spacer()
                     }
-                    Text(ogImage.isEmpty ? "Shown when this page is shared or texted." : ogImage)
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    if ogImage.isEmpty {
+                        Text("Shown when this page is shared or texted.")
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        VStack(alignment: .leading, spacing: 0) {
+                            imagePreview(ogImage)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 104)
+                                .clipped()
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(title.isEmpty ? "Untitled" : title)
+                                    .font(.system(size: 11.5, weight: .semibold))
+                                    .lineLimit(1)
+                                if !descriptionText.isEmpty {
+                                    Text(descriptionText)
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                }
+                                Text(shareDomain)
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.05)))
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Color.primary.opacity(0.12), lineWidth: 1))
+                        Text("How links to this page unfurl in Messages and social apps.")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                    }
                 }
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
+
+                // App icon and favicon — shown as they'll appear.
+                HStack(alignment: .top, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 6) {
                         rowLabel("App Icon")
-                        Button("Make…") { showIconMaker = true }
-                            .controlSize(.mini)
-                            .help("Letters or an emoji on a color, or your own image.")
-                        Button("Choose…") { chooseMetaImage(kind: "touchIcon") }
-                            .controlSize(.mini)
+                        Group {
+                            if touchIcon.isEmpty {
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(Color.primary.opacity(0.05))
+                                    .overlay(
+                                        Image(systemName: "app.dashed")
+                                            .font(.system(size: 18))
+                                            .foregroundStyle(.tertiary)
+                                    )
+                            } else {
+                                imagePreview(touchIcon)
+                            }
+                        }
+                        .frame(width: 52, height: 52)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.primary.opacity(0.12), lineWidth: 1))
+                        HStack(spacing: 4) {
+                            Button("Make…") { showIconMaker = true }.controlSize(.mini)
+                            Button("Choose…") { chooseMetaImage(kind: "touchIcon") }.controlSize(.mini)
+                        }
                         if !touchIcon.isEmpty {
                             Button("Clear") { tab.setPageMeta("touchIcon", ""); touchIcon = "" }
                                 .controlSize(.mini)
                         }
-                        Spacer()
                     }
-                    Text(touchIcon.isEmpty ? "Used when the page is added to a Dock or Home Screen." : touchIcon)
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    VStack(alignment: .leading, spacing: 6) {
+                        rowLabel("Favicon")
+                        HStack(spacing: 5) {
+                            Group {
+                                if favicon.isEmpty {
+                                    Image(systemName: "globe")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(.tertiary)
+                                } else {
+                                    imagePreview(favicon)
+                                        .frame(width: 14, height: 14)
+                                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                                }
+                            }
+                            Text(title.isEmpty ? "Untitled" : title)
+                                .font(.system(size: 9.5))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 7)
+                        .background(Capsule().fill(Color.primary.opacity(0.06)))
+                        HStack(spacing: 4) {
+                            Button("Choose…") { chooseMetaImage(kind: "favicon") }.controlSize(.mini)
+                            if !favicon.isEmpty {
+                                Button("Clear") { tab.setPageMeta("favicon", ""); favicon = "" }
+                                    .controlSize(.mini)
+                            }
+                        }
+                    }
+                    Spacer()
                 }
-                metaFileRow(
-                    label: "Favicon",
-                    value: favicon,
-                    hint: "The little icon in tabs and bookmarks.",
-                    kind: "favicon"
-                )
+                Text("Dock and Home Screen use the app icon; tabs and bookmarks use the favicon.")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Toggle("Hide this page from search engines", isOn: $hideFromSearch)
                     .font(.system(size: 11))
                     .onChange(of: hideFromSearch) { _, on in
@@ -3141,6 +3211,49 @@ struct PageOptionsControls: View {
                 .padding(.horizontal, 2)
         }
         .padding(10)
+    }
+
+    private var shareDomain: String {
+        if let host = tab.webView.url?.host() { return host }
+        return currentSite.flatMap { URL(string: $0.origin)?.host() } ?? "your site"
+    }
+
+    /// Resolves a metadata image to something viewable: the mirror copy
+    /// first (fast, offline), then the live URL.
+    private func localPreviewImage(for value: String) -> NSImage? {
+        guard !value.isEmpty else { return nil }
+        var rel = value
+        if let s = currentSite, rel.hasPrefix(s.origin) { rel = String(rel.dropFirst(s.origin.count)) }
+        while rel.hasPrefix("/") { rel.removeFirst() }
+        if let s = currentSite, !s.localProjectPath.isEmpty {
+            for base in [s.localProjectPath, s.localProjectPath + "/public", s.localProjectPath + "/dist"] {
+                if let image = NSImage(contentsOfFile: base + "/" + rel) { return image }
+            }
+        }
+        if let pageURL = tab.webView.url, pageURL.isFileURL {
+            let path = pageURL.deletingLastPathComponent().appendingPathComponent(rel).path
+            if let image = NSImage(contentsOfFile: path) { return image }
+        }
+        return nil
+    }
+
+    @ViewBuilder
+    private func imagePreview(_ value: String) -> some View {
+        if let image = localPreviewImage(for: value) {
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+        } else if let url = URL(string: value), url.scheme?.hasPrefix("http") == true {
+            AsyncImage(url: url) { phase in
+                if let image = phase.image {
+                    image.resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    Rectangle().fill(Color.primary.opacity(0.06))
+                }
+            }
+        } else {
+            Rectangle().fill(Color.primary.opacity(0.06))
+        }
     }
 
     private func metaFileRow(label: String, value: String, hint: String, kind: String) -> some View {
