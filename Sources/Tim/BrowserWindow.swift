@@ -556,7 +556,11 @@ struct TabContentView: View {
             }
             if tab.isEditing {
                 Divider()
-                InspectorView(tab: tab)
+                InspectorView(
+                    tab: tab,
+                    allowsTemplates: matchedSite != nil
+                        && !(matchedSite.map { AstroProject.isAstroProject($0.localProjectPath) } ?? false)
+                )
             }
             }
         }
@@ -724,6 +728,10 @@ struct TabContentView: View {
                     if !harvested.isEmpty {
                         restamped = PageComponents.restampAll(in: site.localProjectPath, excludingRel: String(rel.dropFirst()))
                     }
+                    let injected = PageComponents.injectTemplateComponents(
+                        in: site.localProjectPath, excludingRel: String(rel.dropFirst())
+                    )
+                    restamped = Array(Set(restamped + injected))
                     switch site.target {
                     case .sftp:
                         let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
@@ -1228,6 +1236,7 @@ struct EditingToolbar: View {
     @State private var showLinkPopover = false
     @State private var showThemePanel = false
     @State private var showNewPageSheet = false
+    @State private var navBuilderSite: Site?
     @State private var statusMessage: String?
     @State private var isWorking = false
 
@@ -1253,6 +1262,13 @@ struct EditingToolbar: View {
                         insertMedia()
                     } label: {
                         Label("Media…", systemImage: "photo.on.rectangle.angled")
+                    }
+                    if let site, !isAstroSite {
+                        Button {
+                            navBuilderSite = site
+                        } label: {
+                            Label("Navigation…", systemImage: "list.bullet.rectangle")
+                        }
                     }
                 }
                 if let site, !isAstroSite {
@@ -1365,6 +1381,9 @@ struct EditingToolbar: View {
         .background(Color.accentColor.opacity(0.08))
         .sheet(isPresented: $showNewPageSheet) {
             NewPageSheet(site: site, tab: tab)
+        }
+        .sheet(item: $navBuilderSite) { navSite in
+            NavBuilderSheet(site: navSite, tab: tab)
         }
     }
 
@@ -2671,6 +2690,7 @@ let timStyles: [(cls: String, name: String)] = [
 
 struct InspectorView: View {
     @ObservedObject var tab: Tab
+    var allowsTemplates: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -2679,7 +2699,7 @@ struct InspectorView: View {
             Group {
                 if let info = tab.selectionInfo {
                     ScrollView {
-                        InspectorControls(tab: tab, info: info)
+                        InspectorControls(tab: tab, info: info, allowsTemplates: allowsTemplates)
                             .id(info["seq"] as? Int ?? 0)
                     }
                 } else {
@@ -2739,6 +2759,7 @@ struct InspectorView: View {
 struct InspectorControls: View {
     @ObservedObject var tab: Tab
     let info: [String: Any]
+    var allowsTemplates: Bool = false
 
     @State private var styleClass: String
     @State private var fontFamilyName: String
@@ -2757,9 +2778,10 @@ struct InspectorControls: View {
 
     private let weights = [400, 500, 600, 700]
 
-    init(tab: Tab, info: [String: Any]) {
+    init(tab: Tab, info: [String: Any], allowsTemplates: Bool = false) {
         self.tab = tab
         self.info = info
+        self.allowsTemplates = allowsTemplates
         let cls = info["timStyle"] as? String ?? ""
         _styleClass = State(initialValue: cls.isEmpty ? "tim-style-body" : cls)
         let family = info["fontFamily"] as? String ?? ""
@@ -2795,8 +2817,37 @@ struct InspectorControls: View {
                     .padding(.horizontal, 2)
             }
             appearanceCard
+            if allowsTemplates, isCanvasObject {
+                templateCard
+            }
         }
         .padding(10)
+    }
+
+    private var isCanvasObject: Bool {
+        (info["path"] as? [String])?.contains("Canvas") == true
+    }
+
+    private var onEveryPage: Bool {
+        (info["templateComponent"] as? String ?? "").hasPrefix("tpl-")
+    }
+
+    private var templateCard: some View {
+        card {
+            Toggle("On every page", isOn: Binding(
+                get: { onEveryPage },
+                set: { on in
+                    tab.setSelectionOnEveryPage(on, name: "tpl-" + String(UUID().uuidString.prefix(6)).lowercased())
+                }
+            ))
+            .font(.system(size: 12))
+            Text(onEveryPage
+                 ? "Part of this page's template — it appears on every page, and edits here update it everywhere on Done."
+                 : "Adds this object to the template: every page gets it, in this spot, on your next Done.")
+                .font(.system(size: 9.5))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     // MARK: Style (the Pages/Keynote contract)
@@ -3582,6 +3633,71 @@ extension Color {
     }
 }
 
+
+// MARK: - Navigation object: the site's live pages, deselectable
+
+struct NavBuilderSheet: View {
+    let site: Site
+    @ObservedObject var tab: Tab
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var pages: [LinkOption] = []
+    @State private var included: Set<String> = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Navigation")
+                .font(.title3.bold())
+            Text("A menu of your pages — it lives on every page, and editing it anywhere updates it everywhere.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(pages) { page in
+                        Toggle(page.label, isOn: Binding(
+                            get: { included.contains(page.href) },
+                            set: { on in
+                                if on { included.insert(page.href) } else { included.remove(page.href) }
+                            }
+                        ))
+                        .font(.system(size: 12))
+                    }
+                }
+            }
+            .frame(maxHeight: 200)
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Insert") { insert() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(included.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 320)
+        .onAppear {
+            pages = LinkSources.pages(for: site)
+            included = Set(pages.map(\.href))
+        }
+    }
+
+    private func insert() {
+        let links = pages
+            .filter { included.contains($0.href) }
+            .map { "<a href=\"\($0.href)\" style=\"text-decoration:none;color:inherit;font-weight:500;\">\($0.label)</a>" }
+            .joined(separator: "\n  ")
+        let nav = "<nav class=\"tim-object tim-nav\" style=\"grid-area: 1 / 1 / 3 / 25; display:flex; gap:20px; flex-wrap:wrap; align-items:center;\">\n  \(links)\n</nav>"
+        // The nav is a template component: saved as the master and injected
+        // into every page on Done; inline edits propagate like any component.
+        try? PageComponents.save(name: "tpl-nav", html: nav, in: site.localProjectPath)
+        tab.insertObject(html: PageComponents.stamped(name: "tpl-nav", content: nav), colSpan: 24, rowSpan: 2)
+        dismiss()
+    }
+}
 
 // MARK: - Icon maker: an editable recipe — colors, gradients, type
 

@@ -84,6 +84,42 @@ public enum PageComponents {
         return nil
     }
 
+    /// Template components (tpl-*) belong on every page: this injects any
+    /// missing ones right after each page's canvas opening tag — objects
+    /// carry explicit grid positions, so they land in the same place
+    /// everywhere. Returns the pages that changed.
+    public static func injectTemplateComponents(in folder: String, excludingRel: String?) -> [String] {
+        let names = list(in: folder).filter { $0.hasPrefix("tpl-") }
+        guard !names.isEmpty,
+              let subpaths = try? FileManager.default.subpathsOfDirectory(atPath: folder)
+        else { return [] }
+        var changed: [String] = []
+        for rel in subpaths {
+            guard rel.hasSuffix(".html"), !rel.hasPrefix("components/"),
+                  !rel.hasPrefix("_h/"), !rel.hasPrefix("_hidden/"),
+                  !rel.contains(".git"), !rel.contains("node_modules"),
+                  rel != excludingRel
+            else { continue }
+            let path = (folder as NSString).appendingPathComponent(rel)
+            guard var pageHTML = try? String(contentsOfFile: path, encoding: .utf8),
+                  let canvasAttr = pageHTML.range(of: "data-tim-canvas")
+            else { continue }
+            var pageChanged = false
+            for name in names where !pageHTML.contains("data-tim-component=\"\(name)\"") {
+                guard let content = html(named: name, in: folder),
+                      let tagEnd = pageHTML.range(of: ">", range: canvasAttr.upperBound..<pageHTML.endIndex)
+                else { continue }
+                pageHTML.insert(contentsOf: "\n" + stamped(name: name, content: content), at: tagEnd.upperBound)
+                pageChanged = true
+            }
+            if pageChanged {
+                try? pageHTML.write(toFile: path, atomically: true, encoding: .utf8)
+                changed.append(rel)
+            }
+        }
+        return changed
+    }
+
     /// Re-stamps every page in the mirror with current component content.
     /// Returns the site-relative paths of pages that changed.
     public static func restampAll(in folder: String, excludingRel: String?) -> [String] {

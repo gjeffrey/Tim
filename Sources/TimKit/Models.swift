@@ -284,6 +284,16 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         webView.evaluateJavaScript("window.__timSelectAncestor && window.__timSelectAncestor(\(index));", completionHandler: nil)
     }
 
+    /// Template membership: wraps the selection so it appears on every
+    /// page of the template (injected on Done), or unwraps it.
+    public func setSelectionOnEveryPage(_ on: Bool, name: String) {
+        if on {
+            webView.evaluateJavaScript("window.__timWrapSelTemplate && window.__timWrapSelTemplate(\(Self.jsLiteral(name)));", completionHandler: nil)
+        } else {
+            webView.evaluateJavaScript("window.__timUnwrapSelTemplate && window.__timUnwrapSelTemplate();", completionHandler: nil)
+        }
+    }
+
     /// The selected element's HTML (Layout selection).
     public func selectedHTML(_ completion: @escaping (String) -> Void) {
         webView.evaluateJavaScript("window.__timSelHTML ? window.__timSelHTML() : ''") { result, _ in
@@ -830,6 +840,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
               hasShadow: sel.style.boxShadow ? 1 : 0,
               fill: sel.style.background || '',
               overrides: TYPO_PROPS.some(function (p) { return !!sel.style[p]; }) ? 1 : 0,
+              templateComponent: (function () {
+                var wrap = sel.closest ? sel.closest('[data-tim-component]') : null;
+                return wrap ? (wrap.getAttribute('data-tim-component') || '') : '';
+              })(),
               fontFamily: String(cs.fontFamily || '').split(',')[0].replace(/["']/g, '').trim(),
               lineHeight: (parseFloat(cs.lineHeight) || 1.4 * (parseFloat(cs.fontSize) || 16)) / (parseFloat(cs.fontSize) || 16),
               letterSpacing: cs.letterSpacing === 'normal' ? 0 : (parseFloat(cs.letterSpacing) || 0)
@@ -1062,6 +1076,25 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         stopTextEditing();
         sel = el;
         layout();
+        notifySel(true);
+      };
+
+      window.__timWrapSelTemplate = function (name) {
+        if (!sel || !canvasFor(sel)) { return; }
+        if (sel.closest('[data-tim-component]')) { return; }
+        var wrap = doc.createElement('div');
+        wrap.setAttribute('data-tim-component', name);
+        wrap.style.display = 'contents';
+        sel.parentNode.insertBefore(wrap, sel);
+        wrap.appendChild(sel);
+        notifySel(true);
+      };
+      window.__timUnwrapSelTemplate = function () {
+        if (!sel) { return; }
+        var wrap = sel.closest ? sel.closest('[data-tim-component]') : null;
+        if (!wrap || !wrap.parentNode) { return; }
+        while (wrap.firstChild) { wrap.parentNode.insertBefore(wrap.firstChild, wrap); }
+        wrap.remove();
         notifySel(true);
       };
 
