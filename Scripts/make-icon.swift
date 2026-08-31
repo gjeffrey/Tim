@@ -8,11 +8,9 @@ import AppKit
 let canvas = 1024
 let inset: CGFloat = 100
 let radius: CGFloat = 185
-// Layers straight from the Icon Composer document, bottom to top.
-let layerPaths = [
-    "Design/tim icon.icon/Assets/tim garamond 1 2.svg",  // yellow circle
-    "Design/tim icon.icon/Assets/tim garamond 2 2.svg"   // tim:// wordmark
-]
+// The finished icon art (background + circle + wordmark), clipped to
+// the Apple icon squircle.
+let artPath = "Design/tim garamond@2x.png"
 
 func drawIcon() -> CGImage {
     let space = CGColorSpace(name: CGColorSpace.sRGB)!
@@ -24,15 +22,12 @@ func drawIcon() -> CGImage {
     let rect = CGRect(x: inset, y: inset, width: CGFloat(canvas) - 2 * inset, height: CGFloat(canvas) - 2 * inset)
     ctx.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
     ctx.clip()
-    ctx.setFillColor(CGColor(red: 0.98039, green: 0.98039, blue: 0.98039, alpha: 1))
-    ctx.fill(rect)
-
-    for path in layerPaths {
-        guard let nsImage = NSImage(contentsOfFile: path) else { continue }
+    if let nsImage = NSImage(contentsOfFile: artPath) {
         var proposed = rect
-        guard let cg = nsImage.cgImage(forProposedRect: &proposed, context: nil, hints: nil) else { continue }
-        ctx.interpolationQuality = .high
-        ctx.draw(cg, in: rect)
+        if let cg = nsImage.cgImage(forProposedRect: &proposed, context: nil, hints: nil) {
+            ctx.interpolationQuality = .high
+            ctx.draw(cg, in: rect)
+        }
     }
     return ctx.makeImage()!
 }
