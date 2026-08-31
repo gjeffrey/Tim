@@ -648,10 +648,12 @@ struct TabContentView: View {
         guard let url = tab.webView.url else { tab.setEditing(false); return }
 
         if isPlainLocalPage {
-            savePlainLocalPage {
-                PageRegistry.record(url: url.absoluteString, title: tab.title)
-                tab.setEditing(false)
-                captureThumbnailSoon()
+            tab.setEditing(false)
+            ensureAutoSocialCard {
+                savePlainLocalPage {
+                    PageRegistry.record(url: url.absoluteString, title: tab.title)
+                    captureThumbnailSoon()
+                }
             }
             return
         }
@@ -702,8 +704,9 @@ struct TabContentView: View {
         }
 
         // Plain site page: Done publishes this page.
+        tab.setEditing(false)
+        ensureAutoSocialCard {
         tab.currentHTML { html in
-            tab.setEditing(false)
             guard let html else { return }
             let rel = site.relativePagePath(for: url)
             DispatchQueue.global(qos: .userInitiated).async {
@@ -745,6 +748,7 @@ struct TabContentView: View {
                 }
             }
         }
+        }
     }
 
     /// History is just history: pick a version, the page returns to it —
@@ -776,6 +780,79 @@ struct TabContentView: View {
                 DispatchQueue.main.async { tab.webView.reload() }
             } catch {
                 DispatchQueue.main.async { publishAlert(error) }
+            }
+        }
+    }
+
+    /// The default share card is the page itself: regenerated on every
+    /// Done unless the user chose a custom image (auto cards are named
+    /// social-<page>.png — the filename is the state, so it holds across
+    /// Macs; Clear a custom image and auto resumes next save).
+    private func ensureAutoSocialCard(then completion: @escaping () -> Void) {
+        guard let url = tab.webView.url else { completion(); return }
+        if let matched = matchedSite, AstroProject.isAstroProject(matched.localProjectPath) {
+            completion()  // Astro heads aren't round-tripped; theme-level territory.
+            return
+        }
+        tab.pageInfo { info in
+            let current = info["ogImage"] as? String ?? ""
+            let currentName = (current as NSString).lastPathComponent
+            guard current.isEmpty || currentName.hasPrefix("social-") else {
+                completion()  // custom image — theirs, never touched
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                let config = WKSnapshotConfiguration()
+                config.snapshotWidth = 1200
+                tab.webView.takeSnapshot(with: config) { image, _ in
+                    guard let image, image.size.width > 0 else { completion(); return }
+                    let card = NSImage(size: NSSize(width: 1200, height: 630))
+                    card.lockFocus()
+                    let scaledHeight = image.size.height * (1200 / image.size.width)
+                    image.draw(in: NSRect(x: 0, y: 630 - scaledHeight, width: 1200, height: scaledHeight))
+                    card.unlockFocus()
+                    guard let tiff = card.tiffRepresentation,
+                          let rep = NSBitmapImageRep(data: tiff),
+                          let png = rep.representation(using: .png, properties: [:])
+                    else { completion(); return }
+
+                    let slug: String
+                    if let matched = matchedSite {
+                        let rel = matched.relativePagePath(for: url)
+                        slug = ((rel as NSString).lastPathComponent as NSString).deletingPathExtension
+                    } else {
+                        slug = url.deletingPathExtension().lastPathComponent
+                    }
+                    let temp = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("social-\(slug).png")
+                    try? png.write(to: temp)
+
+                    var resolved = matchedSite
+                    if var s = resolved {
+                        if s.localProjectPath.isEmpty {
+                            s.localProjectPath = SiteWorkspace.defaultFolder(for: s.name.isEmpty ? s.origin : s.name)
+                            siteStore.upsert(s)
+                        }
+                        SiteWorkspace.ensure(s.localProjectPath)
+                        resolved = s
+                    }
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let staged = try? EditingToolbar.stage(fileURL: temp, site: resolved, pageURL: url)
+                        DispatchQueue.main.async {
+                            if let staged {
+                                let value: String
+                                if let s = resolved, s.origin.hasPrefix("http") {
+                                    value = s.origin + "/" + staged
+                                } else {
+                                    value = staged
+                                }
+                                tab.setPageMeta("ogImage", value)
+                            }
+                            // A beat so the meta lands before serialization.
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { completion() }
+                        }
+                    }
+                }
             }
         }
     }
@@ -3094,7 +3171,7 @@ struct PageOptionsControls: View {
                         Spacer()
                     }
                     if ogImage.isEmpty {
-                        Text("Shown when this page is shared or texted.")
+                        Text("Auto-generates from the page on each save — Choose… to use your own.")
                             .font(.system(size: 9.5))
                             .foregroundStyle(.tertiary)
                     } else {

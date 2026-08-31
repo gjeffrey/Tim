@@ -1,0 +1,15 @@
+{
+  "iconRecipes" : {
+    "\/holland.html" : {
+      "backgroundEndHex" : "#CB30E0",
+      "backgroundHex" : "#FEED00",
+      "fontFamily" : "Playfair Display",
+      "imageBased" : false,
+      "text" : "HJ",
+      "textColorHex" : "#FFFFFF"
+    }
+  },
+  "iconRecipesUpdated" : "2026-08-31T21:09:52Z",
+  "updated" : "2026-08-31T21:09:52Z",
+  "version" : 1
+}
