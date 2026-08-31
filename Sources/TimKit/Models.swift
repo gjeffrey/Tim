@@ -207,6 +207,18 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         webView.evaluateJavaScript("window.__timApplyStyle && window.__timApplyStyle(\(Self.jsLiteral(styleClass)));", completionHandler: nil)
     }
 
+    /// Pages-style "Update Style": the selection's current look becomes
+    /// the definition of its named style — every block using it follows.
+    public func updateStyleFromSelection() {
+        webView.evaluateJavaScript("window.__timUpdateStyleFromSel && window.__timUpdateStyleFromSel();", completionHandler: nil)
+    }
+
+    /// Clears the selection's local typography tweaks so it derives from
+    /// its named style again.
+    public func revertSelectionToStyle() {
+        webView.evaluateJavaScript("window.__timRevertSel && window.__timRevertSel();", completionHandler: nil)
+    }
+
     /// Makes sure the page loads a Google Font (a <link> that persists
     /// when the page is saved), so styled text renders after publish.
     public func ensurePageFont(family: String, cssURL: String) {
@@ -695,6 +707,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
               padding: parseFloat(sel.style.padding) || 0,
               hasShadow: sel.style.boxShadow ? 1 : 0,
               fill: sel.style.background || '',
+              overrides: TYPO_PROPS.some(function (p) { return !!sel.style[p]; }) ? 1 : 0,
               fontFamily: String(cs.fontFamily || '').split(',')[0].replace(/["']/g, '').trim(),
               lineHeight: (parseFloat(cs.lineHeight) || 1.4 * (parseFloat(cs.fontSize) || 16)) / (parseFloat(cs.fontSize) || 16),
               letterSpacing: cs.letterSpacing === 'normal' ? 0 : (parseFloat(cs.letterSpacing) || 0)
@@ -709,6 +722,64 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (!sel) { return; }
         sel.style[prop] = value;
         layout();
+      };
+
+      // Page-scoped named styles, the Pages/Keynote way: "Update Style"
+      // rewrites the style's rule in a persistent <style> element (saved
+      // with the page), so every block carrying the class follows.
+      var TYPO_PROPS = ['fontFamily', 'fontSize', 'fontWeight', 'color', 'lineHeight', 'letterSpacing', 'textAlign'];
+      var styleRules = {};
+      (function parseExistingOverrides() {
+        var el = doc.querySelector('style[data-tim-style-overrides]');
+        if (!el) { return; }
+        var re = /\\.(tim-style-[a-z]+)\\s*\\{([^}]*)\\}/g;
+        var m;
+        while ((m = re.exec(el.textContent))) { styleRules[m[1]] = m[2]; }
+      })();
+      function writeOverrides() {
+        var el = doc.querySelector('style[data-tim-style-overrides]');
+        if (!el) {
+          el = doc.createElement('style');
+          el.setAttribute('data-tim-style-overrides', '');
+          doc.head.appendChild(el);
+        }
+        var out = '';
+        for (var key in styleRules) { out += '.' + key + '{' + styleRules[key] + '}\\n'; }
+        el.textContent = out;
+      }
+      function selStyleClass() {
+        var cls = '';
+        if (sel) {
+          String(sel.className || '').split(/\\s+/).forEach(function (c) {
+            if (c.indexOf('tim-style-') === 0) { cls = c; }
+          });
+        }
+        return cls;
+      }
+      window.__timUpdateStyleFromSel = function () {
+        if (!sel) { return ''; }
+        var cls = selStyleClass();
+        if (!cls) { cls = 'tim-style-body'; sel.classList.add(cls); }
+        var cs = getComputedStyle(sel);
+        var ratio = (parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.4) / (parseFloat(cs.fontSize) || 16);
+        styleRules[cls] = 'font-family:' + cs.fontFamily +
+          ';font-size:' + cs.fontSize +
+          ';font-weight:' + cs.fontWeight +
+          ';color:' + cs.color +
+          ';line-height:' + ratio.toFixed(2) +
+          ';letter-spacing:' + (cs.letterSpacing === 'normal' ? 'normal' : cs.letterSpacing) +
+          ';text-align:' + cs.textAlign + ';';
+        writeOverrides();
+        TYPO_PROPS.forEach(function (p) { sel.style[p] = ''; });
+        layout();
+        notifySel();
+        return cls;
+      };
+      window.__timRevertSel = function () {
+        if (!sel) { return; }
+        TYPO_PROPS.forEach(function (p) { sel.style[p] = ''; });
+        layout();
+        notifySel();
       };
 
       window.__timEnsureFont = function (family, url) {
@@ -775,6 +846,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           if (c.indexOf('tim-style-') === 0) { target.classList.remove(c); }
         });
         if (cls) { target.classList.add(cls); }
+        TYPO_PROPS.forEach(function (p) { target.style[p] = ''; });
+        layout();
+        notifySel();
       };
 
       window.__timCanvasLayer = true;

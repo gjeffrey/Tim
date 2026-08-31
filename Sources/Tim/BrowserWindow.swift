@@ -2266,29 +2266,41 @@ enum LocalPages {
 
 // MARK: - Inspector: style the selection like a design tool, not a CSS editor
 
+let timStyles: [(cls: String, name: String)] = [
+    ("tim-style-title", "Title"),
+    ("tim-style-heading", "Heading"),
+    ("tim-style-subheading", "Subheading"),
+    ("tim-style-body", "Body"),
+    ("tim-style-caption", "Caption")
+]
+
 struct InspectorView: View {
     @ObservedObject var tab: Tab
 
     var body: some View {
-        ScrollView {
+        Group {
             if let info = tab.selectionInfo {
-                InspectorControls(tab: tab, info: info)
-                    .id(info["seq"] as? Int ?? 0)
+                ScrollView {
+                    InspectorControls(tab: tab, info: info)
+                        .id(info["seq"] as? Int ?? 0)
+                }
             } else {
-                VStack(spacing: 8) {
-                    Image(systemName: "cursorarrow.click.2")
-                        .font(.system(size: 20))
+                VStack(spacing: 10) {
+                    Spacer()
+                    Image(systemName: "cursorarrow.rays")
+                        .font(.system(size: 24, weight: .light))
                         .foregroundStyle(.tertiary)
-                    Text("Select something\nto style it")
-                        .font(.caption)
+                    Text("Select anything\nto style it")
+                        .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
+                    Spacer()
                 }
                 .frame(maxWidth: .infinity)
-                .padding(.top, 60)
             }
         }
-        .frame(width: 216)
+        .frame(width: 248)
+        .background(Color.primary.opacity(0.025))
     }
 }
 
@@ -2296,138 +2308,260 @@ struct InspectorControls: View {
     @ObservedObject var tab: Tab
     let info: [String: Any]
 
-    @State private var fontSize: Double = 16
-    @State private var weightIndex = 0
-    @State private var fontFamilyName = ""
-    @State private var lineHeight: Double = 1.4
-    @State private var letterSpacing: Double = 0
+    @State private var styleClass: String
+    @State private var fontFamilyName: String
+    @State private var fontSize: Double
+    @State private var weightIndex: Int
+    @State private var lineHeight: Double
+    @State private var letterSpacing: Double
+    @State private var textColor: Color
+    @State private var fillColor: Color
+    @State private var radius: Double
+    @State private var padding: Double
+    @State private var opacity: Double
+    @State private var hasShadow: Bool
     @State private var showFontPicker = false
-    @State private var radius: Double = 0
-    @State private var opacity: Double = 1
-    @State private var padding: Double = 0
-    @State private var hasShadow = false
-    @State private var textColor: Color = .primary
-    @State private var fillColor: Color = .clear
 
     private let weights = [400, 500, 600, 700]
-    private var isText: Bool { (info["isText"] as? Int) == 1 || ["h1","h2","h3","h4","h5","h6","p"].contains(info["tag"] as? String ?? "") }
-    private var styleName: String? {
-        let s = info["timStyle"] as? String ?? ""
-        return s.isEmpty ? nil : s.replacingOccurrences(of: "tim-style-", with: "").capitalized
+
+    init(tab: Tab, info: [String: Any]) {
+        self.tab = tab
+        self.info = info
+        let cls = info["timStyle"] as? String ?? ""
+        _styleClass = State(initialValue: cls.isEmpty ? "tim-style-body" : cls)
+        let family = info["fontFamily"] as? String ?? ""
+        _fontFamilyName = State(initialValue: (family.hasPrefix("-apple-") || family.hasPrefix(".")) ? "" : family)
+        _fontSize = State(initialValue: info["fontSize"] as? Double ?? 16)
+        let weight = info["fontWeight"] as? Int ?? 400
+        _weightIndex = State(initialValue: [400, 500, 600, 700].lastIndex(where: { $0 <= weight }) ?? 0)
+        _lineHeight = State(initialValue: min(2.2, max(1.0, info["lineHeight"] as? Double ?? 1.4)))
+        _letterSpacing = State(initialValue: min(8, max(-2, info["letterSpacing"] as? Double ?? 0)))
+        _textColor = State(initialValue: .primary)
+        _fillColor = State(initialValue: .clear)
+        _radius = State(initialValue: info["radius"] as? Double ?? 0)
+        _padding = State(initialValue: info["padding"] as? Double ?? 0)
+        _opacity = State(initialValue: info["opacity"] as? Double ?? 1)
+        _hasShadow = State(initialValue: (info["hasShadow"] as? Int) == 1)
     }
 
+    private var isText: Bool {
+        (info["isText"] as? Int) == 1
+            || ["h1", "h2", "h3", "h4", "h5", "h6", "p", "blockquote", "li"].contains(info["tag"] as? String ?? "")
+    }
+    private var hasOverrides: Bool { (info["overrides"] as? Int) == 1 }
+    private var styleName: String { timStyles.first { $0.cls == styleClass }?.name ?? "Body" }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(styleName ?? (info["tag"] as? String ?? "Object").capitalized)
-                .font(.headline)
-
+        VStack(alignment: .leading, spacing: 10) {
             if isText {
-                VStack(alignment: .leading, spacing: 8) {
-                    label("Font")
-                    Button {
-                        showFontPicker = true
-                    } label: {
-                        HStack {
-                            Text(fontFamilyName.isEmpty ? "System" : fontFamilyName)
-                                .lineLimit(1)
-                            Spacer()
-                            Image(systemName: "chevron.up.chevron.down")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 5)
-                        .padding(.horizontal, 8)
-                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(0.06)))
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .popover(isPresented: $showFontPicker, arrowEdge: .leading) {
-                        FontPickerView { family in
-                            fontFamilyName = family.family
-                            tab.ensurePageFont(family: family.family, cssURL: GoogleFonts.cssURL(for: family))
-                            tab.setSelectionStyle("fontFamily", "'\(family.family)', \(GoogleFonts.genericFallback(family.category))")
-                            showFontPicker = false
-                        }
-                    }
+                styleCard
+                typographyCard
+            } else {
+                Text((info["tag"] as? String ?? "object").capitalized)
+                    .font(.system(size: 13, weight: .semibold))
+                    .padding(.horizontal, 2)
+            }
+            appearanceCard
+        }
+        .padding(10)
+    }
 
-                    label("Size — \(Int(fontSize))")
-                    Slider(value: $fontSize, in: 10...96, step: 1)
-                        .onChange(of: fontSize) { _, v in tab.setSelectionStyle("fontSize", "\(Int(v))px") }
-                    label("Weight")
-                    Picker("", selection: $weightIndex) {
-                        Text("Reg").tag(0); Text("Med").tag(1); Text("Semi").tag(2); Text("Bold").tag(3)
+    // MARK: Style (the Pages/Keynote contract)
+
+    private var styleCard: some View {
+        card {
+            HStack(spacing: 8) {
+                rowLabel("Style")
+                Picker("", selection: $styleClass) {
+                    ForEach(timStyles, id: \.cls) { style in
+                        Text(style.name).tag(style.cls)
                     }
-                    .pickerStyle(.segmented).labelsHidden()
-                    .onChange(of: weightIndex) { _, i in tab.setSelectionStyle("fontWeight", "\(weights[i])") }
-                    label("Align")
-                    HStack(spacing: 4) {
-                        ForEach(["left", "center", "right"], id: \.self) { a in
-                            Button { tab.setSelectionStyle("textAlign", a) } label: {
-                                Image(systemName: "text.align\(a)").frame(width: 30, height: 20)
-                            }.buttonStyle(.bordered).controlSize(.small)
-                        }
-                    }
-                    HStack {
-                        label("Color")
-                        ColorPicker("", selection: $textColor, supportsOpacity: false).labelsHidden()
-                            .onChange(of: textColor) { _, c in tab.setSelectionStyle("color", c.hexString) }
-                    }
-                    label(String(format: "Line Height — %.2f", lineHeight))
-                    Slider(value: $lineHeight, in: 1.0...2.2, step: 0.05)
-                        .onChange(of: lineHeight) { _, v in tab.setSelectionStyle("lineHeight", String(format: "%.2f", v)) }
-                    label(String(format: "Letter Spacing — %.1f", letterSpacing))
-                    Slider(value: $letterSpacing, in: -2...8, step: 0.5)
-                        .onChange(of: letterSpacing) { _, v in
-                            tab.setSelectionStyle("letterSpacing", v == 0 ? "normal" : String(format: "%.1fpx", v))
-                        }
                 }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .controlSize(.small)
+                .onChange(of: styleClass) { _, cls in tab.applyTextStyle(cls) }
+            }
+            if hasOverrides {
                 Divider()
+                HStack(spacing: 6) {
+                    Button {
+                        tab.updateStyleFromSelection()
+                    } label: {
+                        Text("Update \(styleName) Style")
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .help("Every \(styleName) block on this page takes this look.")
+
+                    Button {
+                        tab.revertSelectionToStyle()
+                    } label: {
+                        Image(systemName: "arrow.uturn.backward")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .controlSize(.small)
+                    .help("Back to the \(styleName) style")
+                }
+            }
+        }
+    }
+
+    // MARK: Typography
+
+    private var typographyCard: some View {
+        card("Typography") {
+            Button {
+                showFontPicker = true
+            } label: {
+                HStack {
+                    Text(fontFamilyName.isEmpty ? "System" : fontFamilyName)
+                        .font(.system(size: 12))
+                        .lineLimit(1)
+                    Spacer()
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 5)
+                .padding(.horizontal, 8)
+                .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(0.06)))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $showFontPicker, arrowEdge: .leading) {
+                FontPickerView { family in
+                    fontFamilyName = family.family
+                    tab.ensurePageFont(family: family.family, cssURL: GoogleFonts.cssURL(for: family))
+                    tab.setSelectionStyle("fontFamily", "'\(family.family)', \(GoogleFonts.genericFallback(family.category))")
+                    showFontPicker = false
+                }
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    label("Fill")
-                    ColorPicker("", selection: $fillColor).labelsHidden()
-                        .onChange(of: fillColor) { _, c in tab.setSelectionStyle("background", c.hexString) }
-                    Button("None") { tab.setSelectionStyle("background", "") }
-                        .controlSize(.mini)
+            sliderRow("Size", $fontSize, 10...96, 1, "\(Int(fontSize))")
+                .onChange(of: fontSize) { _, v in tab.setSelectionStyle("fontSize", "\(Int(v))px") }
+
+            HStack(spacing: 8) {
+                rowLabel("Weight")
+                Picker("", selection: $weightIndex) {
+                    Text("Reg").tag(0)
+                    Text("Med").tag(1)
+                    Text("Semi").tag(2)
+                    Text("Bold").tag(3)
                 }
-                label("Corner — \(Int(radius))")
-                Slider(value: $radius, in: 0...40, step: 1)
-                    .onChange(of: radius) { _, v in tab.setSelectionStyle("borderRadius", "\(Int(v))px") }
-                label("Padding — \(Int(padding))")
-                Slider(value: $padding, in: 0...48, step: 2)
-                    .onChange(of: padding) { _, v in tab.setSelectionStyle("padding", "\(Int(v))px") }
-                Toggle("Shadow", isOn: $hasShadow)
-                    .font(.caption)
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.mini)
+                .onChange(of: weightIndex) { _, i in tab.setSelectionStyle("fontWeight", "\(weights[i])") }
+            }
+
+            HStack(spacing: 8) {
+                rowLabel("Align")
+                HStack(spacing: 3) {
+                    ForEach(["left", "center", "right"], id: \.self) { alignment in
+                        Button {
+                            tab.setSelectionStyle("textAlign", alignment)
+                        } label: {
+                            Image(systemName: "text.align\(alignment)")
+                                .font(.system(size: 10))
+                                .frame(width: 26, height: 16)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                    }
+                }
+                Spacer()
+            }
+
+            sliderRow("Leading", $lineHeight, 1.0...2.2, 0.05, String(format: "%.2f", lineHeight))
+                .onChange(of: lineHeight) { _, v in tab.setSelectionStyle("lineHeight", String(format: "%.2f", v)) }
+
+            sliderRow("Tracking", $letterSpacing, -2...8, 0.5, String(format: "%.1f", letterSpacing))
+                .onChange(of: letterSpacing) { _, v in
+                    tab.setSelectionStyle("letterSpacing", v == 0 ? "normal" : String(format: "%.1fpx", v))
+                }
+
+            HStack(spacing: 8) {
+                rowLabel("Color")
+                ColorPicker("", selection: $textColor, supportsOpacity: false)
+                    .labelsHidden()
+                    .onChange(of: textColor) { _, c in tab.setSelectionStyle("color", c.hexString) }
+                Spacer()
+            }
+        }
+    }
+
+    // MARK: Appearance
+
+    private var appearanceCard: some View {
+        card("Appearance") {
+            HStack(spacing: 8) {
+                rowLabel("Fill")
+                ColorPicker("", selection: $fillColor)
+                    .labelsHidden()
+                    .onChange(of: fillColor) { _, c in tab.setSelectionStyle("background", c.hexString) }
+                Button("None") { tab.setSelectionStyle("background", "") }
+                    .controlSize(.mini)
+                Spacer()
+            }
+            sliderRow("Corner", $radius, 0...40, 1, "\(Int(radius))")
+                .onChange(of: radius) { _, v in tab.setSelectionStyle("borderRadius", "\(Int(v))px") }
+            sliderRow("Padding", $padding, 0...48, 2, "\(Int(padding))")
+                .onChange(of: padding) { _, v in tab.setSelectionStyle("padding", "\(Int(v))px") }
+            sliderRow("Opacity", $opacity, 0.2...1, 0.05, "\(Int(opacity * 100))")
+                .onChange(of: opacity) { _, v in tab.setSelectionStyle("opacity", String(format: "%.2f", v)) }
+            HStack(spacing: 8) {
+                rowLabel("Shadow")
+                Toggle("", isOn: $hasShadow)
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .labelsHidden()
                     .onChange(of: hasShadow) { _, on in
                         tab.setSelectionStyle("boxShadow", on ? "0 8px 24px rgba(0,0,0,0.18)" : "")
                     }
-                label("Opacity — \(Int(opacity * 100))%")
-                Slider(value: $opacity, in: 0.2...1)
-                    .onChange(of: opacity) { _, v in tab.setSelectionStyle("opacity", String(format: "%.2f", v)) }
+                Spacer()
             }
         }
-        .padding(12)
-        .onAppear {
-            fontSize = info["fontSize"] as? Double ?? 16
-            let w = info["fontWeight"] as? Int ?? 400
-            weightIndex = weights.lastIndex(where: { $0 <= w }) ?? 0
-            radius = info["radius"] as? Double ?? 0
-            opacity = info["opacity"] as? Double ?? 1
-            padding = info["padding"] as? Double ?? 0
-            hasShadow = (info["hasShadow"] as? Int) == 1
-            fontFamilyName = (info["fontFamily"] as? String).flatMap { $0.hasPrefix("-apple-") ? "" : $0 } ?? ""
-            lineHeight = min(2.2, max(1.0, info["lineHeight"] as? Double ?? 1.4))
-            letterSpacing = min(8, max(-2, info["letterSpacing"] as? Double ?? 0))
+    }
+
+    // MARK: pieces
+
+    private func card(_ title: String? = nil, @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            if let title {
+                Text(title.uppercased())
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .kerning(0.7)
+                    .foregroundStyle(.secondary)
+            }
+            content()
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(0.045)))
+    }
+
+    private func rowLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .frame(width: 58, alignment: .leading)
+    }
+
+    private func sliderRow(_ name: String, _ value: Binding<Double>, _ range: ClosedRange<Double>, _ step: Double, _ display: String) -> some View {
+        HStack(spacing: 8) {
+            rowLabel(name)
+            Slider(value: value, in: range, step: step)
+                .controlSize(.mini)
+            Text(display)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 32, alignment: .trailing)
         }
     }
-
-    private func label(_ text: String) -> some View {
-        Text(text).font(.caption).foregroundStyle(.secondary)
-    }
 }
-
 
 // MARK: - Google Fonts picker: the whole catalog, each family in its own face
 
