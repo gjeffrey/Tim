@@ -2934,6 +2934,8 @@ struct PageOptionsControls: View {
     @State private var descriptionText: String
     @State private var ogImage: String
     @State private var favicon: String
+    @State private var touchIcon: String
+    @State private var showIconMaker = false
 
     init(tab: Tab, info: [String: Any], reload: @escaping () -> Void) {
         self.tab = tab
@@ -2951,6 +2953,7 @@ struct PageOptionsControls: View {
         _descriptionText = State(initialValue: info["description"] as? String ?? "")
         _ogImage = State(initialValue: info["ogImage"] as? String ?? "")
         _favicon = State(initialValue: info["favicon"] as? String ?? "")
+        _touchIcon = State(initialValue: info["touchIcon"] as? String ?? "")
     }
 
     private var currentSite: Site? { siteStore.match(tab.webView.url) }
@@ -3040,18 +3043,57 @@ struct PageOptionsControls: View {
                     .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(0.06)))
                     .onChange(of: descriptionText) { _, value in tab.setPageMeta("description", value) }
 
-                metaFileRow(
-                    label: "Social Image",
-                    value: ogImage,
-                    hint: "Shown when this page is shared or texted.",
-                    kind: "ogImage"
-                )
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        rowLabel("Social Image")
+                        Button("Thumbnail") { useThumbnailAsSocial() }
+                            .controlSize(.mini)
+                            .help("Snapshot this page as its share card (1200×630).")
+                        Button("Choose…") { chooseMetaImage(kind: "ogImage") }
+                            .controlSize(.mini)
+                        if !ogImage.isEmpty {
+                            Button("Clear") { tab.setPageMeta("ogImage", ""); ogImage = "" }
+                                .controlSize(.mini)
+                        }
+                        Spacer()
+                    }
+                    Text(ogImage.isEmpty ? "Shown when this page is shared or texted." : ogImage)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        rowLabel("App Icon")
+                        Button("Make…") { showIconMaker = true }
+                            .controlSize(.mini)
+                            .help("Letters or an emoji on a color, or your own image.")
+                        Button("Choose…") { chooseMetaImage(kind: "touchIcon") }
+                            .controlSize(.mini)
+                        if !touchIcon.isEmpty {
+                            Button("Clear") { tab.setPageMeta("touchIcon", ""); touchIcon = "" }
+                                .controlSize(.mini)
+                        }
+                        Spacer()
+                    }
+                    Text(touchIcon.isEmpty ? "Used when the page is added to a Dock or Home Screen." : touchIcon)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
                 metaFileRow(
                     label: "Favicon",
                     value: favicon,
                     hint: "The little icon in tabs and bookmarks.",
                     kind: "favicon"
                 )
+            }
+            .sheet(isPresented: $showIconMaker) {
+                IconMakerSheet { url in
+                    stageAndSet(fileURL: url, kinds: ["touchIcon", "favicon"])
+                }
             }
 
             Text("Select an object to style it — click empty space to come back to the page.")
@@ -3086,15 +3128,18 @@ struct PageOptionsControls: View {
         }
     }
 
-    /// Stages the picked image like any media (mirror + upload), then
-    /// points the metadata at it — absolute URL for the social image, so
-    /// link scrapers can fetch it.
     private func chooseMetaImage(kind: String) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let fileURL = panel.url else { return }
+        stageAndSet(fileURL: fileURL, kinds: [kind])
+    }
 
+    /// Stages an image like any media (mirror + upload), then points the
+    /// metadata at it — absolute URL for the social image so link
+    /// scrapers can fetch it.
+    private func stageAndSet(fileURL: URL, kinds: [String]) {
         var resolvedSite = currentSite
         if var s = resolvedSite {
             if s.localProjectPath.isEmpty {
@@ -3108,15 +3153,22 @@ struct PageOptionsControls: View {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 let staged = try EditingToolbar.stage(fileURL: fileURL, site: resolvedSite, pageURL: pageURL)
-                let value: String
-                if kind == "ogImage", let s = resolvedSite, s.origin.hasPrefix("http") {
-                    value = s.origin + "/" + staged
-                } else {
-                    value = staged
-                }
                 DispatchQueue.main.async {
-                    tab.setPageMeta(kind, value)
-                    if kind == "ogImage" { ogImage = value } else { favicon = value }
+                    for kind in kinds {
+                        let value: String
+                        if kind == "ogImage", let s = resolvedSite, s.origin.hasPrefix("http") {
+                            value = s.origin + "/" + staged
+                        } else {
+                            value = staged
+                        }
+                        tab.setPageMeta(kind, value)
+                        switch kind {
+                        case "ogImage": ogImage = value
+                        case "favicon": favicon = value
+                        case "touchIcon": touchIcon = value
+                        default: break
+                        }
+                    }
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -3126,6 +3178,26 @@ struct PageOptionsControls: View {
                     alert.runModal()
                 }
             }
+        }
+    }
+
+    /// The automated share card: this page, snapshotted at 1200×630.
+    private func useThumbnailAsSocial() {
+        let config = WKSnapshotConfiguration()
+        config.snapshotWidth = 1200
+        tab.webView.takeSnapshot(with: config) { image, _ in
+            guard let image, image.size.width > 0 else { return }
+            let card = NSImage(size: NSSize(width: 1200, height: 630))
+            card.lockFocus()
+            let scaledHeight = image.size.height * (1200 / image.size.width)
+            image.draw(in: NSRect(x: 0, y: 630 - scaledHeight, width: 1200, height: scaledHeight))
+            card.unlockFocus()
+            guard let tiff = card.tiffRepresentation,
+                  let rep = NSBitmapImageRep(data: tiff),
+                  let png = rep.representation(using: .png, properties: [:]) else { return }
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("social-card.png")
+            try? png.write(to: url)
+            stageAndSet(fileURL: url, kinds: ["ogImage"])
         }
     }
 
@@ -3186,6 +3258,151 @@ extension Color {
         }
         self = fallback
     }
+}
+
+
+// MARK: - Icon maker: letters or an emoji on a color, or your own image
+
+struct IconMakerSheet: View {
+    let onSave: (URL) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var text = ""
+    @State private var backgroundIndex = 0
+    @State private var picked: NSImage?
+
+    private let palette: [NSColor] = [
+        NSColor(red: 0.996, green: 0.929, blue: 0.0, alpha: 1),  // Tim yellow
+        .systemBlue, .systemPurple, .systemGreen,
+        .systemOrange, .systemPink, .black, .white
+    ]
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Text("Make an Icon")
+                .font(.title3.bold())
+
+            ZStack {
+                if let picked {
+                    Image(nsImage: picked)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } else {
+                    Rectangle()
+                        .fill(Color(nsColor: palette[backgroundIndex]))
+                    Text(text.isEmpty ? "T" : text)
+                        .font(.system(size: text.count > 2 ? 26 : (text.count == 2 ? 36 : 48), weight: .bold))
+                        .foregroundStyle(luminance(palette[backgroundIndex]) > 0.6 ? Color.black : Color.white)
+                }
+            }
+            .frame(width: 96, height: 96)
+            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+            )
+
+            TextField("1–3 letters, or an emoji", text: $text)
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.center)
+                .frame(width: 180)
+                .onChange(of: text) { _, value in
+                    if value.count > 3 { text = String(value.prefix(3)) }
+                    if !value.isEmpty { picked = nil }
+                }
+
+            HStack(spacing: 8) {
+                ForEach(Array(palette.enumerated()), id: \.offset) { item in
+                    Button {
+                        backgroundIndex = item.offset
+                        picked = nil
+                    } label: {
+                        Circle()
+                            .fill(Color(nsColor: item.element))
+                            .frame(width: 22, height: 22)
+                            .overlay(
+                                Circle().stroke(
+                                    backgroundIndex == item.offset && picked == nil
+                                        ? Color.accentColor : Color.primary.opacity(0.15),
+                                    lineWidth: backgroundIndex == item.offset && picked == nil ? 2 : 1
+                                )
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Button("Use an Image…") {
+                let panel = NSOpenPanel()
+                panel.canChooseDirectories = false
+                panel.allowsMultipleSelection = false
+                if panel.runModal() == .OK, let url = panel.url, let image = NSImage(contentsOf: url) {
+                    picked = image
+                }
+            }
+            .controlSize(.small)
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Save") {
+                    if let url = renderTimIcon(
+                        text: text,
+                        background: palette[backgroundIndex],
+                        image: picked
+                    ) {
+                        onSave(url)
+                    }
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 300)
+    }
+
+    private func luminance(_ color: NSColor) -> CGFloat {
+        let c = color.usingColorSpace(.sRGB) ?? color
+        return 0.299 * c.redComponent + 0.587 * c.greenComponent + 0.114 * c.blueComponent
+    }
+}
+
+/// Renders the 180×180 PNG used for both apple-touch-icon and favicon.
+func renderTimIcon(text: String, background: NSColor, image: NSImage?) -> URL? {
+    let side: CGFloat = 180
+    let canvas = NSImage(size: NSSize(width: side, height: side))
+    canvas.lockFocus()
+    if let image, image.size.width > 0, image.size.height > 0 {
+        // Center-crop, aspect fill.
+        let scale = max(side / image.size.width, side / image.size.height)
+        let width = image.size.width * scale
+        let height = image.size.height * scale
+        image.draw(in: NSRect(x: (side - width) / 2, y: (side - height) / 2, width: width, height: height))
+    } else {
+        background.setFill()
+        NSRect(x: 0, y: 0, width: side, height: side).fill()
+        let display = text.isEmpty ? "T" : text
+        let fontSize: CGFloat = display.count == 1 ? 96 : (display.count == 2 ? 68 : 48)
+        let srgb = background.usingColorSpace(.sRGB) ?? background
+        let luminance = 0.299 * srgb.redComponent + 0.587 * srgb.greenComponent + 0.114 * srgb.blueComponent
+        let foreground: NSColor = luminance > 0.6 ? .black : .white
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: fontSize, weight: .bold),
+            .foregroundColor: foreground
+        ]
+        let string = NSAttributedString(string: display, attributes: attributes)
+        let size = string.size()
+        string.draw(at: NSPoint(x: (side - size.width) / 2, y: (side - size.height) / 2))
+    }
+    canvas.unlockFocus()
+    guard let tiff = canvas.tiffRepresentation,
+          let rep = NSBitmapImageRep(data: tiff),
+          let png = rep.representation(using: .png, properties: [:]) else { return nil }
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("icon.png")
+    try? png.write(to: url)
+    return url
 }
 
 // MARK: - Google Fonts picker: the whole catalog, each family in its own face

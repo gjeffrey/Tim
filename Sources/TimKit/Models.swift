@@ -945,6 +945,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           upsertMeta('property', 'og:image', value);
           upsertMeta('name', 'twitter:image', value);
           upsertMeta('name', 'twitter:card', value ? 'summary_large_image' : '');
+        } else if (kind === 'touchIcon') {
+          var touch = doc.querySelector('link[rel="apple-touch-icon"]');
+          if (!value) { if (touch) { touch.remove(); } return; }
+          if (!touch) {
+            touch = doc.createElement('link');
+            touch.setAttribute('rel', 'apple-touch-icon');
+            doc.head.appendChild(touch);
+          }
+          touch.setAttribute('href', value);
         } else if (kind === 'favicon') {
           var link = doc.querySelector('link[rel="icon"]');
           if (!value) { if (link) { link.remove(); } return; }
@@ -999,6 +1008,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           })(),
           favicon: (function () {
             var l = doc.querySelector('link[rel="icon"]');
+            return l ? (l.getAttribute('href') || '') : '';
+          })(),
+          touchIcon: (function () {
+            var l = doc.querySelector('link[rel="apple-touch-icon"]');
             return l ? (l.getAttribute('href') || '') : '';
           })()
         });
