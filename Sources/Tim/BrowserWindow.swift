@@ -79,14 +79,20 @@ struct VerticalTabRow: View {
     let isSelected: Bool
     let select: () -> Void
     let close: () -> Void
+    @EnvironmentObject var siteStore: SiteStore
     @State private var hovering = false
+
+    private var isEditable: Bool {
+        siteStore.isEditable(URL(string: tab.urlString))
+    }
 
     var body: some View {
         Button(action: select) {
             HStack(spacing: 7) {
-                Image(systemName: "globe")
+                Image(systemName: isEditable ? "pencil.circle.fill" : "globe")
                     .font(.system(size: 11))
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                    .foregroundStyle(isEditable ? Color.accentColor : (isSelected ? Color.accentColor : Color.secondary))
+                    .help(isEditable ? "This page is yours — you can edit it." : "")
                 Text(tab.title.isEmpty ? "New Tab" : tab.title)
                     .font(.system(size: 12.5))
                     .lineLimit(1)
@@ -175,6 +181,8 @@ struct SiteSection: View {
                         if site.target == .sftp {
                             Button("Hide Page") { hidePage(page) }
                         }
+                        Divider()
+                        Button("Delete Page…", role: .destructive) { deletePage(page, hidden: false) }
                     }
                 }
 
@@ -219,6 +227,8 @@ struct SiteSection: View {
                         .contentShape(Rectangle())
                         .contextMenu {
                             Button("Show Page") { showPage(page) }
+                            Divider()
+                            Button("Delete Page…", role: .destructive) { deletePage(page, hidden: true) }
                         }
                         .help("Off the server, kept in your local copy. Right-click to show it again.")
                     }
@@ -271,6 +281,66 @@ struct SiteSection: View {
                 pages = loadedPages
                 hiddenPages = loadedHidden
                 versions = loadedVersions
+            }
+        }
+    }
+
+    /// Delete removes the page from the site and the mirror — with a
+    /// confirmation, and the invisible history still holds every version.
+    private func deletePage(_ page: LinkOption, hidden: Bool) {
+        guard var mutableSite = site else { return }
+        if mutableSite.localProjectPath.isEmpty {
+            mutableSite.localProjectPath = SiteWorkspace.defaultFolder(
+                for: mutableSite.name.isEmpty ? mutableSite.origin : mutableSite.name
+            )
+            siteStore.upsert(mutableSite)
+        }
+        SiteWorkspace.ensure(mutableSite.localProjectPath)
+        let s = mutableSite
+        let rel = page.href
+
+        let alert = NSAlert()
+        alert.messageText = "Delete \u{201C}\(page.label)\u{201D}?"
+        alert.informativeText = hidden
+            ? "Removes this hidden page from your site's local copy. Its history stays in the timeline."
+            : "Removes the page from your site and its local copy. Its history stays in the timeline."
+        let deleteButton = alert.addButton(withTitle: "Delete")
+        deleteButton.hasDestructiveAction = true
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let wasCurrent = currentRel == rel && !hidden
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let localPath = s.localProjectPath + (hidden ? "/_hidden" : "") + rel
+                if !hidden {
+                    switch s.target {
+                    case .sftp:
+                        let root = s.remoteRoot.hasSuffix("/") ? String(s.remoteRoot.dropLast()) : s.remoteRoot
+                        _ = try? SFTP.run(batch: "-rm \"\(root + rel)\"\n", host: s.host, username: s.username, port: s.port)
+                        try FileManager.default.removeItem(atPath: localPath)
+                    case .cloudflare:
+                        try FileManager.default.removeItem(atPath: localPath)
+                        _ = try CloudflarePublisher.deploy(folder: s.localProjectPath, projectName: s.cfProjectName)
+                    case .githubPages:
+                        try FileManager.default.removeItem(atPath: localPath)
+                        _ = try GitHubPagesPublisher.publish(repo: s.localProjectPath, message: "Delete \(rel)")
+                    }
+                } else {
+                    try FileManager.default.removeItem(atPath: localPath)
+                }
+                SiteWorkspace.snapshot(s.localProjectPath, message: "Delete \(rel)")
+                DispatchQueue.main.async {
+                    refresh()
+                    if wasCurrent { tab.navigate(to: s.origin) }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    let failure = NSAlert()
+                    failure.messageText = "Delete Page"
+                    failure.informativeText = error.localizedDescription
+                    failure.runModal()
+                }
             }
         }
     }
@@ -915,7 +985,11 @@ struct TabContentView: View {
                     .frame(minWidth: 240, idealWidth: 440, maxWidth: 520)
                     .background(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(Color.primary.opacity(0.06))
+                            .fill(isPageEditable ? Color.accentColor.opacity(0.08) : Color.primary.opacity(0.06))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(isPageEditable ? Color.accentColor.opacity(0.25) : Color.clear, lineWidth: 1)
                     )
                     .focused($addressFocused)
                     .onSubmit {
