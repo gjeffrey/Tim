@@ -92,6 +92,7 @@ public enum LinkSources {
         return subpaths
             .filter {
                 $0.hasSuffix(".html") && !$0.hasPrefix(".") && !$0.hasPrefix("_hidden/") && !$0.hasPrefix("_h/")
+                    && !$0.hasPrefix("components/")
                     && !$0.contains(".git") && !$0.contains("node_modules")
             }
             .sorted()

@@ -838,6 +838,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
               opacity: parseFloat(cs.opacity) || 1,
               padding: parseFloat(sel.style.padding) || 0,
               hasShadow: sel.style.boxShadow ? 1 : 0,
+              hasTextShadow: sel.style.textShadow ? 1 : 0,
               fill: sel.style.background || '',
               overrides: TYPO_PROPS.some(function (p) { return !!sel.style[p]; }) ? 1 : 0,
               templateComponent: (function () {

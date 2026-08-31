@@ -6,6 +6,20 @@ import TimKit
 // SwiftUI has its own `Tab` (TabView); ours wins in this file.
 typealias Tab = TimKit.Tab
 
+extension Color {
+    /// CSS rgba() at a chosen alpha — shadows want translucency.
+    func cssRGBA(_ alpha: Double) -> String {
+        let ns = NSColor(self).usingColorSpace(.sRGB) ?? .black
+        return String(
+            format: "rgba(%d, %d, %d, %.2f)",
+            Int(round(ns.redComponent * 255)),
+            Int(round(ns.greenComponent * 255)),
+            Int(round(ns.blueComponent * 255)),
+            alpha
+        )
+    }
+}
+
 extension Notification.Name {
     static let timNewPage = Notification.Name("tim.newPage")
     static let timOpenPage = Notification.Name("tim.openPage")
@@ -150,6 +164,7 @@ struct SiteSection: View {
 
                 ForEach(pages) { page in
                     Button {
+                        guard !tab.isEditing else { return }
                         tab.navigate(to: site.origin + page.href)
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
@@ -2777,6 +2792,9 @@ struct InspectorControls: View {
     @State private var padding: Double
     @State private var opacity: Double
     @State private var hasShadow: Bool
+    @State private var shadowColor: Color = .black
+    @State private var textShadowOn: Bool
+    @State private var textShadowColor: Color = .black
     @State private var showFontPicker = false
 
     private let weights = [400, 500, 600, 700]
@@ -2792,7 +2810,7 @@ struct InspectorControls: View {
         _fontSize = State(initialValue: info["fontSize"] as? Double ?? 16)
         let weight = info["fontWeight"] as? Int ?? 400
         _weightIndex = State(initialValue: [400, 500, 600, 700].lastIndex(where: { $0 <= weight }) ?? 0)
-        _lineHeight = State(initialValue: min(2.2, max(1.0, info["lineHeight"] as? Double ?? 1.4)))
+        _lineHeight = State(initialValue: min(2.2, max(0.8, info["lineHeight"] as? Double ?? 1.4)))
         _letterSpacing = State(initialValue: min(8, max(-2, info["letterSpacing"] as? Double ?? 0)))
         _textColor = State(initialValue: Color(cssColor: info["color"] as? String ?? "", fallback: .primary))
         _fillColor = State(initialValue: Color(cssColor: info["fill"] as? String ?? "", fallback: .clear))
@@ -2800,6 +2818,7 @@ struct InspectorControls: View {
         _padding = State(initialValue: info["padding"] as? Double ?? 0)
         _opacity = State(initialValue: info["opacity"] as? Double ?? 1)
         _hasShadow = State(initialValue: (info["hasShadow"] as? Int) == 1)
+        _textShadowOn = State(initialValue: (info["hasTextShadow"] as? Int) == 1)
     }
 
     private var isText: Bool {
@@ -2965,7 +2984,7 @@ struct InspectorControls: View {
                 Spacer()
             }
 
-            sliderRow("Leading", $lineHeight, 1.0...2.2, 0.05, String(format: "%.2f", lineHeight))
+            sliderRow("Leading", $lineHeight, 0.8...2.2, 0.05, String(format: "%.2f", lineHeight))
                 .onChange(of: lineHeight) { _, v in tab.setSelectionStyle("lineHeight", String(format: "%.2f", v)) }
 
             sliderRow("Tracking", $letterSpacing, -2...8, 0.5, String(format: "%.1f", letterSpacing))
@@ -2980,7 +2999,35 @@ struct InspectorControls: View {
                     .onChange(of: textColor) { _, c in tab.setSelectionStyle("color", c.hexString) }
                 Spacer()
             }
+            HStack(spacing: 8) {
+                rowLabel("Shadow")
+                Toggle("", isOn: $textShadowOn)
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .labelsHidden()
+                    .onChange(of: textShadowOn) { _, _ in applyTextShadow() }
+                if textShadowOn {
+                    ColorPicker("", selection: $textShadowColor, supportsOpacity: false)
+                        .labelsHidden()
+                        .onChange(of: textShadowColor) { _, _ in applyTextShadow() }
+                }
+                Spacer()
+            }
         }
+    }
+
+    private func applyTextShadow() {
+        tab.setSelectionStyle(
+            "textShadow",
+            textShadowOn ? "0 1px 6px \(textShadowColor.cssRGBA(0.45))" : ""
+        )
+    }
+
+    private func applyBoxShadow() {
+        tab.setSelectionStyle(
+            "boxShadow",
+            hasShadow ? "0 8px 24px \(shadowColor.cssRGBA(0.30))" : ""
+        )
     }
 
     // MARK: Appearance
@@ -3008,9 +3055,12 @@ struct InspectorControls: View {
                     .toggleStyle(.switch)
                     .controlSize(.mini)
                     .labelsHidden()
-                    .onChange(of: hasShadow) { _, on in
-                        tab.setSelectionStyle("boxShadow", on ? "0 8px 24px rgba(0,0,0,0.18)" : "")
-                    }
+                    .onChange(of: hasShadow) { _, _ in applyBoxShadow() }
+                if hasShadow {
+                    ColorPicker("", selection: $shadowColor, supportsOpacity: false)
+                        .labelsHidden()
+                        .onChange(of: shadowColor) { _, _ in applyBoxShadow() }
+                }
                 Spacer()
             }
         }
@@ -3691,9 +3741,9 @@ struct NavBuilderSheet: View {
     private func insert() {
         let links = pages
             .filter { included.contains($0.href) }
-            .map { "<a href=\"\($0.href)\" style=\"text-decoration:none;color:inherit;font-weight:500;\">\($0.label)</a>" }
+            .map { "<a href=\"\($0.href)\" style=\"text-decoration:none;color:inherit;\">\($0.label)</a>" }
             .joined(separator: "\n  ")
-        let nav = "<nav class=\"tim-object tim-nav\" style=\"grid-area: 1 / 1 / 3 / 25; display:flex; gap:20px; flex-wrap:wrap; align-items:center;\">\n  \(links)\n</nav>"
+        let nav = "<nav class=\"tim-object tim-nav tim-text\" style=\"grid-area: 1 / 1 / 3 / 25; display:flex; gap:20px; flex-wrap:wrap; align-items:center; font-weight:500;\">\n  \(links)\n</nav>"
         // The nav is a template component: saved as the master and injected
         // into every page on Done; inline edits propagate like any component.
         try? PageComponents.save(name: "tpl-nav", html: nav, in: site.localProjectPath)
