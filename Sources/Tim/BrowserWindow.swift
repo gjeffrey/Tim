@@ -1766,7 +1766,10 @@ struct ThemePanel: View {
         .padding(14)
         .frame(width: 340)
         .popover(item: $browsingFor, arrowEdge: .trailing) { target in
-            FontPickerView(pinned: SiteFonts.used(site: site, pageFonts: [])) { family in
+            FontPickerView(
+                pinned: SiteFonts.used(site: site, pageFonts: []),
+                current: (target == .heading ? headingFont : bodyFont).name
+            ) { family in
                 let option = fontOption(from: family)
                 if !importedFonts.contains(option) { importedFonts.append(option) }
                 if target == .heading { headingFont = option } else { bodyFont = option }
@@ -2919,7 +2922,7 @@ struct InspectorControls: View {
             }
             .buttonStyle(.plain)
             .popover(isPresented: $showFontPicker, arrowEdge: .leading) {
-                FontPickerView(pinned: pinnedFonts) { family in
+                FontPickerView(pinned: pinnedFonts, current: fontFamilyName) { family in
                     fontFamilyName = family.family
                     tab.ensurePageFont(family: family.family, cssURL: GoogleFonts.cssURL(for: family))
                     tab.setSelectionStyle("fontFamily", "'\(family.family)', \(GoogleFonts.genericFallback(family.category))")
@@ -3816,7 +3819,7 @@ struct IconMakerSheet: View {
                                 showFontPicker = false
                             }
                             .controlSize(.small)
-                            FontPickerView(pinned: pinned) { family in
+                            FontPickerView(pinned: pinned, current: fontFamily) { family in
                                 fontFamily = family.family
                                 fontReady = false
                                 GoogleFonts.registerForPreview(family) { ok in fontReady = ok }
@@ -3963,10 +3966,12 @@ func renderTimIcon(recipe: IconRecipe, image: NSImage?) -> URL? {
 
 struct FontPickerView: View {
     var pinned: [String] = []
+    var current: String = ""
     let onPick: (GoogleFonts.Family) -> Void
 
     @State private var catalog: [GoogleFonts.Family] = []
     @State private var search = ""
+    @State private var sample = ""
     @State private var category = "all"
 
     private let categories: [(String, String)] = [
@@ -3982,64 +3987,103 @@ struct FontPickerView: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
-            TextField("Search Google Fonts", text: $search)
-                .textFieldStyle(.roundedBorder)
-            Picker("", selection: $category) {
-                ForEach(categories, id: \.0) { pair in
-                    Text(pair.1).tag(pair.0)
-                }
+        VStack(spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                TextField("Search Google Fonts", text: $search)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
+            .padding(.vertical, 6)
+            .padding(.horizontal, 9)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(0.06)))
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 5) {
+                    ForEach(categories, id: \.0) { pair in
+                        Button {
+                            category = pair.0
+                        } label: {
+                            Text(pair.1)
+                                .font(.system(size: 11, weight: category == pair.0 ? .semibold : .regular))
+                                .padding(.vertical, 4)
+                                .padding(.horizontal, 10)
+                                .background(Capsule().fill(category == pair.0 ? Color.accentColor : Color.primary.opacity(0.06)))
+                                .foregroundStyle(category == pair.0 ? Color.white : Color.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 1)
+                .padding(.vertical, 1)
+            }
 
             if catalog.isEmpty {
                 Spacer()
                 ProgressView()
+                    .controlSize(.small)
                 Text("Loading the catalog…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
+                    LazyVStack(alignment: .leading, spacing: 1) {
                         let pinnedFamilies = filtered.filter { pinned.contains($0.family) }
                         if !pinnedFamilies.isEmpty {
-                            Text("ON THIS SITE")
-                                .font(.system(size: 9, weight: .semibold))
-                                .kerning(0.6)
-                                .foregroundStyle(.secondary)
-                                .padding(.vertical, 4)
+                            sectionHeader("On this site")
                             ForEach(pinnedFamilies) { family in
-                                FontRow(family: family) { onPick(family) }
+                                FontRow(family: family, sample: sample, isCurrent: family.family == current) {
+                                    onPick(family)
+                                }
                             }
-                            Text("ALL FONTS")
-                                .font(.system(size: 9, weight: .semibold))
-                                .kerning(0.6)
-                                .foregroundStyle(.secondary)
-                                .padding(.vertical, 4)
+                            sectionHeader("All fonts")
                         }
                         ForEach(filtered.filter { !pinned.contains($0.family) }) { family in
-                            FontRow(family: family) { onPick(family) }
+                            FontRow(family: family, sample: sample, isCurrent: family.family == current) {
+                                onPick(family)
+                            }
                         }
                     }
                 }
             }
 
-            Text(catalog.isEmpty ? " " : "\(filtered.count) families · previews load as you scroll")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+            HStack(spacing: 8) {
+                TextField("Preview text…", text: $sample)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 10.5))
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 8)
+                    .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(0.05)))
+                Text(catalog.isEmpty ? "" : "\(filtered.count) families")
+                    .font(.system(size: 9.5, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize()
+            }
         }
-        .padding(10)
-        .frame(width: 300, height: 430)
+        .padding(12)
+        .frame(width: 340, height: 480)
         .onAppear {
             GoogleFonts.catalog { catalog = $0 }
         }
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.system(size: 9, weight: .semibold))
+            .kerning(0.6)
+            .foregroundStyle(.secondary)
+            .padding(.top, 6)
+            .padding(.bottom, 3)
     }
 }
 
 struct FontRow: View {
     let family: GoogleFonts.Family
+    var sample: String = ""
+    var isCurrent: Bool = false
     let pick: () -> Void
 
     @State private var ready = false
@@ -4047,20 +4091,34 @@ struct FontRow: View {
 
     var body: some View {
         Button(action: pick) {
-            HStack {
-                Text(family.family)
-                    .font(ready ? .custom(family.family, size: 15) : .system(size: 13))
-                    .lineLimit(1)
-                Spacer(minLength: 10)
-                Text("Aa")
-                    .font(ready ? .custom(family.family, size: 17) : .system(size: 14))
-                    .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(sample.isEmpty ? family.family : sample)
+                        .font(ready ? .custom(family.family, size: 16) : .system(size: 13))
+                        .lineLimit(1)
+                    HStack(spacing: 5) {
+                        if !sample.isEmpty {
+                            Text(family.family)
+                                .font(.system(size: 9.5))
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(family.category)
+                            .font(.system(size: 8.5))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                Spacer(minLength: 8)
+                if isCurrent {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
             }
             .padding(.vertical, 6)
             .padding(.horizontal, 8)
             .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(hovering ? Color.primary.opacity(0.06) : .clear)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(isCurrent ? Color.accentColor.opacity(0.08) : (hovering ? Color.primary.opacity(0.06) : .clear))
             )
             .contentShape(Rectangle())
         }
