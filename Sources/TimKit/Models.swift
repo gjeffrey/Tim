@@ -680,6 +680,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
         if (!active) { return; }
         var obj = e.target && e.target.closest ? e.target.closest('.tim-object') : null;
+        // Shift-click toggles group membership — handled on click. Starting
+        // a drag here would clear the group before the click ever fires.
+        if (obj && e.shiftKey) { return; }
         if (obj && obj !== editingEl && !(editingEl && editingEl.contains(e.target))) {
           var canvas2 = canvasFor(obj);
           var p1 = placement(obj);
@@ -979,7 +982,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
               path: selPath.map(labelFor),
               tag: sel.tagName.toLowerCase(),
               timStyle: timStyle,
-              isText: (sel.classList && sel.classList.contains('tim-text')) ? 1 : 0,
+              isText: (sel.classList && (sel.classList.contains('tim-text') || sel.classList.contains('tim-nav'))) ? 1 : 0,
               fontSize: parseFloat(cs.fontSize) || 16,
               fontWeight: parseInt(cs.fontWeight, 10) || 400,
               align: cs.textAlign,

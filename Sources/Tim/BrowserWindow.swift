@@ -272,7 +272,7 @@ struct SiteSection: View {
                         } label: {
                             HStack(spacing: 7) {
                                 Group {
-                                    if let thumb = ThumbnailStore.image(for: "version:\(site.localProjectPath):\(version.sha)") {
+                                    if let thumb = ThumbnailStore.image(for: "version:\(site.localProjectPath):\(currentRel ?? ""):\(version.sha)") {
                                         Image(nsImage: thumb)
                                             .resizable()
                                             .aspectRatio(contentMode: .fill)
@@ -617,6 +617,7 @@ struct TabContentView: View {
                 Divider()
                 InspectorView(
                     tab: tab,
+                    site: matchedSite,
                     allowsTemplates: matchedSite != nil
                         && !(matchedSite.map { AstroProject.isAstroProject($0.localProjectPath) } ?? false)
                 )
@@ -974,7 +975,9 @@ struct TabContentView: View {
                         let source = ThumbnailStore.path(for: url.absoluteString)
                         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2.5) {
                             guard let sha = SiteWorkspace.latestSha(of: rel, in: mirror) else { return }
-                            let destination = ThumbnailStore.path(for: "version:\(mirror):\(sha)")
+                            // Keyed per page as well as per commit: a page's
+                            // history must only ever show that page.
+                            let destination = ThumbnailStore.path(for: "version:\(mirror):/\(rel):\(sha)")
                             try? FileManager.default.removeItem(at: destination)
                             try? FileManager.default.copyItem(at: source, to: destination)
                             DispatchQueue.main.async {
@@ -2968,6 +2971,7 @@ let timStyles: [(cls: String, name: String)] = [
 
 struct InspectorView: View {
     @ObservedObject var tab: Tab
+    var site: Site?
     var allowsTemplates: Bool = false
 
     var body: some View {
@@ -2977,7 +2981,7 @@ struct InspectorView: View {
             Group {
                 if let info = tab.selectionInfo {
                     ScrollView {
-                        InspectorControls(tab: tab, info: info, allowsTemplates: allowsTemplates)
+                        InspectorControls(tab: tab, site: site, info: info, allowsTemplates: allowsTemplates)
                             .id(info["seq"] as? Int ?? 0)
                     }
                 } else {
@@ -3036,6 +3040,7 @@ struct InspectorView: View {
 
 struct InspectorControls: View {
     @ObservedObject var tab: Tab
+    var site: Site?
     let info: [String: Any]
     var allowsTemplates: Bool = false
 
@@ -3059,8 +3064,9 @@ struct InspectorControls: View {
 
     private let weights = [400, 500, 600, 700]
 
-    init(tab: Tab, info: [String: Any], allowsTemplates: Bool = false) {
+    init(tab: Tab, site: Site? = nil, info: [String: Any], allowsTemplates: Bool = false) {
         self.tab = tab
+        self.site = site
         self.info = info
         self.allowsTemplates = allowsTemplates
         let cls = info["timStyle"] as? String ?? ""
@@ -3269,7 +3275,7 @@ struct InspectorControls: View {
         card("Typography") {
             Button {
                 tab.pageFonts { fonts in
-                    pinnedFonts = SiteFonts.used(site: nil, pageFonts: fonts)
+                    pinnedFonts = SiteFonts.used(site: site, pageFonts: fonts)
                     showFontPicker = true
                 }
             } label: {
