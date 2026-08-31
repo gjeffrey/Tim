@@ -257,6 +257,16 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         )
     }
 
+    /// Deselects — back to the Page pane.
+    public func clearSelection() {
+        webView.evaluateJavaScript("window.__timDeselect && window.__timDeselect();", completionHandler: nil)
+    }
+
+    /// Selects an enclosing element from the breadcrumb path.
+    public func selectAncestor(_ index: Int) {
+        webView.evaluateJavaScript("window.__timSelectAncestor && window.__timSelectAncestor(\(index));", completionHandler: nil)
+    }
+
     /// The selected element's HTML (Layout selection).
     public func selectedHTML(_ completion: @escaping (String) -> Void) {
         webView.evaluateJavaScript("window.__timSelHTML ? window.__timSelHTML() : ''") { result, _ in
@@ -704,6 +714,22 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
 
       var selSeq = 0;
       var lastNotified = null;
+      var selPath = [];
+      function labelFor(el) {
+        if (el.hasAttribute && el.hasAttribute('data-tim-canvas')) { return 'Canvas'; }
+        if (el.getAttribute && el.getAttribute('data-tim-component')) { return el.getAttribute('data-tim-component'); }
+        var t = el.tagName ? el.tagName.toLowerCase() : 'node';
+        if (el.classList) {
+          if (el.classList.contains('tim-text')) { return 'Text'; }
+          if (el.classList.contains('tim-object')) {
+            if (t === 'img') { return 'Image'; }
+            if (t === 'video') { return 'Video'; }
+            if (t === 'audio') { return 'Audio'; }
+            return 'Object';
+          }
+        }
+        return t;
+      }
       // forceReseed bumps the sequence so the Inspector re-seeds its
       // controls; live edits keep the sequence stable (values update
       // without interrupting a slider drag).
@@ -713,6 +739,12 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           if (sel !== lastNotified || forceReseed) { selSeq += 1; }
           lastNotified = sel;
           if (sel) {
+            selPath = [];
+            var node = sel;
+            while (node && node !== doc.body && selPath.length < 6) {
+              selPath.unshift(node);
+              node = node.parentElement;
+            }
             var cs = getComputedStyle(sel);
             var timStyle = '';
             String(sel.className || '').split(/\\s+/).forEach(function (c) {
@@ -720,6 +752,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
             });
             payload = JSON.stringify({
               seq: selSeq,
+              path: selPath.map(labelFor),
               tag: sel.tagName.toLowerCase(),
               timStyle: timStyle,
               isText: (sel.classList && sel.classList.contains('tim-text')) ? 1 : 0,
@@ -885,6 +918,21 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           link.setAttribute('data-tim-font', family);
           doc.head.appendChild(link);
         }
+      };
+
+      window.__timDeselect = function () {
+        stopTextEditing();
+        sel = null;
+        hide();
+        notifySel();
+      };
+      window.__timSelectAncestor = function (index) {
+        var el = selPath[index];
+        if (!el || !doc.contains(el) || el === doc.body) { return; }
+        stopTextEditing();
+        sel = el;
+        layout();
+        notifySel(true);
       };
 
       window.__timSelHTML = function () { return sel ? sel.outerHTML : ''; };

@@ -2261,18 +2261,66 @@ struct InspectorView: View {
     @ObservedObject var tab: Tab
 
     var body: some View {
-        Group {
-            if let info = tab.selectionInfo {
-                ScrollView {
-                    InspectorControls(tab: tab, info: info)
-                        .id(info["seq"] as? Int ?? 0)
+        VStack(spacing: 0) {
+            breadcrumbs
+            Divider()
+            Group {
+                if let info = tab.selectionInfo {
+                    ScrollView {
+                        InspectorControls(tab: tab, info: info)
+                            .id(info["seq"] as? Int ?? 0)
+                    }
+                } else {
+                    PageOptionsPane(tab: tab)
                 }
-            } else {
-                PageOptionsPane(tab: tab)
             }
         }
         .frame(width: 248)
         .background(Color.primary.opacity(0.025))
+    }
+
+    /// The trail starts at Page — always one click back to page settings —
+    /// and continues through the selection's enclosing elements, each
+    /// clickable. The DOM as a path, not a panel.
+    private var breadcrumbs: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 2) {
+                crumb("Page", isCurrent: tab.selectionInfo == nil) {
+                    tab.clearSelection()
+                }
+                if let path = tab.selectionInfo?["path"] as? [String] {
+                    ForEach(Array(path.enumerated()), id: \.offset) { item in
+                        Image(systemName: "chevron.compact.right")
+                            .font(.system(size: 8))
+                            .foregroundStyle(.tertiary)
+                        crumb(item.element.capitalized, isCurrent: item.offset == path.count - 1) {
+                            tab.selectAncestor(item.offset)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
+        }
+        .background(Color.primary.opacity(0.02))
+    }
+
+    private func crumb(_ label: String, isCurrent: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 10.5, weight: isCurrent ? .semibold : .regular))
+                .foregroundStyle(isCurrent ? Color.accentColor : Color.secondary)
+                .lineLimit(1)
+                .padding(.vertical, 2)
+                .padding(.horizontal, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(isCurrent ? Color.accentColor.opacity(0.12) : .clear)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(isCurrent ? "Current selection" : (label == "Page" ? "Page settings" : "Select the enclosing \(label)"))
     }
 }
 
