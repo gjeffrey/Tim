@@ -566,7 +566,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
         sel = (!el || el === doc.body) ? null : el;
         if (sel) { layout(); } else { hide(); }
-        notifySel();
+        notifySel(true);
       }
 
       function onDblClick(e) {
@@ -599,7 +599,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           stopTextEditing();
           sel = null;
           hide();
-          notifySel();
+          notifySel(true);
           return;
         }
         if ((e.key === 'Backspace' || e.key === 'Delete') && active && !editingEl) {
@@ -683,11 +683,16 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       };
 
       var selSeq = 0;
-      function notifySel() {
+      var lastNotified = null;
+      // forceReseed bumps the sequence so the Inspector re-seeds its
+      // controls; live edits keep the sequence stable (values update
+      // without interrupting a slider drag).
+      function notifySel(forceReseed) {
         try {
           var payload = '';
+          if (sel !== lastNotified || forceReseed) { selSeq += 1; }
+          lastNotified = sel;
           if (sel) {
-            selSeq += 1;
             var cs = getComputedStyle(sel);
             var timStyle = '';
             String(sel.className || '').split(/\\s+/).forEach(function (c) {
@@ -722,6 +727,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (!sel) { return; }
         sel.style[prop] = value;
         layout();
+        notifySel();
       };
 
       // Page-scoped named styles, the Pages/Keynote way: "Update Style"
@@ -848,7 +854,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (cls) { target.classList.add(cls); }
         TYPO_PROPS.forEach(function (p) { target.style[p] = ''; });
         layout();
-        notifySel();
+        notifySel(true);
       };
 
       window.__timCanvasLayer = true;
