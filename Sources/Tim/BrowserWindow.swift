@@ -32,6 +32,26 @@ extension Notification.Name {
     static let timBounceVideo = Notification.Name("tim.bounceVideo")
 }
 
+/// Liquid Glass where Tahoe offers it, honest material everywhere else.
+/// The creative-app posture: chrome recedes into glass, the page is the
+/// hero, and Tim's identity colors ride on top as accents.
+extension View {
+    @ViewBuilder
+    func timGlass(in shape: some InsettableShape, interactive: Bool = false) -> some View {
+        if #available(macOS 26.0, *) {
+            self.glassEffect(interactive ? .regular.interactive() : .regular, in: shape)
+        } else {
+            self.background(.thinMaterial, in: shape)
+        }
+    }
+
+    /// Panel chrome: the soft translucent ground sidebars and inspectors
+    /// sit on.
+    func timPanel() -> some View {
+        self.background(.ultraThinMaterial)
+    }
+}
+
 /// Tim's yellow — the color of ownership. It marks what's yours (the
 /// frame around your page, the pill's pencil, your site's name) and
 /// nothing else; tools and selection stay blue so they read anywhere.
@@ -174,7 +194,7 @@ struct ActivityIndicator: View {
                 }
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
-                .background(Capsule().fill(Color.primary.opacity(0.06)))
+                .timGlass(in: Capsule(style: .continuous), interactive: true)
             }
             .buttonStyle(.plain)
             .help("Working in the background — click for details")
@@ -258,6 +278,7 @@ struct UnifiedSidebar: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(width: 252)
+        .timPanel()
     }
 }
 
@@ -780,7 +801,7 @@ struct MobilePreviewPane: View {
 
     var body: some View {
         ZStack {
-            Color.primary.opacity(0.045)
+            Rectangle().fill(.ultraThinMaterial)
             VStack(spacing: 10) {
                 HStack(spacing: 5) {
                     Image(systemName: "iphone")
@@ -878,7 +899,7 @@ struct TabContentView: View {
             Group {
                 if tab.isMobilePreview {
                     ZStack {
-                        Color.primary.opacity(0.045)
+                        Rectangle().fill(.ultraThinMaterial)
                         WebViewContainer(webView: tab.webView)
                             .frame(width: 390)
                             .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
@@ -1100,7 +1121,8 @@ struct TabContentView: View {
         }
         .padding(.horizontal, 11)
         .frame(height: 30)
-        .background(Capsule(style: .continuous).fill(Color.primary.opacity(addressFocused ? 0.09 : 0.055)))
+        .timGlass(in: Capsule(style: .continuous), interactive: true)
+        .background(Capsule(style: .continuous).fill(Color.primary.opacity(addressFocused ? 0.06 : 0)))
         .overlay(alignment: .bottomLeading) {
             // Loading is a hairline of light along the capsule's floor.
             if tab.isLoading {
@@ -2114,7 +2136,11 @@ struct EditingToolbar: View {
         .controlSize(.small)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .background(Color.accentColor.opacity(0.08))
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .bottom) {
+            // The editing strip carries the ownership color, quietly.
+            Rectangle().fill(timYellow.opacity(0.55)).frame(height: 1)
+        }
         .sheet(isPresented: $showNewPageSheet) {
             NewPageSheet(site: site, tab: tab)
         }
@@ -3761,7 +3787,7 @@ struct InspectorView: View {
             }
         }
         .frame(width: 248)
-        .background(Color.primary.opacity(0.025))
+        .timPanel()
     }
 
     /// The trail starts at Page — always one click back to page settings —
@@ -4527,7 +4553,8 @@ struct InspectorControls: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(0.045)))
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Color.primary.opacity(0.07), lineWidth: 1))
     }
 
     private func rowLabel(_ text: String) -> some View {
@@ -5267,7 +5294,8 @@ struct PageOptionsControls: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(0.045)))
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Color.primary.opacity(0.07), lineWidth: 1))
     }
 
     private func rowLabel(_ text: String) -> some View {
