@@ -3662,7 +3662,7 @@ struct InspectorControls: View {
                 styleCard
                 typographyCard
             } else {
-                Text((info["tag"] as? String ?? "object").capitalized)
+                Text(info["label"] as? String ?? "Object")
                     .font(.system(size: 13, weight: .semibold))
                     .padding(.horizontal, 2)
             }
@@ -3868,7 +3868,7 @@ struct InspectorControls: View {
                 }
             }
 
-            sliderRow("Size", $fontSize, 10...96, 1, "\(Int(fontSize))")
+            sliderRow("Size", $fontSize, 10...200, 1, "\(Int(fontSize))", typed: 1...2000)
                 .onChange(of: fontSize) { _, v in tab.setSelectionStyle("fontSize", "\(Int(v))px") }
 
             HStack(spacing: 8) {
@@ -4094,18 +4094,21 @@ struct InspectorControls: View {
             .frame(width: 58, alignment: .leading)
     }
 
-    private func sliderRow(_ name: String, _ value: Binding<Double>, _ range: ClosedRange<Double>, _ step: Double, _ display: String, snap: ((Double) -> Double)? = nil) -> some View {
-        HStack(spacing: 8) {
+    private func sliderRow(_ name: String, _ value: Binding<Double>, _ range: ClosedRange<Double>, _ step: Double, _ display: String, snap: ((Double) -> Double)? = nil, typed: ClosedRange<Double>? = nil) -> some View {
+        // The slider covers the sensible range; the field quietly accepts
+        // any valid value for people who know exactly what they want.
+        let typedRange = typed ?? range
+        return HStack(spacing: 8) {
             rowLabel(name)
             Slider(value: Binding(
-                get: { value.wrappedValue },
+                get: { min(range.upperBound, max(range.lowerBound, value.wrappedValue)) },
                 set: { value.wrappedValue = min(range.upperBound, max(range.lowerBound, snap?($0) ?? $0)) }
             ), in: range, step: step)
                 .controlSize(.mini)
             // Typed values are exact — snapping applies to the slider only.
             TextField("", value: Binding(
                 get: { value.wrappedValue },
-                set: { value.wrappedValue = min(range.upperBound, max(range.lowerBound, $0)) }
+                set: { value.wrappedValue = min(typedRange.upperBound, max(typedRange.lowerBound, $0)) }
             ), format: .number.precision(.fractionLength(0...2)))
                 .font(.system(size: 10, design: .monospaced))
                 .multilineTextAlignment(.trailing)

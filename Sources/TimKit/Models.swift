@@ -778,7 +778,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         badge.style.top = Math.max(2, r.y - 24) + 'px';
         if (!drag) {
           var p = placement(sel);
-          badge.textContent = (p ? '✥ ' : '') + sel.tagName.toLowerCase() +
+          badge.textContent = (p ? '✥ ' : '') + labelFor(sel) +
             (p ? ' · ' + (p.ce - p.cs) + '×' + (p.re - p.rs) + ' cells' : '') +
             (angle ? ' · ' + angle + '°' : '');
         }
@@ -1265,20 +1265,39 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       var selSeq = 0;
       var lastNotified = null;
       var selPath = [];
+      // Objects speak the product's language, never the web's: a text box
+      // is named by its style (Title, Body, a custom name), media by what
+      // it is, components by their name — and nothing is ever a "div".
       function labelFor(el) {
         if (el.hasAttribute && el.hasAttribute('data-tim-canvas')) { return 'Canvas'; }
-        if (el.getAttribute && el.getAttribute('data-tim-component')) { return el.getAttribute('data-tim-component'); }
-        var t = el.tagName ? el.tagName.toLowerCase() : 'node';
-        if (el.classList) {
-          if (el.classList.contains('tim-text')) { return 'Text'; }
-          if (el.classList.contains('tim-object')) {
-            if (t === 'img') { return 'Image'; }
-            if (t === 'video') { return 'Video'; }
-            if (t === 'audio') { return 'Audio'; }
-            return 'Object';
-          }
+        function titleCase(text) {
+          return text.replace(/-/g, ' ').replace(/(^|\\s)\\w/g, function (c) { return c.toUpperCase(); });
         }
-        return t;
+        var comp = el.getAttribute && el.getAttribute('data-tim-component');
+        if (comp) { return comp === 'tpl-nav' ? 'Navigation' : titleCase(comp.replace(/^tpl-/, '')); }
+        var t = el.tagName ? el.tagName.toLowerCase() : '';
+        if (t === 'img') { return 'Image'; }
+        if (t === 'video') { return 'Video'; }
+        if (t === 'audio') { return 'Audio'; }
+        if (t === 'nav') { return 'Navigation'; }
+        if (t === 'a') { return 'Link'; }
+        if (el.classList) {
+          if (el.classList.contains('tim-nav')) { return 'Navigation'; }
+          var style = '';
+          String(el.className || '').split(/\\s+/).forEach(function (c) {
+            if (c.indexOf('tim-style-') === 0) { style = c.slice(10); }
+          });
+          if (style) { return titleCase(style); }
+          if (el.classList.contains('tim-text')) { return 'Text'; }
+          if (el.classList.contains('tim-object')) { return 'Object'; }
+        }
+        if (/^h[1-6]$/.test(t)) { return 'Heading'; }
+        if (t === 'p' || t === 'blockquote' || t === 'li' || t === 'span' || t === 'em' || t === 'strong') { return 'Text'; }
+        if (t === 'ul' || t === 'ol') { return 'List'; }
+        if (t === 'table') { return 'Table'; }
+        if (t === 'button') { return 'Button'; }
+        if (t === 'form') { return 'Form'; }
+        return 'Block';
       }
       // forceReseed bumps the sequence so the Inspector re-seeds its
       // controls; live edits keep the sequence stable (values update
@@ -1303,6 +1322,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
             payload = JSON.stringify({
               seq: selSeq,
               path: selPath.map(labelFor),
+              label: labelFor(sel),
               tag: sel.tagName.toLowerCase(),
               timStyle: timStyle,
               isText: (sel.classList && (sel.classList.contains('tim-text') || sel.classList.contains('tim-nav'))) ? 1 : 0,
