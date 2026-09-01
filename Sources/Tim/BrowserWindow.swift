@@ -3187,6 +3187,7 @@ struct InspectorControls: View {
     @State private var isUnderlined: Bool = false
     @State private var isStruck: Bool = false
     @State private var capsMode: String = "none"
+    @State private var rotation: Double = 0
     @State private var textColor: Color
     @State private var fillColor: Color
     @State private var radius: Double
@@ -3225,6 +3226,7 @@ struct InspectorControls: View {
         _isUnderlined = State(initialValue: (info["underline"] as? Int) == 1)
         _isStruck = State(initialValue: (info["strike"] as? Int) == 1)
         _capsMode = State(initialValue: info["caps"] as? String ?? "none")
+        _rotation = State(initialValue: info["rotation"] as? Double ?? 0)
     }
 
     private var isText: Bool {
@@ -3273,6 +3275,9 @@ struct InspectorControls: View {
             }
             if isMedia {
                 mediaCard
+            }
+            if isCanvasObject {
+                arrangeCard
             }
             appearanceCard
             if allowsTemplates, isCanvasObject {
@@ -3596,6 +3601,41 @@ struct InspectorControls: View {
             "boxShadow",
             hasShadow ? "0 8px 24px \(shadowColor.cssRGBA(0.30))" : ""
         )
+    }
+
+    // MARK: Arrange
+
+    private var arrangeCard: some View {
+        card("Arrange") {
+            HStack(spacing: 3) {
+                arrangeButton("Send to Back", "arrow.down.to.line", "back")
+                arrangeButton("Send Backward", "arrow.down", "backward")
+                arrangeButton("Bring Forward", "arrow.up", "forward")
+                arrangeButton("Bring to Front", "arrow.up.to.line", "front")
+                Spacer()
+            }
+            sliderRow("Rotate", $rotation, -180...180, 1, "\(Int(rotation))°")
+                .onChange(of: rotation) { _, value in
+                    // Free rotation that clicks onto the 45° stops.
+                    let nearest = (value / 45).rounded() * 45
+                    let snapped = abs(value - nearest) <= 5 ? nearest : value
+                    if snapped != rotation { rotation = snapped }
+                    tab.setSelectionStyle("transform", snapped == 0 ? "" : "rotate(\(Int(snapped))deg)")
+                }
+        }
+    }
+
+    private func arrangeButton(_ help: String, _ symbol: String, _ action: String) -> some View {
+        Button {
+            tab.arrange(action)
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 10))
+                .frame(width: 26, height: 16)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.mini)
+        .help(help)
     }
 
     // MARK: Appearance

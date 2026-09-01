@@ -274,6 +274,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
     }
 
+    /// Keynote-style arrange: "front", "forward", "backward", or "back",
+    /// reordering the selection among the objects it overlaps.
+    public func arrange(_ action: String) {
+        webView.evaluateJavaScript(
+            "window.__timZ && window.__timZ(\(Self.jsLiteral(action)));",
+            completionHandler: nil
+        )
+    }
+
     /// Swaps a media placeholder for the real element once its upload
     /// lands (any move/resize of the placeholder carries over).
     public func resolvePlaceholder(id: String, html: String) {
@@ -989,6 +998,38 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         el.scrollIntoView({ block: 'nearest' });
       };
 
+      // Keynote-style arrange: reorder the selection among the objects it
+      // actually overlaps, then write compact z-indexes for just that
+      // group (0 stays implicit). Non-overlapping objects never matter
+      // visually, so their z values are left alone.
+      window.__timZ = function (action) {
+        if (!sel || !isObject(sel)) { return; }
+        var canvas = canvasFor(sel);
+        if (!canvas) { return; }
+        var all = Array.prototype.slice.call(canvas.querySelectorAll('.tim-object'));
+        var r0 = sel.getBoundingClientRect();
+        var scope = all.filter(function (el) {
+          if (el === sel) { return true; }
+          var r = el.getBoundingClientRect();
+          return !(r.right <= r0.left || r.left >= r0.right || r.bottom <= r0.top || r.top >= r0.bottom);
+        });
+        if (scope.length < 2) { return; }
+        scope.sort(function (a, b) {
+          var za = parseInt(a.style.zIndex, 10) || 0;
+          var zb = parseInt(b.style.zIndex, 10) || 0;
+          return (za - zb) || (all.indexOf(a) - all.indexOf(b));
+        });
+        var i = scope.indexOf(sel);
+        scope.splice(i, 1);
+        if (action === 'front') { scope.push(sel); }
+        else if (action === 'back') { scope.unshift(sel); }
+        else if (action === 'forward') { scope.splice(Math.min(i + 1, scope.length), 0, sel); }
+        else { scope.splice(Math.max(i - 1, 0), 0, sel); }
+        scope.forEach(function (el, idx) { el.style.zIndex = idx === 0 ? '' : String(idx); });
+        layout();
+        notifySel();
+      };
+
       // Media arrives in two beats: a shimmer placeholder right away, the
       // real element when the upload lands (keeping any move/resize the
       // user did to the placeholder meanwhile).
@@ -1105,6 +1146,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
               caps: (cs.fontVariantCaps === 'small-caps' || cs.fontVariant === 'small-caps')
                 ? 'small' : (cs.textTransform === 'uppercase' ? 'upper'
                 : (cs.textTransform === 'capitalize' ? 'title' : 'none')),
+              rotation: (function () {
+                var m = /rotate\\((-?[0-9.]+)deg\\)/.exec(sel.style.transform || '');
+                return m ? parseFloat(m[1]) : 0;
+              })(),
               lineHeight: (parseFloat(cs.lineHeight) || 1.4 * (parseFloat(cs.fontSize) || 16)) / (parseFloat(cs.fontSize) || 16),
               letterSpacing: cs.letterSpacing === 'normal' ? 0 : (parseFloat(cs.letterSpacing) || 0)
             });
