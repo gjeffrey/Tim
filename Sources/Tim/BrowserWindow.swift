@@ -1832,13 +1832,28 @@ struct EditingToolbar: View {
         isWorking = true
         statusMessage = "Adding \(name)…"
 
-        let activity = ActivityCenter.shared.begin("Uploading \(name)…")
+        // The placeholder appears this instant — optimizing and uploading
+        // can take a while, and the canvas should say so, beautifully.
+        let spans = Self.mediaSpans(for: kind)
+        tab.insertObject(
+            html: Self.placeholderHTML(id: placeholderID, label: "Adding \(name)…"),
+            colSpan: spans.cols, rowSpan: spans.rows
+        )
         DispatchQueue.global(qos: .userInitiated).async {
+            var activity = ActivityCenter.shared.begin("Adding \(name)…")
             do {
-                // Two beats: the file lands in the mirror (fast) and a
-                // shimmer placeholder appears on the canvas immediately;
-                // the real element swaps in when the upload finishes.
-                var src = try Self.stage(fileURL: fileURL, site: resolvedSite, pageURL: pageURL, upload: false)
+                // Web-appropriate, no questions asked: heavyweight files
+                // convert automatically; the original stays in the mirror.
+                var publishURL = fileURL
+                if case .transcode = MediaOptimizer.plan(fileURL: fileURL, kind: kind) {
+                    ActivityCenter.shared.end(activity)
+                    activity = ActivityCenter.shared.begin("Optimizing \(name) for the web…")
+                    DispatchQueue.main.async { statusMessage = "Optimizing \(name)…" }
+                    publishURL = try MediaOptimizer.transcode(fileURL: fileURL, kind: kind)
+                    if let s = resolvedSite { MediaOptimizer.stashOriginal(fileURL, mirror: s.localProjectPath) }
+                }
+                let publishName = publishURL.lastPathComponent
+                var src = try Self.stage(fileURL: publishURL, site: resolvedSite, pageURL: pageURL, upload: false)
                 // Relative to the current page, so it works under any base
                 // path, on file:// previews, and on the live site alike.
                 if let resolvedSite, let pageURL {
@@ -1846,27 +1861,22 @@ struct EditingToolbar: View {
                     let depth = max(0, rel.split(separator: "/").count - 1)
                     src = String(repeating: "../", count: depth) + src
                 }
-                let spans = Self.mediaSpans(for: kind)
-                DispatchQueue.main.async {
-                    statusMessage = "Uploading \(name)…"
-                    tab.insertObject(
-                        html: Self.placeholderHTML(id: placeholderID, label: "Uploading \(name)…"),
-                        colSpan: spans.cols, rowSpan: spans.rows
-                    )
-                }
-                try Self.uploadStagedMedia(site: resolvedSite, name: name)
+                ActivityCenter.shared.end(activity)
+                activity = ActivityCenter.shared.begin("Uploading \(publishName)…")
+                DispatchQueue.main.async { statusMessage = "Uploading \(publishName)…" }
+                try Self.uploadStagedMedia(site: resolvedSite, name: publishName)
                 DispatchQueue.main.async {
                     ActivityCenter.shared.end(activity)
                     isWorking = false
                     statusMessage = nil
-                    tab.resolvePlaceholder(id: placeholderID, html: Self.mediaHTML(kind: kind, src: src, name: name))
+                    tab.resolvePlaceholder(id: placeholderID, html: Self.mediaHTML(kind: kind, src: src, name: publishName))
                 }
             } catch {
                 DispatchQueue.main.async {
                     ActivityCenter.shared.end(activity)
                     isWorking = false
                     statusMessage = "Couldn’t add \(name): \(error.localizedDescription)"
-                    tab.failPlaceholder(id: placeholderID, message: "Upload failed — \(name)")
+                    tab.failPlaceholder(id: placeholderID, message: "Couldn’t add \(name)")
                 }
             }
         }
@@ -1895,22 +1905,34 @@ struct EditingToolbar: View {
             let resolvedSite = site
             let pageURL = tab.webView.url
             isWorking = true
-            statusMessage = "Uploading \(name)…"
-            let activity = ActivityCenter.shared.begin("Uploading \(name)…")
+            statusMessage = "Adding \(name)…"
             DispatchQueue.global(qos: .userInitiated).async {
+                var activity = ActivityCenter.shared.begin("Adding \(name)…")
                 do {
-                    var src = try Self.stage(fileURL: fileURL, site: resolvedSite, pageURL: pageURL, upload: false)
+                    var publishURL = fileURL
+                    if case .transcode = MediaOptimizer.plan(fileURL: fileURL, kind: kind) {
+                        ActivityCenter.shared.end(activity)
+                        activity = ActivityCenter.shared.begin("Optimizing \(name) for the web…")
+                        DispatchQueue.main.async { statusMessage = "Optimizing \(name)…" }
+                        publishURL = try MediaOptimizer.transcode(fileURL: fileURL, kind: kind)
+                        if let s = resolvedSite { MediaOptimizer.stashOriginal(fileURL, mirror: s.localProjectPath) }
+                    }
+                    let publishName = publishURL.lastPathComponent
+                    var src = try Self.stage(fileURL: publishURL, site: resolvedSite, pageURL: pageURL, upload: false)
                     if let resolvedSite, let pageURL {
                         let rel = resolvedSite.relativePagePath(for: pageURL)
                         let depth = max(0, rel.split(separator: "/").count - 1)
                         src = String(repeating: "../", count: depth) + src
                     }
-                    try Self.uploadStagedMedia(site: resolvedSite, name: name)
+                    ActivityCenter.shared.end(activity)
+                    activity = ActivityCenter.shared.begin("Uploading \(publishName)…")
+                    DispatchQueue.main.async { statusMessage = "Uploading \(publishName)…" }
+                    try Self.uploadStagedMedia(site: resolvedSite, name: publishName)
                     DispatchQueue.main.async {
                         ActivityCenter.shared.end(activity)
                         isWorking = false
                         statusMessage = nil
-                        tab.replaceMedia(id: replaceID, html: Self.mediaHTML(kind: kind, src: src, name: name))
+                        tab.replaceMedia(id: replaceID, html: Self.mediaHTML(kind: kind, src: src, name: publishName))
                     }
                 } catch {
                     DispatchQueue.main.async {
