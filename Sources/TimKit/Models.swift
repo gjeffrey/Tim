@@ -707,6 +707,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           if (id && mobileLayout[id]) { continue; }
           var p = desktopPlacement(el);
           var rows = p ? Math.max(2, p.re - p.rs) : 3;
+          // Media keeps its shape: the healed box takes its rows from the
+          // natural aspect at full mobile width, not from desktop rows —
+          // desktop row counts stretched every image they touched.
+          var nw = el.naturalWidth || el.videoWidth || 0;
+          var nh = el.naturalHeight || el.videoHeight || 0;
+          if (el.matches && el.matches('img,video') && nw > 0 && nh > 0) {
+            var mw = collapsed() ? Math.max(200, canvas.clientWidth - 32) : 358;
+            rows = Math.max(2, Math.round((mw * nh / nw + 16) / 48));
+          }
           mobileLayout[ensureObjectId(el)] = [bottom, 1, bottom + rows, MOBILE_COLS + 1];
           bottom += rows;
         }
@@ -890,6 +899,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         '.tim-media-replacing{outline:2px dashed rgba(10,132,255,0.7) !important;outline-offset:-1px;animation:timPulse 1.1s ease-in-out infinite}' +
         '@keyframes timPulse{50%{opacity:0.55}}' +
         '@media (max-width:700px){html.tim-editing [data-tim-mobile-hidden]{display:revert !important;opacity:0.25;outline:1.5px dashed rgba(127,127,127,0.5);outline-offset:-1px}}' +
+        // The editor's mirror of the saved mobile rule: media renders at
+        // its own aspect at phone width, never stretched into its grid
+        // box — so what you see while editing is what publishes.
+        '@media (max-width:700px){html.tim-editing .tim-canvas img.tim-object,html.tim-editing .tim-canvas video.tim-object{height:auto !important;align-self:start}}' +
         'html.tim-editing [data-tim-review]{outline:2px solid rgba(255,159,10,0.85) !important;outline-offset:3px;animation:timReviewPulse 1.6s ease-in-out infinite}' +
         '@keyframes timReviewPulse{50%{outline-color:rgba(255,159,10,0.25)}}';
 
@@ -1580,6 +1593,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         });
         checkpoint('insert');
         setDesktopArea(placed, maxRe, 1, maxRe + rowSpan, 1 + colSpan);
+        // Into the document BEFORE any mobile bookkeeping — the layout
+        // writer prunes entries whose elements aren't in the page yet,
+        // which silently erased a new object's mobile placement.
+        canvas.appendChild(el);
         if (mobileActive()) {
           var mMax = 1;
           for (var mid in mobileLayout) { mMax = Math.max(mMax, mobileLayout[mid][2]); }
@@ -1593,7 +1610,6 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           // bottom by default — worth a look over there.
           flagReview('mobile', placed);
         }
-        canvas.appendChild(el);
         el = placed;
         var media = (el.matches && el.matches('img,video,audio'))
           ? el
@@ -1859,8 +1875,32 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (!el) { ph.remove(); layout(); return; }
         checkpoint('media');
         if (ph.style && ph.style.gridArea) { el.style.gridArea = ph.style.gridArea; }
+        // The identity travels with the swap — the mobile layout entry
+        // written at insert is keyed by it, and a fresh id would strand
+        // that placement as stale.
+        var pid = ph.getAttribute('data-tim-id');
+        if (pid && !el.getAttribute('data-tim-id')) { el.setAttribute('data-tim-id', pid); }
         ph.parentNode.replaceChild(el, ph);
         if (sel === ph) { sel = el; }
+        // Once the media renders, snug its mobile box to the real aspect
+        // (height:auto already draws it right — this closes the leftover
+        // track gap under the image).
+        var rm = (el.matches && el.matches('img,video')) ? el : (el.querySelector ? el.querySelector('img,video') : null);
+        if (rm) {
+          var refit = function () {
+            var mid = el.getAttribute('data-tim-id');
+            if (!mid || !mobileLayout[mid] || !collapsed()) { return; }
+            var rect = el.getBoundingClientRect();
+            if (rect.height < 8) { return; }
+            var a = mobileLayout[mid];
+            a[2] = a[0] + Math.max(2, Math.round((rect.height + 16) / 48));
+            writeMobileLayout();
+            layout();
+          };
+          rm.addEventListener('load', refit);
+          rm.addEventListener('loadeddata', refit);
+          if ((rm.tagName === 'IMG' && rm.complete) || rm.readyState >= 2) { setTimeout(refit, 0); }
+        }
         layout();
         notifySel(true);
       };
