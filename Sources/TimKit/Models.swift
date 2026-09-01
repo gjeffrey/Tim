@@ -274,6 +274,22 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
     }
 
+    /// Undo/redo across canvas operations (move, resize, style, insert,
+    /// delete, arrange) — text editing keeps the browser's native undo.
+    public func undoEdit() {
+        webView.evaluateJavaScript(
+            "window.__timUndo ? window.__timUndo() : document.execCommand('undo');",
+            completionHandler: nil
+        )
+    }
+
+    public func redoEdit() {
+        webView.evaluateJavaScript(
+            "window.__timRedo ? window.__timRedo() : document.execCommand('redo');",
+            completionHandler: nil
+        )
+    }
+
     /// Keynote-style arrange: "front", "forward", "backward", or "back",
     /// reordering the selection among the objects it overlaps.
     public func arrange(_ action: String) {
@@ -732,6 +748,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           var canvas = canvasFor(sel);
           var p0 = placement(sel);
           if (!canvas || !p0) { return; }
+          checkpoint('drag');
           drag = { mode: k, canvas: canvas, sx: e.pageX, sy: e.pageY, p0: p0, moved: false };
           showGrid(canvas);
           e.preventDefault(); e.stopPropagation();
@@ -756,6 +773,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
             var items = groupAll().map(function (member) {
               return { el: member, p: placement(member) };
             }).filter(function (item) { return !!item.p; });
+            checkpoint('drag');
             drag = { mode: 'move', canvas: canvas2, sx: e.pageX, sy: e.pageY, p0: p1, items: items, moved: false };
             showGrid(canvas2);
             layout();
@@ -859,6 +877,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (target) {
           e.preventDefault(); e.stopPropagation();
           stopTextEditing();
+          checkpoint('text');
           editingEl = target;
           target.setAttribute('contenteditable', 'true');
           target.focus();
@@ -868,6 +887,11 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       }
 
       function onKey(e) {
+        if (active && e.metaKey && !e.ctrlKey && !e.altKey && (e.key === 'z' || e.key === 'Z')) {
+          e.preventDefault(); e.stopPropagation();
+          if (e.shiftKey) { window.__timRedo(); } else { window.__timUndo(); }
+          return;
+        }
         if (e.key === 'Escape') {
           stopTextEditing();
           sel = null;
@@ -881,6 +905,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           // While editing, delete deletes — it never navigates back.
           e.preventDefault();
           if (sel) {
+            checkpoint('delete');
             groupAll().forEach(function (member) {
               // Deleting a component's element takes its wrapper too —
               // an empty husk would harvest as a blank master and wipe
@@ -975,6 +1000,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           var p = placement(c);
           if (p && p.re > maxRe) { maxRe = p.re; }
         });
+        checkpoint('insert');
         setArea(placed, maxRe, 1, maxRe + rowSpan, 1 + colSpan);
         canvas.appendChild(el);
         el = placed;
@@ -998,6 +1024,52 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         el.scrollIntoView({ block: 'nearest' });
       };
 
+      // Undo/redo: canvas states as snapshots, checkpointed before every
+      // mutation. Rapid same-tag changes (a slider drag) coalesce into one
+      // step. Text editing keeps the browser's native undo; leaving text
+      // editing folds the whole session into one canvas step.
+      var undoStack = [], redoStack = [], lastCkptTag = '', lastCkptTime = 0;
+      function canvasEl() { return doc.querySelector('[data-tim-canvas]'); }
+      function checkpoint(tag) {
+        var c = canvasEl();
+        if (!c) { return; }
+        var now = Date.now();
+        if (tag && tag === lastCkptTag && now - lastCkptTime < 900) { lastCkptTime = now; return; }
+        lastCkptTag = tag || '';
+        lastCkptTime = now;
+        var html = c.innerHTML;
+        if (undoStack.length && undoStack[undoStack.length - 1] === html) { return; }
+        undoStack.push(html);
+        if (undoStack.length > 60) { undoStack.shift(); }
+        redoStack.length = 0;
+      }
+      function restoreCanvas(html) {
+        var c = canvasEl();
+        if (!c) { return; }
+        stopTextEditing();
+        clearGroup();
+        sel = null;
+        hide();
+        lastCkptTag = '';
+        c.innerHTML = html;
+        layout();
+        notifySel(true);
+      }
+      window.__timUndo = function () {
+        if (editingEl) { doc.execCommand('undo'); return; }
+        var c = canvasEl();
+        if (!c || !undoStack.length) { return; }
+        redoStack.push(c.innerHTML);
+        restoreCanvas(undoStack.pop());
+      };
+      window.__timRedo = function () {
+        if (editingEl) { doc.execCommand('redo'); return; }
+        var c = canvasEl();
+        if (!c || !redoStack.length) { return; }
+        undoStack.push(c.innerHTML);
+        restoreCanvas(redoStack.pop());
+      };
+
       // Keynote-style arrange: reorder the selection among the objects it
       // actually overlaps, then write compact z-indexes for just that
       // group (0 stays implicit). Non-overlapping objects never matter
@@ -1014,6 +1086,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           return !(r.right <= r0.left || r.left >= r0.right || r.bottom <= r0.top || r.top >= r0.bottom);
         });
         if (scope.length < 2) { return; }
+        checkpoint('arrange');
         scope.sort(function (a, b) {
           var za = parseInt(a.style.zIndex, 10) || 0;
           var zb = parseInt(b.style.zIndex, 10) || 0;
@@ -1040,6 +1113,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         tmp.innerHTML = html;
         var el = tmp.firstElementChild;
         if (!el) { ph.remove(); layout(); return; }
+        checkpoint('media');
         if (ph.style && ph.style.gridArea) { el.style.gridArea = ph.style.gridArea; }
         ph.parentNode.replaceChild(el, ph);
         if (sel === ph) { sel = el; }
@@ -1070,6 +1144,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         tmp.innerHTML = html;
         var el = tmp.firstElementChild;
         if (!el) { target.removeAttribute('data-tim-replace'); return; }
+        checkpoint('media');
         if (target.className) { el.className = target.className; }
         if (target.style && target.style.cssText) { el.style.cssText = target.style.cssText; }
         target.parentNode.replaceChild(el, target);
@@ -1161,6 +1236,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       }
       window.__timSetStyle = function (prop, value) {
         if (!sel) { return; }
+        checkpoint('style:' + prop);
         groupAll().forEach(function (member) { member.style[prop] = value; });
         layout();
         notifySel();
@@ -1428,6 +1504,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       window.__timWrapSelTemplate = function (name) {
         if (!sel || !canvasFor(sel)) { return; }
         if (sel.closest('[data-tim-component]')) { return; }
+        checkpoint('template');
         var wrap = doc.createElement('div');
         wrap.setAttribute('data-tim-component', name);
         wrap.style.display = 'contents';
@@ -1482,6 +1559,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       };
 
       window.__timApplyStyle = function (cls) {
+        checkpoint('applystyle');
         var target = sel;
         if (!target || (editingEl && editingEl === target)) {
           var s = window.getSelection();

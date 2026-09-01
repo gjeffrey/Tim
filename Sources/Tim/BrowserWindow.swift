@@ -1402,13 +1402,13 @@ struct TabContentView: View {
 
             if tab.isEditing {
                 Button {
-                    tab.format("undo")
+                    tab.undoEdit()
                 } label: {
                     Image(systemName: "arrow.uturn.backward")
                 }
                 .help("Undo")
                 Button {
-                    tab.format("redo")
+                    tab.redoEdit()
                 } label: {
                     Image(systemName: "arrow.uturn.forward")
                 }
@@ -3614,13 +3614,13 @@ struct InspectorControls: View {
                 arrangeButton("Bring to Front", "arrow.up.to.line", "front")
                 Spacer()
             }
-            sliderRow("Rotate", $rotation, -180...180, 1, "\(Int(rotation))°")
+            sliderRow("Rotate", $rotation, -180...180, 1, "\(Int(rotation))°", snap: { value in
+                // Slider rotation clicks onto the 45° stops; typed values stay exact.
+                let nearest = (value / 45).rounded() * 45
+                return abs(value - nearest) <= 5 ? nearest : value
+            })
                 .onChange(of: rotation) { _, value in
-                    // Free rotation that clicks onto the 45° stops.
-                    let nearest = (value / 45).rounded() * 45
-                    let snapped = abs(value - nearest) <= 5 ? nearest : value
-                    if snapped != rotation { rotation = snapped }
-                    tab.setSelectionStyle("transform", snapped == 0 ? "" : "rotate(\(Int(snapped))deg)")
+                    tab.setSelectionStyle("transform", value == 0 ? "" : "rotate(\(String(format: "%g", value))deg)")
                 }
         }
     }
@@ -3698,15 +3698,24 @@ struct InspectorControls: View {
             .frame(width: 58, alignment: .leading)
     }
 
-    private func sliderRow(_ name: String, _ value: Binding<Double>, _ range: ClosedRange<Double>, _ step: Double, _ display: String) -> some View {
+    private func sliderRow(_ name: String, _ value: Binding<Double>, _ range: ClosedRange<Double>, _ step: Double, _ display: String, snap: ((Double) -> Double)? = nil) -> some View {
         HStack(spacing: 8) {
             rowLabel(name)
-            Slider(value: value, in: range, step: step)
+            Slider(value: Binding(
+                get: { value.wrappedValue },
+                set: { value.wrappedValue = min(range.upperBound, max(range.lowerBound, snap?($0) ?? $0)) }
+            ), in: range, step: step)
                 .controlSize(.mini)
-            Text(display)
+            // Typed values are exact — snapping applies to the slider only.
+            TextField("", value: Binding(
+                get: { value.wrappedValue },
+                set: { value.wrappedValue = min(range.upperBound, max(range.lowerBound, $0)) }
+            ), format: .number.precision(.fractionLength(0...2)))
                 .font(.system(size: 10, design: .monospaced))
+                .multilineTextAlignment(.trailing)
+                .textFieldStyle(.plain)
                 .foregroundStyle(.secondary)
-                .frame(width: 32, alignment: .trailing)
+                .frame(width: 34, alignment: .trailing)
         }
     }
 }
