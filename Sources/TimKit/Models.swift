@@ -1514,7 +1514,12 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       // moves, resizes (children scale with it), fills, and ROTATES as a
       // unit. The bounded way to tilt a whole composition.
       window.__timGroupSel = function () {
-        var members = groupAll().filter(function (el) { return isObject(el) && desktopPlacement(el); });
+        // Template components (the nav) live on every page — they can't
+        // be captured into a page-local group, so they sit grouping out.
+        var members = groupAll().filter(function (el) {
+          return isObject(el) && desktopPlacement(el)
+            && !(el.closest && el.closest('[data-tim-component]'));
+        });
         if (members.length < 2) { return; }
         var canvas = canvasFor(members[0]);
         if (!canvas) { return; }
@@ -1533,7 +1538,11 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         container.setAttribute('data-tim-canvas', '');
         container.style.cssText = 'display:grid;grid-template-columns:repeat(' + (ce - cs) + ', 1fr);grid-auto-rows:32px;gap:16px;min-width:0;';
         setDesktopArea(container, rs, cs, re, ce);
-        canvas.insertBefore(container, members[0]);
+        // Insert at the first member's top-level position (a member may
+        // sit inside a display:contents wrapper).
+        var ref = members[0];
+        while (ref.parentElement && ref.parentElement !== canvas) { ref = ref.parentElement; }
+        canvas.insertBefore(container, ref);
         members.forEach(function (el) {
           var p = desktopPlacement(el);
           setDesktopArea(el, p.rs - rs + 1, p.cs - cs + 1, p.re - rs + 1, p.ce - cs + 1);
@@ -1784,9 +1793,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       }
       window.__timSetStyle = function (prop, value) {
         if (!sel) { return; }
-        // The canvas is the page's root — rotating or transforming it
-        // tilts the whole page into unreachable space. Never.
-        if (prop === 'transform' && sel.hasAttribute && sel.hasAttribute('data-tim-canvas')) { return; }
+        // The PAGE canvas is the scroll root — rotating it tilts the page
+        // into unreachable space. Never. Group containers rotate freely.
+        if (prop === 'transform' && sel.hasAttribute && sel.hasAttribute('data-tim-canvas')
+            && !(sel.classList && sel.classList.contains('tim-container'))) { return; }
         checkpoint('style:' + prop);
         groupAll().forEach(function (member) { member.style[prop] = value; });
         layout();

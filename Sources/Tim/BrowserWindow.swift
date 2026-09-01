@@ -3714,6 +3714,19 @@ struct InspectorControls: View {
                     .font(.system(size: 13, weight: .semibold))
                     .padding(.horizontal, 2)
             }
+            if selectionCount > 1 {
+                card {
+                    HStack(spacing: 8) {
+                        Text("\(selectionCount) objects — edits apply to all")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.accentColor)
+                        Spacer()
+                        Button("Group") { tab.groupSelection() }
+                            .controlSize(.mini)
+                            .help("One object from many: the group moves, resizes, fills, and rotates as a unit — and stays composed on phones.")
+                    }
+                }
+            }
             if (info["tag"] as? String) == "video" {
                 videoCard
             }
@@ -3774,17 +3787,6 @@ struct InspectorControls: View {
 
     private var styleCard: some View {
         card {
-            if selectionCount > 1 {
-                HStack(spacing: 8) {
-                    Text("\(selectionCount) objects — edits apply to all")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color.accentColor)
-                    Spacer()
-                    Button("Group") { tab.groupSelection() }
-                        .controlSize(.mini)
-                        .help("One object from many: the group moves, resizes, fills, and rotates as a unit — and stays composed on phones.")
-                }
-            }
             HStack(spacing: 6) {
                 rowLabel("Style")
                 Picker("", selection: $styleClass) {
