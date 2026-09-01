@@ -333,6 +333,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         webView.evaluateJavaScript("window.__timUngroupSel && window.__timUngroupSel();", completionHandler: nil)
     }
 
+    /// Standard alignment: "left", "centerX", "right", "top", "centerY",
+    /// "bottom" — several objects align to each other, one to its page.
+    public func align(_ edge: String) {
+        webView.evaluateJavaScript(
+            "window.__timAlign && window.__timAlign(\(Self.jsLiteral(edge)));",
+            completionHandler: nil
+        )
+    }
+
     /// Keynote-style arrange: "front", "forward", "backward", or "back",
     /// reordering the selection among the objects it overlaps.
     public func arrange(_ action: String) {
@@ -902,8 +911,12 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       overlay.appendChild(gridBox); overlay.appendChild(hoverBox); overlay.appendChild(extentBox); overlay.appendChild(box); overlay.appendChild(badge); overlay.appendChild(groupBox);
       var handles = {};
       ['w', 'e', 'n', 's', 'nw', 'ne', 'sw', 'se'].forEach(function (k) {
+        // Forgiving targets: a 22px hit area around an 11px dot.
         var h = doc.createElement('div');
-        h.style.cssText = 'position:absolute;width:9px;height:9px;background:#fff;border:1.5px solid #0a84ff;border-radius:50%;pointer-events:auto;display:none;';
+        h.style.cssText = 'position:absolute;width:22px;height:22px;background:transparent;pointer-events:auto;display:none;';
+        var dot = doc.createElement('div');
+        dot.style.cssText = 'position:absolute;left:5.5px;top:5.5px;width:11px;height:11px;background:#fff;border:1.5px solid #0a84ff;border-radius:50%;box-sizing:border-box;pointer-events:none;';
+        h.appendChild(dot);
         h.style.cursor = (k === 'w' || k === 'e') ? 'ew-resize'
           : (k === 'n' || k === 's') ? 'ns-resize'
           : (k === 'ne' || k === 'sw') ? 'nesw-resize' : 'nwse-resize';
@@ -1119,8 +1132,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           var rad = angle * Math.PI / 180;
           var cos = Math.cos(rad), sin = Math.sin(rad);
           function place(h, dx, dy) {
-            h.style.left = (cx + dx * cos - dy * sin - 5) + 'px';
-            h.style.top = (cy + dx * sin + dy * cos - 5) + 'px';
+            h.style.left = (cx + dx * cos - dy * sin - 11) + 'px';
+            h.style.top = (cy + dx * sin + dy * cos - 11) + 'px';
           }
           place(handles.w, -w0 / 2, 0);
           place(handles.e, w0 / 2, 0);
@@ -1175,7 +1188,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           var p0 = placement(sel);
           if (!canvas || !p0) { return; }
           checkpoint('drag');
-          drag = { mode: k, canvas: canvas, sx: e.pageX, sy: e.pageY, p0: p0, angle: effectiveAngle(sel), moved: false };
+          // Media resizes with its aspect locked; hold Shift to break it.
+          var ratio = 0;
+          if ((sel.tagName === 'IMG' || sel.tagName === 'VIDEO') && !e.shiftKey) {
+            var natW = sel.naturalWidth || sel.videoWidth || 0;
+            var natH = sel.naturalHeight || sel.videoHeight || 0;
+            ratio = (natW > 0 && natH > 0) ? natW / natH
+              : (sel.offsetHeight > 0 ? sel.offsetWidth / sel.offsetHeight : 0);
+          }
+          drag = { mode: k, canvas: canvas, sx: e.pageX, sy: e.pageY, p0: p0, angle: effectiveAngle(sel), ratio: ratio, moved: false };
           showGrid(canvas);
           e.preventDefault(); e.stopPropagation();
           return;
@@ -1274,6 +1295,28 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           setArea(sel, p.rs, Math.max(1, Math.min(p.ce - 1, p.cs + dc)), Math.max(p.rs + 1, p.re + dr), p.ce);
         } else if (drag.mode === 'se') {
           setArea(sel, p.rs, p.cs, Math.max(p.rs + 1, p.re + dr), Math.max(p.cs + 1, Math.min(colCount() + 1, p.ce + dc)));
+        }
+        // Aspect lock for media: after the mode applied its axis, the
+        // other axis follows the file's own proportions.
+        if (drag.ratio && drag.mode !== 'move') {
+          var pl = placement(sel);
+          if (pl) {
+            if (drag.mode === 'n' || drag.mode === 's') {
+              var rowsNow = pl.re - pl.rs;
+              var hPx = rowsNow * g.rowH + (rowsNow - 1) * g.rowGap;
+              var colsFit = Math.max(1, Math.min(colCount(), Math.round((hPx * drag.ratio + g.gap) / (g.colW + g.gap))));
+              setArea(sel, pl.rs, pl.cs, pl.re, pl.cs + colsFit);
+            } else {
+              var colsNow = pl.ce - pl.cs;
+              var wPx = colsNow * g.colW + (colsNow - 1) * g.gap;
+              var rowsFit = Math.max(1, Math.round((wPx / drag.ratio + g.rowGap) / (g.rowH + g.rowGap)));
+              if (drag.mode === 'ne' || drag.mode === 'nw') {
+                setArea(sel, pl.re - rowsFit, pl.cs, pl.re, pl.ce);
+              } else {
+                setArea(sel, pl.rs, pl.cs, pl.rs + rowsFit, pl.ce);
+              }
+            }
+          }
         }
         var np = placement(sel);
         badge.textContent = drag.mode === 'move'
@@ -1719,6 +1762,53 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         sel = null;
         hide();
         notifySel(true);
+      };
+
+      // Standard alignment: several objects align to each other's extent;
+      // a single object aligns to its page (or its container). Works in
+      // both layouts — mobile alignment writes mobile placements.
+      window.__timAlign = function (edge) {
+        var members = groupAll().filter(function (el) { return isObject(el) && placement(el); });
+        if (!members.length) { return; }
+        checkpoint('align');
+        var cols = colCount();
+        var reference;
+        if (members.length === 1) {
+          var host = canvasFor(members[0]);
+          var contentRe = 1;
+          if (host) {
+            Array.prototype.forEach.call(host.querySelectorAll('.tim-object'), function (el) {
+              if (canvasFor(el) !== host) { return; }
+              var p = placement(el);
+              if (p && p.re > contentRe) { contentRe = p.re; }
+            });
+          }
+          reference = { cs: 1, ce: cols + 1, rs: 1, re: contentRe };
+        } else {
+          reference = { cs: 1e9, ce: 0, rs: 1e9, re: 0 };
+          members.forEach(function (el) {
+            var p = placement(el);
+            reference.cs = Math.min(reference.cs, p.cs);
+            reference.ce = Math.max(reference.ce, p.ce);
+            reference.rs = Math.min(reference.rs, p.rs);
+            reference.re = Math.max(reference.re, p.re);
+          });
+        }
+        members.forEach(function (el) {
+          var p = placement(el);
+          var w = p.ce - p.cs, hgt = p.re - p.rs;
+          var rs = p.rs, cs = p.cs;
+          if (edge === 'left') { cs = reference.cs; }
+          if (edge === 'right') { cs = reference.ce - w; }
+          if (edge === 'centerX') { cs = Math.max(1, Math.round(reference.cs + (reference.ce - reference.cs - w) / 2)); }
+          if (edge === 'top') { rs = reference.rs; }
+          if (edge === 'bottom') { rs = Math.max(1, reference.re - hgt); }
+          if (edge === 'centerY') { rs = Math.max(1, Math.round(reference.rs + (reference.re - reference.rs - hgt) / 2)); }
+          setArea(el, rs, cs, rs + hgt, cs + w);
+        });
+        if (!mobileActive()) { resort(canvasFor(members[0])); }
+        layout();
+        notifySel();
       };
 
       // Keynote-style arrange: reorder the selection among the objects it

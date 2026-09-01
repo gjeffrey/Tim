@@ -17,6 +17,12 @@ public enum MobileCSS {
         ]
         rules += styleClassRules(in: out)
         rules += inlineSizeRules(in: out)
+        // Media keeps its own shape on phones — natural aspect at column
+        // width, never stretched or cropped into row-derived boxes. This
+        // holds even under hand-tuned mobile layouts.
+        for obj in objects(in: out) where obj.tag == "img" || obj.tag == "video" {
+            rules.append("[data-tim-id=\"\(obj.id)\"]{height:auto !important;align-self:start}")
+        }
         // A hand-tuned mobile layout (data-tim-mobile-layout) is the
         // author's word — synthesis stays out of layout entirely then.
         // Group containers nest their own grids, whose child coordinates

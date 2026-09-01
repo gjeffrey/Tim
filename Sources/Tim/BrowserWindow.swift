@@ -4388,6 +4388,21 @@ struct InspectorControls: View {
                 arrangeButton("Bring to Front", "arrow.up.to.line", "front")
                 Spacer()
             }
+            HStack(spacing: 3) {
+                alignButton("Align Left", "align.horizontal.left", "left")
+                alignButton("Center Horizontally", "align.horizontal.center", "centerX")
+                alignButton("Align Right", "align.horizontal.right", "right")
+                alignButton("Align Top", "align.vertical.top", "top")
+                alignButton("Center Vertically", "align.vertical.center", "centerY")
+                alignButton("Align Bottom", "align.vertical.bottom", "bottom")
+                Spacer()
+            }
+            Text(selectionCount > 1
+                 ? "Aligns the selected objects to each other."
+                 : "Aligns to the page — select several to align them to each other.")
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
             sliderRow("Rotate", $rotation, -180...180, 1, "\(Int(rotation))°", snap: { value in
                 // Slider rotation clicks onto the 45° stops; typed values stay exact.
                 let nearest = (value / 45).rounded() * 45
@@ -4408,6 +4423,19 @@ struct InspectorControls: View {
                     .help("Dissolves the group — its objects return to the page, keeping their places.")
             }
         }
+    }
+
+    private func alignButton(_ help: String, _ symbol: String, _ edge: String) -> some View {
+        Button {
+            tab.align(edge)
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 10))
+                .frame(width: 22, height: 16)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.mini)
+        .help(help)
     }
 
     private func arrangeButton(_ help: String, _ symbol: String, _ action: String) -> some View {
