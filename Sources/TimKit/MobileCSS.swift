@@ -104,6 +104,7 @@ public enum MobileCSS {
         let id: String
         let tag: String
         let rs: Int, cs: Int, re: Int, ce: Int
+        let rotation: Double
     }
 
     /// The desktop layout, read back from the saved page — every object's
@@ -129,7 +130,8 @@ public enum MobileCSS {
                 ce = captureInt(tag, "grid-column-end:\\s*([0-9]+)") ?? 0
             }
             guard rs > 0, re > rs else { continue }
-            out.append(CanvasObject(id: id, tag: String(html[nameRange]).lowercased(), rs: rs, cs: cs, re: re, ce: ce))
+            let rotation = capture(tag, "rotate\\(\\s*(-?[0-9.]+)deg").flatMap(Double.init) ?? 0
+            out.append(CanvasObject(id: id, tag: String(html[nameRange]).lowercased(), rs: rs, cs: cs, re: re, ce: ce, rotation: rotation))
         }
         return out.sorted { ($0.rs, $0.cs) < ($1.rs, $1.cs) }
     }
@@ -151,6 +153,13 @@ public enum MobileCSS {
                 rules.append("[data-tim-id=\"\(obj.id)\"]{margin-top:\(min(gap * 8, 72))px !important}")
             }
             maxReSoFar = max(maxReSoFar, obj.re)
+        }
+
+        // Rotated objects swing past their rows in a vertical stack —
+        // give them the breathing room their tilt actually occupies.
+        for obj in objs where abs(obj.rotation) >= 8 {
+            let swing = min(60, Int((abs(sin(obj.rotation * .pi / 180)) * 140).rounded()))
+            rules.append("[data-tim-id=\"\(obj.id)\"]{margin-top:\(swing)px !important;margin-bottom:\(swing)px !important}")
         }
 
         // Image galleries: consecutive narrow images sharing rows keep
@@ -212,11 +221,14 @@ public enum MobileCSS {
         return out
     }
 
-    /// N px of a 1320px composition is N/13.2 vw of any screen — display
-    /// type keeps its share of the page on a phone. Body sizes (≤28px)
-    /// stay put; a 26px floor keeps headlines readable.
+    /// Display type compresses toward the phone, hierarchy intact: body
+    /// sizes (≤28px) stay put, everything above shrinks by the same
+    /// gentle curve (28 + a quarter of the excess, capped at 48px) — so
+    /// a 96px title lands near 44, a 40px subhead near 31, and their
+    /// ORDER never flattens the way a hard floor did.
     static func scaleRule(px: Double, selector: String) -> String? {
         guard px > 28 else { return nil }
-        return String(format: "%@{font-size:clamp(26px, %.2fvw, %.0fpx) !important}", selector, px / 13.2, px)
+        let mobile = min(48.0, 28 + (px - 28) * 0.24)
+        return String(format: "%@{font-size:%.0fpx !important}", selector, mobile)
     }
 }

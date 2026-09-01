@@ -710,6 +710,27 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           if (!doc.querySelector('[data-tim-id="' + stale + '"]')) { delete mobileLayout[stale]; }
         }
         ensureMobileCoverage();
+        // The line against chaos: entries in the mobile stack must not
+        // sit on top of each other. Anything overlapping an earlier entry
+        // in both axes is pushed below it (side-by-side stays welcome).
+        (function resolveOverlaps() {
+          var entries = Object.keys(mobileLayout).map(function (id) {
+            return { id: id, a: mobileLayout[id] };
+          });
+          entries.sort(function (x, y) { return (x.a[0] - y.a[0]) || (x.a[1] - y.a[1]); });
+          for (var i = 1; i < entries.length; i++) {
+            for (var j = 0; j < i; j++) {
+              var A = entries[j].a, B = entries[i].a;
+              var colsOverlap = B[1] < A[3] && A[1] < B[3];
+              var rowsOverlap = B[0] < A[2] && A[0] < B[2];
+              if (colsOverlap && rowsOverlap) {
+                var shift = A[2] - B[0];
+                B[0] += shift;
+                B[2] += shift;
+              }
+            }
+          }
+        })();
         var css = '@media (max-width: 700px){\\n'
           + '.tim-canvas{grid-template-columns:repeat(8, 1fr) !important;grid-auto-rows:32px !important}\\n';
         for (var id2 in mobileLayout) {

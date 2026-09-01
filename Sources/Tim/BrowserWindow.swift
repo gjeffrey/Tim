@@ -226,7 +226,7 @@ struct UnifiedSidebar: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 4) {
                 ForEach(store.tabs) { t in
                     VerticalTabRow(
                         tab: t,
@@ -241,20 +241,23 @@ struct UnifiedSidebar: View {
                     Label("New Tab", systemImage: "plus")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
-                        .padding(.vertical, 5)
+                        .padding(.vertical, 6)
                         .padding(.horizontal, 8)
                 }
                 .buttonStyle(.plain)
+                .padding(.top, 2)
 
                 if let tab = store.selectedTab {
                     SiteSection(tab: tab)
                         .id(tab.id)
                 }
             }
-            .padding(8)
+            .padding(.horizontal, 14)
+            .padding(.top, 12)
+            .padding(.bottom, 18)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(width: 220)
+        .frame(width: 252)
     }
 }
 
@@ -325,8 +328,8 @@ struct SiteSection: View {
 
     var body: some View {
         if let site {
-            VStack(alignment: .leading, spacing: 10) {
-                Divider().padding(.vertical, 6)
+            VStack(alignment: .leading, spacing: 12) {
+                Divider().padding(.vertical, 10)
                 HStack(spacing: 6) {
                     // The yellow again: this site is yours.
                     Circle()
