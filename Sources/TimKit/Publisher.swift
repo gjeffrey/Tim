@@ -142,6 +142,25 @@ public enum SFTP {
 /// Cloudflare target — deploys a folder with Wrangler. The user
 /// authenticates once with `wrangler login`; Tim never sees credentials.
 public enum CloudflarePublisher {
+    /// One entry: with a Cloudflare token connected, the site deploys over
+    /// the REST API as a Worker with static assets, routed onto the zone
+    /// at the site's own path. Without one, the legacy wrangler CLI path.
+    @discardableResult
+    public static func publish(site: Site, folder: String? = nil) throws -> String {
+        let content = folder ?? site.localProjectPath
+        if CloudflareAPI.token != nil, let originURL = URL(string: site.origin), let host = originURL.host() {
+            let basePath = (originURL.path.isEmpty || originURL.path == "/") ? "" : originURL.path
+            try CloudflareAPI.deployStaticSite(
+                folder: content,
+                host: host,
+                basePath: basePath,
+                script: site.cfScriptName
+            )
+            return "deployed \(site.cfScriptName) → \(host)\(basePath)"
+        }
+        return try deploy(folder: content, projectName: site.cfProjectName)
+    }
+
     public static func deploy(folder: String, projectName: String) throws -> String {
         try ensureWrangler()
         return try Shell.run(

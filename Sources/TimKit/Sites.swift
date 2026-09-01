@@ -73,6 +73,20 @@ public struct Site: Codable, Identifiable, Equatable {
         allowAICrawlers = try c.decodeIfPresent(Bool.self, forKey: .allowAICrawlers) ?? true
     }
 
+    /// The Worker name a Cloudflare-API site deploys as: the custom
+    /// project name when set, else a slug of the origin.
+    public var cfScriptName: String {
+        if !cfProjectName.isEmpty { return cfProjectName }
+        let slug = origin
+            .replacingOccurrences(of: "https://", with: "")
+            .replacingOccurrences(of: "http://", with: "")
+            .lowercased()
+            .map { $0.isLetter || $0.isNumber ? String($0) : "-" }
+            .joined()
+        let trimmed = slug.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return "tim-" + (trimmed.isEmpty ? "site" : String(trimmed.prefix(50)))
+    }
+
     /// Does this URL live under the site's origin?
     public func matches(_ url: URL) -> Bool {
         // file:// origins let you browse and edit a local build (e.g. an

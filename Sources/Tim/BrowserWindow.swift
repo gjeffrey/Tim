@@ -481,7 +481,7 @@ struct SiteSection: View {
                         try FileManager.default.removeItem(atPath: localPath)
                     case .cloudflare:
                         try FileManager.default.removeItem(atPath: localPath)
-                        _ = try CloudflarePublisher.deploy(folder: s.localProjectPath, projectName: s.cfProjectName)
+                        _ = try CloudflarePublisher.publish(site: s, folder: s.localProjectPath)
                     case .githubPages:
                         try FileManager.default.removeItem(atPath: localPath)
                         _ = try GitHubPagesPublisher.publish(repo: s.localProjectPath, message: "Delete \(rel)")
@@ -635,7 +635,7 @@ struct SiteSection: View {
                     let root = s.remoteRoot.hasSuffix("/") ? String(s.remoteRoot.dropLast()) : s.remoteRoot
                     _ = try SFTP.upload(html: html, to: root + rel, host: s.host, username: s.username, port: s.port)
                 case .cloudflare:
-                    _ = try CloudflarePublisher.deploy(folder: s.localProjectPath, projectName: s.cfProjectName)
+                    _ = try CloudflarePublisher.publish(site: s, folder: s.localProjectPath)
                 case .githubPages:
                     _ = try GitHubPagesPublisher.publish(repo: s.localProjectPath, message: "Roll back \(rel)")
                 }
@@ -983,7 +983,7 @@ struct TabContentView: View {
                             let dist = AstroProject.distPath(site.localProjectPath)
                             switch site.target {
                             case .cloudflare:
-                                _ = try CloudflarePublisher.deploy(folder: dist, projectName: site.cfProjectName)
+                                _ = try CloudflarePublisher.publish(site: site, folder: dist)
                             case .githubPages:
                                 _ = try GitHubPagesPublisher.publish(repo: site.localProjectPath, message: "Edit with Tim")
                             case .sftp:
@@ -1066,7 +1066,7 @@ struct TabContentView: View {
                             }
                         }
                     case .cloudflare:
-                        _ = try CloudflarePublisher.deploy(folder: site.localProjectPath, projectName: site.cfProjectName)
+                        _ = try CloudflarePublisher.publish(site: site, folder: site.localProjectPath)
                     case .githubPages:
                         _ = try GitHubPagesPublisher.publish(repo: site.localProjectPath, message: "Edit \(rel) with Tim")
                     }
@@ -1173,7 +1173,7 @@ struct TabContentView: View {
                     let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
                     _ = try SFTP.upload(html: html, to: root + rel, host: site.host, username: site.username, port: site.port)
                 case .cloudflare:
-                    _ = try CloudflarePublisher.deploy(folder: site.localProjectPath, projectName: site.cfProjectName)
+                    _ = try CloudflarePublisher.publish(site: site, folder: site.localProjectPath)
                 case .githubPages:
                     _ = try GitHubPagesPublisher.publish(repo: site.localProjectPath, message: "Roll back \(rel)")
                 }
@@ -1361,7 +1361,7 @@ struct TabContentView: View {
                     let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
                     _ = try SFTP.upload(html: html, to: root + newRel, host: site.host, username: site.username, port: site.port)
                 case .cloudflare:
-                    _ = try CloudflarePublisher.deploy(folder: site.localProjectPath, projectName: site.cfProjectName)
+                    _ = try CloudflarePublisher.publish(site: site, folder: site.localProjectPath)
                 case .githubPages:
                     _ = try GitHubPagesPublisher.publish(repo: site.localProjectPath, message: "Restore version as \(newRel)")
                 }
@@ -1440,7 +1440,7 @@ struct TabContentView: View {
                     let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
                     _ = try SFTP.upload(html: html, to: root + rel, host: site.host, username: site.username, port: site.port)
                 case .cloudflare:
-                    _ = try CloudflarePublisher.deploy(folder: site.localProjectPath, projectName: site.cfProjectName)
+                    _ = try CloudflarePublisher.publish(site: site, folder: site.localProjectPath)
                 case .githubPages:
                     _ = try GitHubPagesPublisher.publish(repo: site.localProjectPath, message: "New page \(rel) with Tim")
                 }
@@ -1543,7 +1543,7 @@ struct TabContentView: View {
                         let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
                         _ = try SFTP.upload(html: html, to: root + newRel, host: site.host, username: site.username, port: site.port)
                     case .cloudflare:
-                        _ = try CloudflarePublisher.deploy(folder: site.localProjectPath, projectName: site.cfProjectName)
+                        _ = try CloudflarePublisher.publish(site: site, folder: site.localProjectPath)
                     case .githubPages:
                         _ = try GitHubPagesPublisher.publish(repo: site.localProjectPath, message: "Duplicate \(rel) as \(newRel)")
                     }
@@ -2150,7 +2150,7 @@ struct EditingToolbar: View {
                 host: site.host, username: site.username, port: site.port
             )
         case .cloudflare:
-            _ = try CloudflarePublisher.deploy(folder: site.localProjectPath, projectName: site.cfProjectName)
+            _ = try CloudflarePublisher.publish(site: site, folder: site.localProjectPath)
         case .githubPages:
             _ = try GitHubPagesPublisher.publish(repo: site.localProjectPath, message: "Add media \(name)")
         }
@@ -2645,9 +2645,7 @@ struct NewPageSheet: View {
                             host: workingSite.host, username: workingSite.username, port: workingSite.port
                         )
                     case .cloudflare:
-                        _ = try CloudflarePublisher.deploy(
-                            folder: workingSite.localProjectPath, projectName: workingSite.cfProjectName
-                        )
+                        _ = try CloudflarePublisher.publish(site: workingSite, folder: workingSite.localProjectPath)
                     case .githubPages:
                         _ = try GitHubPagesPublisher.publish(
                             repo: workingSite.localProjectPath, message: "New page \(rel) with Tim"
@@ -2717,7 +2715,7 @@ struct PublishSheet: View {
         guard let site else { return false }
         switch target {
         case .sftp: return !site.host.isEmpty && !site.username.isEmpty && !site.remoteRoot.isEmpty
-        case .cloudflare: return !site.cfProjectName.isEmpty
+        case .cloudflare: return CloudflareAPI.token != nil || !site.cfProjectName.isEmpty
         case .githubPages: return !site.localProjectPath.isEmpty
         }
     }
@@ -2728,7 +2726,8 @@ struct PublishSheet: View {
         case .sftp:
             return !host.isEmpty && !username.isEmpty && !remotePath.isEmpty
         case .cloudflare:
-            return site?.localProjectPath.isEmpty == false && site?.cfProjectName.isEmpty == false
+            return CloudflareAPI.token != nil
+                || (site?.localProjectPath.isEmpty == false && site?.cfProjectName.isEmpty == false)
         case .githubPages:
             return site?.localProjectPath.isEmpty == false
         }
@@ -2921,10 +2920,7 @@ struct PublishSheet: View {
                 let rel = site.relativePagePath(for: url)
                 work = {
                     try PageWriter.write(html: html, folder: site.localProjectPath, relativePath: rel)
-                    return try CloudflarePublisher.deploy(
-                        folder: site.localProjectPath,
-                        projectName: site.cfProjectName
-                    )
+                    return try CloudflarePublisher.publish(site: site, folder: site.localProjectPath)
                 }
             case .githubPages:
                 guard let site else { isPublishing = false; return }
@@ -2989,7 +2985,7 @@ struct PublishSheet: View {
                         let dist = AstroProject.distPath(site.localProjectPath)
                         switch site.target {
                         case .cloudflare:
-                            _ = try CloudflarePublisher.deploy(folder: dist, projectName: site.cfProjectName)
+                            _ = try CloudflarePublisher.publish(site: site, folder: dist)
                         case .githubPages:
                             _ = try GitHubPagesPublisher.publish(
                                 repo: site.localProjectPath,
@@ -3045,6 +3041,32 @@ struct SiteEditorSheet: View {
     @State private var isVerifying = false
     @State private var verifyResult: String?
     @State private var verifyError: String?
+    @State private var cfConnected = CloudflareAPI.token != nil
+    @State private var cfTokenDraft = ""
+    @State private var cfStatus: String?
+
+    private func connectCloudflare() {
+        let candidate = cfTokenDraft.trimmingCharacters(in: .whitespaces)
+        guard !candidate.isEmpty else { return }
+        cfStatus = "Checking…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let status = try CloudflareAPI.verify(candidate)
+                DispatchQueue.main.async {
+                    if status == "active" {
+                        CloudflareAPI.storeToken(candidate)
+                        cfConnected = true
+                        cfTokenDraft = ""
+                        cfStatus = "Connected — Tim takes it from here."
+                    } else {
+                        cfStatus = "Token is \(status) — check it on the Cloudflare dashboard."
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async { cfStatus = error.localizedDescription }
+            }
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -3099,15 +3121,55 @@ struct SiteEditorSheet: View {
                     }
                 case .cloudflare:
                     GridRow {
-                        Text("Project name")
-                        TextField("my-site", text: $draft.cfProjectName)
+                        Text("Cloudflare")
+                        if cfConnected {
+                            HStack(spacing: 8) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                                Text("Connected")
+                                    .font(.system(size: 12))
+                                Spacer()
+                                Button("Disconnect") {
+                                    CloudflareAPI.storeToken("")
+                                    cfConnected = false
+                                }
+                                .controlSize(.mini)
+                            }
+                        } else {
+                            HStack(spacing: 6) {
+                                SecureField("Paste an API token", text: $cfTokenDraft)
+                                Button("Connect") { connectCloudflare() }
+                                    .disabled(cfTokenDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+                            }
+                        }
+                    }
+                    if !cfConnected {
+                        GridRow {
+                            Text("")
+                            Text("One token, once — Tim handles the rest. Create it at dash.cloudflare.com → My Profile → API Tokens with Workers Scripts: Edit, Workers Routes: Edit, Account Settings: Read, and Zone: Read. It lives in your Keychain and syncs via iCloud Keychain.")
+                                .font(.system(size: 9.5))
+                                .foregroundStyle(.tertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    if let status = cfStatus {
+                        GridRow {
+                            Text("")
+                            Text(status)
+                                .font(.system(size: 10))
+                                .foregroundStyle(status.hasPrefix("Connected") ? Color.green : Color.red)
+                        }
                     }
                     GridRow {
-                        Text("Site folder")
-                        HStack {
-                            TextField("The folder Wrangler deploys", text: $draft.localProjectPath)
-                            Button("Choose…") { chooseFolder() }
-                        }
+                        Text("")
+                        Text("The Address above is where the site lives — any path on a domain in your Cloudflare account (yourdomain.com/anything). Tim creates the Worker, uploads the pages, and wires the route.")
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    GridRow {
+                        Text("Worker name")
+                        TextField("Optional — auto-named from the address", text: $draft.cfProjectName)
                     }
                 case .githubPages:
                     GridRow {
