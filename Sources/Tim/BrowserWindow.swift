@@ -3720,7 +3720,7 @@ struct InspectorControls: View {
             if isMedia {
                 mediaCard
             }
-            if isCanvasObject {
+            if isCanvasObject, (info["label"] as? String) != "Canvas" {
                 arrangeCard
             }
             appearanceCard

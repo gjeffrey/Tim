@@ -222,6 +222,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           for (var q = 0; q < replacing.length; q++) { replacing[q].removeAttribute('data-tim-replace'); }
           var reviewing = clone.querySelectorAll('[data-tim-review]');
           for (var v = 0; v < reviewing.length; v++) { reviewing[v].removeAttribute('data-tim-review'); }
+          // CDN-injected scripts (Cloudflare beacons, Rocket Loader) must
+          // never be saved back — each publish would re-accumulate them.
+          var injected = clone.querySelectorAll('script[src*="cloudflareinsights"], script[src*="cdn-cgi"], script[data-cf-settings], script[data-cf-beacon]');
+          for (var ci = 0; ci < injected.length; ci++) { injected[ci].remove(); }
           var head = clone.querySelector('head');
           if (head && !head.querySelector('meta[name="generator"]')) {
             var gen = document.createElement('meta');
@@ -1670,6 +1674,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       }
       window.__timSetStyle = function (prop, value) {
         if (!sel) { return; }
+        // The canvas is the page's root — rotating or transforming it
+        // tilts the whole page into unreachable space. Never.
+        if (prop === 'transform' && sel.hasAttribute && sel.hasAttribute('data-tim-canvas')) { return; }
         checkpoint('style:' + prop);
         groupAll().forEach(function (member) { member.style[prop] = value; });
         layout();
