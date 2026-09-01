@@ -58,6 +58,7 @@ struct PadSidebar: View {
     @EnvironmentObject var store: BrowserStore
     @EnvironmentObject var siteStore: SiteStore
     @State private var showKeySheet = false
+    @State private var editingSite: Site?
 
     var body: some View {
         List {
@@ -83,27 +84,35 @@ struct PadSidebar: View {
                 }
             }
 
-            if !siteStore.sites.isEmpty {
-                Section("Your Sites") {
-                    ForEach(siteStore.sites) { site in
-                        Button {
-                            store.selectedTab?.navigate(to: site.origin)
-                        } label: {
-                            HStack(spacing: 9) {
-                                Image(systemName: "circle.fill")
-                                    .font(.system(size: 7))
-                                    .foregroundStyle(timYellow)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(site.name.isEmpty ? site.origin : site.name)
-                                        .font(.system(size: 15))
-                                        .foregroundStyle(.primary)
-                                    Text(URL(string: site.origin)?.host() ?? site.origin)
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(.secondary)
-                                }
+            Section("Your Sites") {
+                ForEach(siteStore.sites) { site in
+                    Button {
+                        store.selectedTab?.navigate(to: site.origin)
+                    } label: {
+                        HStack(spacing: 9) {
+                            Image(systemName: "circle.fill")
+                                .font(.system(size: 7))
+                                .foregroundStyle(timYellow)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(site.name.isEmpty ? site.origin : site.name)
+                                    .font(.system(size: 15))
+                                    .foregroundStyle(.primary)
+                                Text(URL(string: site.origin)?.host() ?? site.origin)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
+                    .contextMenu {
+                        Button("Edit Site…") { editingSite = site }
+                    }
+                }
+                Button {
+                    editingSite = Site()
+                } label: {
+                    Label("Add Site…", systemImage: "plus")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -121,6 +130,82 @@ struct PadSidebar: View {
         }
         .listStyle(.sidebar)
         .sheet(isPresented: $showKeySheet) { PadKeySheet() }
+        .sheet(item: $editingSite) { site in PadSiteSheet(site: site) }
+    }
+}
+
+/// Add or edit a site right on the iPad — the same Site record the Mac
+/// keeps, saved locally (and shared once iCloud sync is wired).
+struct PadSiteSheet: View {
+    @EnvironmentObject var siteStore: SiteStore
+    @Environment(\.dismiss) private var dismiss
+    @State var site: Site
+    @State private var status: String?
+    @State private var verifying = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Site") {
+                    TextField("Name", text: $site.name)
+                    TextField("Address (https://example.com/path)", text: $site.origin)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                Section("Server (SFTP)") {
+                    TextField("Host", text: $site.host)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    TextField("Username", text: $site.username)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    TextField("Port", text: $site.port)
+                        .keyboardType(.numberPad)
+                    TextField("Folder on server (/home/…/site)", text: $site.remoteRoot)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                Section {
+                    Button {
+                        verifying = true
+                        status = nil
+                        Task {
+                            do {
+                                try await PadPublisher.verify(site: site)
+                                await MainActor.run { status = "Connected — the key works and the folder is there."; verifying = false }
+                            } catch {
+                                await MainActor.run { status = "Couldn’t connect: \(error.localizedDescription)"; verifying = false }
+                            }
+                        }
+                    } label: {
+                        if verifying { ProgressView().controlSize(.small) } else { Text("Verify Connection") }
+                    }
+                    .disabled(site.host.isEmpty || site.username.isEmpty)
+                    if let status {
+                        Text(status)
+                            .font(.system(size: 12))
+                            .foregroundStyle(status.hasPrefix("Connected") ? Color.green : Color.secondary)
+                    }
+                } footer: {
+                    Text("Connections use this iPad's publishing key — add it to the server first (Publishing Key… in the sidebar).")
+                }
+            }
+            .navigationTitle(site.name.isEmpty ? "Add Site" : site.name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        siteStore.upsert(site)
+                        dismiss()
+                    }
+                    .disabled(site.origin.isEmpty)
+                }
+            }
+        }
     }
 }
 
@@ -227,6 +312,22 @@ struct PadBrowser: View {
                 .disabled(!tab.canGoForward)
 
             addressCapsule
+
+            if !tab.isEditing, matchedSite != nil, tab.lastHTTPStatus == 404 {
+                // Same move as the Mac: type an address on your own site
+                // that doesn't exist yet, and the page is one tap away.
+                Button {
+                    createMissingPage()
+                } label: {
+                    if publishing {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label("Create This Page", systemImage: "plus")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(publishing)
+            }
 
             if tab.isEditing {
                 Button {
@@ -336,6 +437,34 @@ struct PadBrowser: View {
                         publishError = error.localizedDescription
                             + "\n\nIf this is a new iPad, its key may not be on the server yet."
                     }
+                }
+            }
+        }
+    }
+
+    /// A page that doesn't exist yet on your own site: seed it in the
+    /// starter design and publish it straight to its address.
+    private func createMissingPage() {
+        guard let url = pageURL, let site = matchedSite else { return }
+        let rel = site.relativePagePath(for: url)
+        let name = ((rel as NSString).lastPathComponent as NSString).deletingPathExtension
+        let html = LocalPage.html(
+            title: name == "index" ? (site.name.isEmpty ? "Home" : site.name) : name.capitalized,
+            likeSiteAt: nil
+        )
+        publishing = true
+        Task {
+            do {
+                try await PadPublisher.publish(html: html, site: site, pageURL: url)
+                await MainActor.run {
+                    publishing = false
+                    tab.webView.reload()
+                }
+            } catch {
+                await MainActor.run {
+                    publishing = false
+                    publishError = error.localizedDescription
+                        + "\n\nIf this is a new iPad, its key may not be on the server yet — see Publishing Key… in the sidebar."
                 }
             }
         }

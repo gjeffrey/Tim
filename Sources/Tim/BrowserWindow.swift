@@ -1105,6 +1105,7 @@ struct TabContentView: View {
     @State private var previewHTML = ""
     @State private var viewMode: Int = 0  // 0 desktop · 1 both · 2 iPhone
     @FocusState private var addressFocused: Bool
+    @State private var addressEditingText = false
     @AppStorage("tim.cleanAddresses") private var cleanAddresses = true
 
     private var pageURL: URL? { URL(string: tab.urlString) }
@@ -1301,7 +1302,7 @@ struct TabContentView: View {
     private var prettyAddress: (host: String, path: String)? {
         // Safari's manner: the address reads as a name at rest — scheme
         // and www only appear when the field is focused for editing.
-        guard cleanAddresses, !addressFocused,
+        guard cleanAddresses, !addressFocused, !addressEditingText,
               let url = URL(string: tab.urlString),
               let host = url.host()
         else { return nil }
@@ -1324,10 +1325,15 @@ struct TabContentView: View {
                 .help(isPageEditable ? "This page is yours — ⌘E edits it, Done publishes it." : "")
 
             ZStack {
-                TextField("Search or enter address", text: $addressText)
+                // onEditingChanged is the ground truth for "the field has
+                // the keyboard" — @FocusState misses click-to-focus here,
+                // which left typing invisible under the pretty overlay.
+                TextField("Search or enter address", text: $addressText, onEditingChanged: { editing in
+                    addressEditingText = editing
+                })
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
-                    .multilineTextAlignment(addressFocused ? .leading : .center)
+                    .multilineTextAlignment(addressFocused || addressEditingText ? .leading : .center)
                     .foregroundStyle(prettyAddress == nil ? AnyShapeStyle(.primary) : AnyShapeStyle(.clear))
                     .focused($addressFocused)
                     .onSubmit {
