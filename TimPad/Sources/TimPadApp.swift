@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import PhotosUI
 import TimKit
 
 typealias Tab = TimKit.Tab
@@ -255,7 +256,8 @@ struct PadBrowser: View {
     @FocusState private var addressFocused: Bool
     @State private var showInspector = false
     @State private var publishing = false
-    @State private var publishNote: String?
+    @State private var showPhotoPicker = false
+    @State private var photoItem: PhotosPickerItem?
     @State private var publishError: String?
     @State private var showKeySheet = false
 
@@ -315,11 +317,6 @@ struct PadBrowser: View {
         }
         .onChange(of: tab.isEditing) { _, editing in
             showInspector = editing
-        }
-        .alert("Published", isPresented: Binding(get: { publishNote != nil }, set: { _ in publishNote = nil })) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(publishNote ?? "")
         }
         .alert("Couldn’t Publish", isPresented: Binding(get: { publishError != nil }, set: { _ in publishError = nil })) {
             Button("Show Publishing Key…") { showKeySheet = true }
@@ -401,8 +398,17 @@ struct PadBrowser: View {
                 } label: {
                     Label("Text Box", systemImage: "character.textbox")
                 }
+                Button {
+                    showPhotoPicker = true
+                } label: {
+                    Label("Photo…", systemImage: "photo.on.rectangle.angled")
+                }
             } label: {
                 Label("Insert", systemImage: "plus.square.on.square")
+            }
+            .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem, matching: .images)
+            .onChange(of: photoItem) { _, item in
+                if item != nil { insertPhoto(item) }
             }
 
             Menu {
@@ -467,9 +473,14 @@ struct PadBrowser: View {
                     try await PadPublisher.publish(html: finished, site: site, pageURL: url)
                     await MainActor.run {
                         publishing = false
-                        publishNote = "Your page is live."
-                        // The share card follows every publish, same as
-                        // the Mac: offscreen, mobile-bold, per page.
+                        // Published edits leave no draft behind — a stale
+                        // draft made every later reload (view-mode
+                        // switches included) reopen edit mode.
+                        DraftStore.clear(for: url.absoluteString)
+                        // Quiet success, the Mac's manner: the page is
+                        // simply live. Only failures speak up.
+                        // The share card follows every publish: offscreen,
+                        // mobile-bold, per page.
                         PadSocialCards.shared.capture(pageURL: url, site: site, pageHTML: finished)
                     }
                 } catch {
@@ -478,6 +489,54 @@ struct PadBrowser: View {
                         publishError = error.localizedDescription
                             + "\n\nIf this is a new iPad, its key may not be on the server yet."
                     }
+                }
+            }
+        }
+    }
+
+    /// A photo from the library, the Mac media flow at touch size: a
+    /// placeholder appears this instant; the photo is scaled for the web,
+    /// uploaded over the iPad's key, and swapped in when it lands.
+    private func insertPhoto(_ item: PhotosPickerItem?) {
+        guard let item else { return }
+        guard let site = matchedSite, let url = pageURL else { photoItem = nil; return }
+        let placeholderID = UUID().uuidString
+        tab.insertObject(
+            html: "<div class=\"tim-object tim-media-loading\" data-tim-placeholder=\"\(placeholderID)\"><span class=\"tim-media-loading-label\">Adding photo…</span></div>",
+            colSpan: 12, rowSpan: 6
+        )
+        photoItem = nil
+        Task {
+            do {
+                guard let data = try await item.loadTransferable(type: Data.self),
+                      let image = UIImage(data: data) else {
+                    throw PublishError.failed("Couldn’t read that photo.")
+                }
+                // Web-appropriate, no questions asked: longest side 2560.
+                let maxSide: CGFloat = 2560
+                let scale = min(1, maxSide / max(image.size.width, image.size.height))
+                let size = CGSize(width: floor(image.size.width * scale), height: floor(image.size.height * scale))
+                let format = UIGraphicsImageRendererFormat()
+                format.scale = 1
+                let scaled = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+                    image.draw(in: CGRect(origin: .zero, size: size))
+                }
+                guard let jpeg = scaled.jpegData(compressionQuality: 0.85) else {
+                    throw PublishError.failed("Couldn’t prepare that photo.")
+                }
+                let name = "photo-\(Int(Date().timeIntervalSince1970)).jpg"
+                let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
+                try await PadPublisher.upload(data: jpeg, site: site, remotePath: root + "/media/" + name)
+                let rel = site.relativePagePath(for: url)
+                let depth = max(0, rel.split(separator: "/").count - 1)
+                let src = String(repeating: "../", count: depth) + "media/" + name
+                await MainActor.run {
+                    tab.resolvePlaceholder(id: placeholderID, html: "<img class=\"tim-object\" src=\"\(src)\" alt=\"\">")
+                }
+            } catch {
+                await MainActor.run {
+                    tab.failPlaceholder(id: placeholderID, message: "Couldn’t add the photo")
+                    publishError = error.localizedDescription
                 }
             }
         }

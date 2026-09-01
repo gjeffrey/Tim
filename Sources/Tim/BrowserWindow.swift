@@ -254,15 +254,17 @@ struct ActivityIndicator: View {
         Button {
             showList.toggle()
         } label: {
-            Group {
-                if center.activities.isEmpty {
-                    Image(systemName: "arrow.up.circle")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.75)
-                }
+            // Both states always exist; only opacity changes. A structural
+            // swap here rebuilds the toolbar and steals focus from the
+            // address field mid-keystroke.
+            ZStack {
+                Image(systemName: "arrow.up.circle")
+                    .foregroundStyle(.secondary)
+                    .opacity(center.activities.isEmpty ? 1 : 0)
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.75)
+                    .opacity(center.activities.isEmpty ? 0 : 1)
             }
             .frame(width: 24, height: 22)
             .contentShape(Rectangle())
@@ -1193,7 +1195,9 @@ struct TabContentView: View {
             }
         }
         .onChange(of: tab.urlString) { _, newValue in
-            if !addressFocused { addressText = newValue }
+            // addressEditingText is the reliable focus signal — a page
+            // finishing its load mid-keystroke must never clobber typing.
+            if !addressFocused && !addressEditingText { addressText = newValue }
             previewSha = nil
         }
         // The inspector is a system inspector column: glass, resizable,
@@ -1380,38 +1384,29 @@ struct TabContentView: View {
             }
             .frame(maxWidth: .infinity)
 
-            // Contextual page actions live IN the field, Safari's way —
-            // they come and go inside the capsule without moving a single
-            // toolbar item. Create a missing page on your site; claim a
-            // page that isn't yours.
-            if matchedSite != nil, tab.lastHTTPStatus == 404, !tab.isEditing {
-                Button {
-                    createMissingPage()
-                } label: {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.system(size: 13, weight: .medium))
-                        .symbolRenderingMode(.palette)
-                        .foregroundStyle(Color.black, AnyShapeStyle(timYellow))
-                        .frame(width: 18, height: 18)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .help("This page doesn't exist on your site yet — create and publish it at this address.")
-            } else if matchedSite == nil, !siteStore.sites.isEmpty, !tab.isEditing,
-                      let claimURL = tab.webView.url, claimURL.scheme?.hasPrefix("http") == true {
-                Button {
-                    showImportSheet = true
-                } label: {
-                    Image(systemName: "arrow.down.circle.fill")
-                        .font(.system(size: 13, weight: .medium))
-                        .symbolRenderingMode(.palette)
-                        .foregroundStyle(Color.black, AnyShapeStyle(timYellow))
-                        .frame(width: 18, height: 18)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .help("Make It Mine — copy this page, with its images, styles, and fonts, onto your own site, ready to edit.")
+            // Contextual page actions live IN the field, Safari's way.
+            // One button, always in the layout, shown by opacity — a
+            // structural appearance here would rebuild the field and
+            // steal focus mid-keystroke.
+            let canCreate = matchedSite != nil && tab.lastHTTPStatus == 404 && !tab.isEditing
+            let canClaim = matchedSite == nil && !siteStore.sites.isEmpty && !tab.isEditing
+                && (tab.webView.url?.scheme?.hasPrefix("http") ?? false)
+            Button {
+                if canCreate { createMissingPage() } else if canClaim { showImportSheet = true }
+            } label: {
+                Image(systemName: canCreate ? "plus.circle.fill" : "arrow.down.circle.fill")
+                    .font(.system(size: 13, weight: .medium))
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(Color.black, AnyShapeStyle(timYellow))
+                    .frame(width: 18, height: 18)
+                    .contentShape(Circle())
             }
+            .buttonStyle(.plain)
+            .opacity(canCreate || canClaim ? 1 : 0)
+            .allowsHitTesting(canCreate || canClaim)
+            .help(canCreate
+                  ? "This page doesn't exist on your site yet — create and publish it at this address."
+                  : "Make It Mine — copy this page, with its images, styles, and fonts, onto your own site, ready to edit.")
 
             Button {
                 if tab.isLoading { tab.webView.stopLoading() } else { tab.webView.reload() }

@@ -84,6 +84,30 @@ public enum PageImporter {
             out = out.replacingOccurrences(of: escapedForHTML(raw), with: rel)
             out = out.replacingOccurrences(of: raw, with: rel)
         }
+        // url(...) references written INTO the page itself — inline
+        // <style> blocks and style="" attributes (backgrounds, mostly)
+        // — resolved against the page and localized like everything else.
+        if let regex = try? NSRegularExpression(pattern: "url\\(\\s*['\"]?([^'\")\\s]+)['\"]?\\s*\\)") {
+            var seen = Set<String>()
+            let snapshot = out
+            for match in regex.matches(in: snapshot, range: NSRange(snapshot.startIndex..., in: snapshot)) {
+                guard match.numberOfRanges > 1, let range = Range(match.range(at: 1), in: snapshot) else { continue }
+                let ref = String(snapshot[range])
+                guard !ref.hasPrefix("data:"), !ref.hasPrefix("#"), !ref.hasPrefix("assets/"),
+                      !seen.contains(ref) else { continue }
+                seen.insert(ref)
+                let clean = ref.replacingOccurrences(of: "&amp;", with: "&")
+                guard let refURL = URL(string: clean, relativeTo: pageURL)?.absoluteURL,
+                      refURL.scheme?.hasPrefix("http") == true else { continue }
+                let name = assetName(for: refURL)
+                if !assets.contains(where: { $0.name == name }) {
+                    guard let (data, response) = try? await session.data(from: refURL), !data.isEmpty else { continue }
+                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { continue }
+                    assets.append((name, data))
+                }
+                out = out.replacingOccurrences(of: ref, with: "assets/\(name)")
+            }
+        }
         // The generator meta is what lights the pencil up: this copy is
         // Tim's to edit now (text, media, links, metadata).
         if out.range(of: "meta name=\"generator\"") == nil, let head = out.range(of: "</head>") {
