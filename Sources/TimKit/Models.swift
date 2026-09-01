@@ -1237,10 +1237,12 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         layout();
       }
 
+      var lastDragMoved = false;
       function onUp() {
         if (!drag) { return; }
         var canvas = drag.canvas;
         var moved = drag.moved;
+        lastDragMoved = !!moved;
         var wasRotate = drag.mode === 'rotate';
         drag = null;
         hideGrid();
@@ -1263,6 +1265,14 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           if (link) { e.preventDefault(); }
           return;
         }
+        // Demo pages set __timDemoLinks: a clean click on a link navigates
+        // like a normal page (the Download button must download); only
+        // drags, double-clicks, and non-link clicks reveal the editor.
+        if (window.__timDemoLinks && !lastDragMoved) {
+          var throughLink = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+          if (throughLink) { stopTextEditing(); return; }
+        }
+        lastDragMoved = false;
         e.preventDefault(); e.stopPropagation();
         var obj = e.target && e.target.closest ? e.target.closest('.tim-object') : null;
         obj = selectionTarget(obj);

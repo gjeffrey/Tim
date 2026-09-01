@@ -605,10 +605,12 @@
         layout();
       }
 
+      var lastDragMoved = false;
       function onUp() {
         if (!drag) { return; }
         var canvas = drag.canvas;
         var moved = drag.moved;
+        lastDragMoved = !!moved;
         var wasRotate = drag.mode === 'rotate';
         drag = null;
         hideGrid();
@@ -631,6 +633,14 @@
           if (link) { e.preventDefault(); }
           return;
         }
+        // Demo pages set __timDemoLinks: a clean click on a link navigates
+        // like a normal page (the Download button must download); only
+        // drags, double-clicks, and non-link clicks reveal the editor.
+        if (window.__timDemoLinks && !lastDragMoved) {
+          var throughLink = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+          if (throughLink) { stopTextEditing(); return; }
+        }
+        lastDragMoved = false;
         e.preventDefault(); e.stopPropagation();
         var obj = e.target && e.target.closest ? e.target.closest('.tim-object') : null;
         obj = selectionTarget(obj);
@@ -1704,57 +1714,50 @@
         doc.documentElement.classList.remove('tim-editing');
       };
     })();
-// The demo harness: a yellow pill that turns the page into the real Tim
-// canvas — the same engine the app injects, running in your browser.
-// Nothing saves; it's your copy to play with.
+// The easter egg: the page IS the editor, always. Links click like any
+// page — but drag something, or double-click text, and it's alive.
+// Nothing saves; every visitor edits their own copy.
 (function () {
   if (window.innerWidth <= 700) { return; }
-  var pill = document.createElement('button');
-  pill.id = '__tim-demo-pill';
-  pill.setAttribute('data-tim-demo', '');
-  pill.textContent = 'Try the editor';
-  pill.style.cssText = 'position:fixed;right:22px;bottom:22px;z-index:2147483200;' +
-    'background:#FEED00;color:#111;font:600 14px -apple-system,BlinkMacSystemFont,sans-serif;' +
-    'padding:13px 22px;border-radius:999px;border:none;cursor:pointer;' +
-    'box-shadow:0 10px 30px rgba(0,0,0,0.45);transition:transform 0.15s ease;';
-  pill.onmouseenter = function () { pill.style.transform = 'scale(1.04)'; };
-  pill.onmouseleave = function () { pill.style.transform = ''; };
+  window.__timDemoLinks = true;
+  function begin() {
+    if (window.__timCanvasOn) { window.__timCanvasOn(); }
+  }
+  if (document.readyState === 'complete') { begin(); }
+  else { window.addEventListener('load', begin); }
 
   var bar = document.createElement('div');
   bar.id = '__tim-demo-bar';
   bar.setAttribute('data-tim-demo', '');
-  bar.style.cssText = 'position:fixed;right:22px;bottom:22px;z-index:2147483200;display:none;' +
-    'gap:10px;align-items:center;background:#111;color:#ddd;' +
+  bar.style.cssText = 'position:fixed;left:50%;bottom:22px;transform:translate(-50%, 80px);z-index:2147483200;' +
+    'display:flex;gap:10px;align-items:center;background:#111;color:#ddd;' +
     'font:500 12.5px -apple-system,BlinkMacSystemFont,sans-serif;padding:10px 14px;' +
-    'border-radius:999px;box-shadow:0 10px 30px rgba(0,0,0,0.45);';
+    'border-radius:999px;box-shadow:0 10px 30px rgba(0,0,0,0.45);' +
+    'transition:transform 0.35s cubic-bezier(0.2, 0.9, 0.3, 1);';
   var hint = document.createElement('span');
-  hint.textContent = 'Drag anything. Double-click text. ⌘Z undoes. Nothing saves.';
-  hint.style.cssText = 'color:#999;margin-right:2px;';
+  hint.textContent = 'You found it — this page is running Tim’s editor. Nothing saves.';
+  hint.style.cssText = 'color:#bbb;';
   function demoButton(label, handler) {
     var b = document.createElement('button');
     b.textContent = label;
     b.style.cssText = 'background:rgba(255,255,255,0.12);color:#eee;border:none;' +
       'border-radius:999px;padding:6px 12px;font:600 12px -apple-system,sans-serif;cursor:pointer;';
-    b.onclick = handler;
+    b.onclick = function (e) { e.stopPropagation(); handler(); };
     return b;
   }
   bar.appendChild(hint);
   bar.appendChild(demoButton('Undo', function () { window.__timUndo && window.__timUndo(); }));
   bar.appendChild(demoButton('Reset', function () { location.reload(); }));
-  var done = demoButton('Done', function () {
-    window.__timCanvasOff && window.__timCanvasOff();
-    bar.style.display = 'none';
-    pill.style.display = 'block';
-  });
-  done.style.background = '#FEED00';
-  done.style.color = '#111';
-  bar.appendChild(done);
-
-  pill.onclick = function () {
-    window.__timCanvasOn && window.__timCanvasOn();
-    pill.style.display = 'none';
-    bar.style.display = 'flex';
-  };
-  document.body.appendChild(pill);
   document.body.appendChild(bar);
+
+  // The bar stays hidden until the visitor actually touches the canvas.
+  var revealed = false;
+  document.addEventListener('pointerdown', function (e) {
+    if (revealed) { return; }
+    var obj = e.target && e.target.closest ? e.target.closest('.tim-object') : null;
+    if (!obj) { return; }
+    if (e.target.closest && e.target.closest('a[href]')) { return; }
+    revealed = true;
+    bar.style.transform = 'translate(-50%, 0)';
+  }, true);
 })();
