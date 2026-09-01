@@ -48,6 +48,74 @@ func parseLinearGradient(_ value: String) -> (angle: Double, start: String, end:
     return (angle, String(value[s]), String(value[e]))
 }
 
+/// Mobile thumbnails, made offscreen: a hidden iPhone-sized web view
+/// loads pages one at a time and snapshots them, so the sidebar can
+/// show every page's phone rendition without ever touching your tab.
+final class MobileThumbs: NSObject, WKNavigationDelegate {
+    static let shared = MobileThumbs()
+
+    private var queue: [String] = []
+    private var busy = false
+    private var current: String?
+    private lazy var webView: WKWebView = {
+        let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 390, height: 844))
+        view.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1"
+        view.navigationDelegate = self
+        return view
+    }()
+
+    static func key(_ url: String) -> String { "mobile:" + url }
+
+    /// Queues a capture; refreshOnly skips URLs that already have one.
+    func capture(_ url: String, onlyIfMissing: Bool = false) {
+        DispatchQueue.main.async {
+            if onlyIfMissing, ThumbnailStore.image(for: Self.key(url)) != nil { return }
+            guard !self.queue.contains(url), self.current != url, URL(string: url) != nil else { return }
+            self.queue.append(url)
+            self.pump()
+        }
+    }
+
+    private func pump() {
+        guard !busy, !queue.isEmpty else { return }
+        busy = true
+        current = queue.removeFirst()
+        webView.load(URLRequest(url: URL(string: current!)!))
+        // Failsafe: a page that never finishes shouldn't stall the queue —
+        // but only time out THIS load, never a successor.
+        let started = current
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+            guard let self, self.busy, self.current == started else { return }
+            self.finish()
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self, let url = self.current else { return }
+            let config = WKSnapshotConfiguration()
+            config.snapshotWidth = 160
+            self.webView.takeSnapshot(with: config) { image, _ in
+                if let image {
+                    ThumbnailStore.save(image, for: Self.key(url))
+                    NotificationCenter.default.post(name: .timThumbsUpdated, object: nil)
+                }
+                self.finish()
+            }
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { finish() }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { finish() }
+
+    private func finish() {
+        guard busy else { return }
+        busy = false
+        current = nil
+        pump()
+    }
+}
+
 /// Everything Tim does behind your back — publishing, uploads, mirror
 /// downloads, share cards — registers here, and the toolbar shows a
 /// spinner you can click to see exactly what's in flight.
@@ -260,44 +328,26 @@ struct SiteSection: View {
                     .id(thumbTick)
 
                 ForEach(pages) { page in
-                    Button {
-                        // Navigating away mid-edit is safe: the session is
-                        // stashed as a draft and resumes on return.
-                        tab.navigate(to: site.origin + page.href)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Group {
-                                if let thumb = ThumbnailStore.image(for: site.origin + page.href) {
-                                    Image(nsImage: thumb).resizable().aspectRatio(contentMode: .fill)
-                                } else {
-                                    ZStack {
-                                        Rectangle().fill(Color.primary.opacity(0.05))
-                                        Image(systemName: "doc.text").foregroundStyle(.tertiary)
-                                    }
-                                }
-                            }
-                            .frame(height: 100)
-                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .stroke(page.href == currentRel ? Color.accentColor : Color.primary.opacity(0.12),
-                                            lineWidth: page.href == currentRel ? 2 : 1)
-                            )
-                            HStack(spacing: 5) {
-                                Text(page.label)
-                                    .font(.system(size: 11.5, weight: page.href == currentRel ? .semibold : .regular))
-                                    .lineLimit(1)
-                                if DraftStore.has(site.origin + page.href) {
-                                    Circle()
-                                        .fill(Color.orange)
-                                        .frame(width: 6, height: 6)
-                                        .help("Unsaved changes — open the page to keep editing; Done publishes them.")
-                                }
+                    VStack(alignment: .leading, spacing: 4) {
+                        // Two renditions, side by side — each is a door
+                        // into that page in that mode.
+                        HStack(spacing: 6) {
+                            pageThumb(page, mobile: false)
+                            pageThumb(page, mobile: true)
+                        }
+                        HStack(spacing: 5) {
+                            Text(page.label)
+                                .font(.system(size: 11.5, weight: page.href == currentRel ? .semibold : .regular))
+                                .lineLimit(1)
+                            if DraftStore.has(site.origin + page.href) {
+                                Circle()
+                                    .fill(Color.orange)
+                                    .frame(width: 6, height: 6)
+                                    .help("Unsaved changes — open the page to keep editing; Done publishes them.")
                             }
                         }
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
                     .contextMenu {
                         if site.target == .sftp {
                             Button("Hide Page") { hidePage(page) }
@@ -420,6 +470,42 @@ struct SiteSection: View {
         }
     }
 
+    /// One page, one device: the desktop or phone rendition, and a click
+    /// takes you into that page IN that mode.
+    private func pageThumb(_ page: LinkOption, mobile: Bool) -> some View {
+        let fullURL = site.map { $0.origin + page.href } ?? page.href
+        let key = mobile ? MobileThumbs.key(fullURL) : fullURL
+        let isCurrent = page.href == currentRel && tab.isMobilePreview == mobile
+        return Button {
+            if tab.isMobilePreview != mobile { tab.setMobilePreview(mobile) }
+            if page.href != currentRel { tab.navigate(to: fullURL) }
+        } label: {
+            Group {
+                if let thumb = ThumbnailStore.image(for: key) {
+                    Image(nsImage: thumb).resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    ZStack {
+                        Rectangle().fill(Color.primary.opacity(0.05))
+                        Image(systemName: mobile ? "iphone" : "desktopcomputer")
+                            .font(.system(size: mobile ? 12 : 16))
+                            .foregroundStyle(.quaternary)
+                    }
+                }
+            }
+            .frame(maxWidth: mobile ? 46 : .infinity)
+            .frame(height: 100)
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(isCurrent ? Color.accentColor : Color.primary.opacity(0.12),
+                            lineWidth: isCurrent ? 2 : 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(mobile ? "\(page.label) on iPhone" : "\(page.label) on desktop")
+    }
+
     private func refresh() {
         guard let site else { pages = []; versions = []; return }
         let rel = currentRel
@@ -437,6 +523,10 @@ struct SiteSection: View {
                 pages = loadedPages
                 hiddenPages = loadedHidden
                 versions = loadedVersions
+                // Backfill phone renditions for pages that lack one.
+                for page in loadedPages {
+                    MobileThumbs.shared.capture(site.origin + page.href, onlyIfMissing: true)
+                }
             }
         }
     }
@@ -1274,6 +1364,7 @@ struct TabContentView: View {
             tab.webView.takeSnapshot(with: config) { image, _ in
                 if let image {
                     ThumbnailStore.save(image, for: url.absoluteString)
+                    MobileThumbs.shared.capture(url.absoluteString)
                     NotificationCenter.default.post(name: .timThumbsUpdated, object: nil)
                     // Pair this thumbnail with the commit it documents (the
                     // snapshot lands in the background; give it a beat).
