@@ -831,10 +831,12 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       groupBox.style.cssText = 'position:absolute;pointer-events:none;';
       overlay.appendChild(gridBox); overlay.appendChild(hoverBox); overlay.appendChild(box); overlay.appendChild(badge); overlay.appendChild(groupBox);
       var handles = {};
-      ['w', 'e', 's', 'se'].forEach(function (k) {
+      ['w', 'e', 'n', 's', 'nw', 'ne', 'sw', 'se'].forEach(function (k) {
         var h = doc.createElement('div');
         h.style.cssText = 'position:absolute;width:9px;height:9px;background:#fff;border:1.5px solid #0a84ff;border-radius:50%;pointer-events:auto;display:none;';
-        h.style.cursor = (k === 'w' || k === 'e') ? 'ew-resize' : (k === 's' ? 'ns-resize' : 'nwse-resize');
+        h.style.cursor = (k === 'w' || k === 'e') ? 'ew-resize'
+          : (k === 'n' || k === 's') ? 'ns-resize'
+          : (k === 'ne' || k === 'sw') ? 'nesw-resize' : 'nwse-resize';
         h.setAttribute('data-tim-handle', k);
         overlay.appendChild(h); handles[k] = h;
       });
@@ -1012,7 +1014,11 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           }
           place(handles.w, -w0 / 2, 0);
           place(handles.e, w0 / 2, 0);
+          place(handles.n, 0, -h0 / 2);
           place(handles.s, 0, h0 / 2);
+          place(handles.nw, -w0 / 2, -h0 / 2);
+          place(handles.ne, w0 / 2, -h0 / 2);
+          place(handles.sw, -w0 / 2, h0 / 2);
           place(handles.se, w0 / 2, h0 / 2);
         }
         layoutGroup();
@@ -1106,8 +1112,16 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         } else if (drag.mode === 'w') {
           var ncs = Math.max(1, Math.min(p.ce - 1, p.cs + dc));
           setArea(sel, p.rs, ncs, p.re, p.ce);
+        } else if (drag.mode === 'n') {
+          setArea(sel, Math.max(1, Math.min(p.re - 1, p.rs + dr)), p.cs, p.re, p.ce);
         } else if (drag.mode === 's') {
           setArea(sel, p.rs, p.cs, Math.max(p.rs + 1, p.re + dr), p.ce);
+        } else if (drag.mode === 'nw') {
+          setArea(sel, Math.max(1, Math.min(p.re - 1, p.rs + dr)), Math.max(1, Math.min(p.ce - 1, p.cs + dc)), p.re, p.ce);
+        } else if (drag.mode === 'ne') {
+          setArea(sel, Math.max(1, Math.min(p.re - 1, p.rs + dr)), p.cs, p.re, Math.max(p.cs + 1, Math.min(colCount() + 1, p.ce + dc)));
+        } else if (drag.mode === 'sw') {
+          setArea(sel, p.rs, Math.max(1, Math.min(p.ce - 1, p.cs + dc)), Math.max(p.rs + 1, p.re + dr), p.ce);
         } else if (drag.mode === 'se') {
           setArea(sel, p.rs, p.cs, Math.max(p.rs + 1, p.re + dr), Math.max(p.cs + 1, Math.min(colCount() + 1, p.ce + dc)));
         }
