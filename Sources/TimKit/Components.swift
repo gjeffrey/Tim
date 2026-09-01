@@ -138,6 +138,53 @@ public enum PageComponents {
         return changed
     }
 
+    /// Site icons: the favicon and app icon are site-level by default —
+    /// stored in the manifest, stamped onto every page on Done. A page
+    /// that claimed its own (body[data-tim-own-icons]) is passed by.
+    public enum PageIcons {
+        public static func stampAll(in folder: String, favicon: String, touchIcon: String, excludingRel: String?) -> [String] {
+            guard !favicon.isEmpty || !touchIcon.isEmpty,
+                  let subpaths = try? FileManager.default.subpathsOfDirectory(atPath: folder)
+            else { return [] }
+            var changed: [String] = []
+            for rel in subpaths {
+                guard rel.hasSuffix(".html"), !rel.hasPrefix("components/"),
+                      !rel.hasPrefix("_h/"), !rel.hasPrefix("_hidden/"),
+                      !rel.contains(".git"), !rel.contains("node_modules"),
+                      rel != excludingRel
+                else { continue }
+                let path = (folder as NSString).appendingPathComponent(rel)
+                guard var html = try? String(contentsOfFile: path, encoding: .utf8),
+                      !html.contains("data-tim-own-icons"),
+                      html.contains("</head>")
+                else { continue }
+                // Hrefs are page-depth-relative so they hold under any base path.
+                let depth = max(0, rel.split(separator: "/").count - 1)
+                let prefix = String(repeating: "../", count: depth)
+                var pageChanged = false
+                if !favicon.isEmpty { pageChanged = upsertLink(&html, rel: "icon", href: prefix + favicon) || pageChanged }
+                if !touchIcon.isEmpty { pageChanged = upsertLink(&html, rel: "apple-touch-icon", href: prefix + touchIcon) || pageChanged }
+                if pageChanged {
+                    try? html.write(toFile: path, atomically: true, encoding: .utf8)
+                    changed.append(rel)
+                }
+            }
+            return changed
+        }
+
+        static func upsertLink(_ html: inout String, rel: String, href: String) -> Bool {
+            let tag = "<link rel=\"\(rel)\" href=\"\(href)\">"
+            if let range = html.range(of: "<link[^>]*rel=\"\(rel)\"[^>]*>", options: .regularExpression) {
+                if html[range] == tag { return false }
+                html.replaceSubrange(range, with: tag)
+                return true
+            }
+            guard let head = html.range(of: "</head>") else { return false }
+            html.insert(contentsOf: tag + "\n", at: head.lowerBound)
+            return true
+        }
+    }
+
     /// Re-stamps every page in the mirror with current component content.
     /// Returns the site-relative paths of pages that changed.
     public static func restampAll(in folder: String, excludingRel: String?) -> [String] {

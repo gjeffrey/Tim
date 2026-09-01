@@ -851,6 +851,14 @@ struct TabContentView: View {
                     if manifest.noteFonts(SiteFonts.families(inPageHTML: html)) {
                         manifestJSON = manifest.save(toMirror: site.localProjectPath)
                     }
+                    // Site icons reach every page (except those keeping
+                    // their own) the same way components do — on Done.
+                    let iconStamped = PageComponents.PageIcons.stampAll(
+                        in: site.localProjectPath,
+                        favicon: manifest.siteFavicon, touchIcon: manifest.siteTouchIcon,
+                        excludingRel: String(rel.dropFirst())
+                    )
+                    restamped = Array(Set(restamped + iconStamped))
                     switch site.target {
                     case .sftp:
                         let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
@@ -3770,6 +3778,7 @@ struct PageOptionsControls: View {
     @State private var favicon: String
     @State private var touchIcon: String
     @State private var showIconMaker = false
+    @State private var iconPageOnly: Bool
     @State private var hideFromSearch: Bool
     @State private var makerRecipe: IconRecipe?
     @State private var makerImage: NSImage?
@@ -3793,6 +3802,7 @@ struct PageOptionsControls: View {
         _ogImage = State(initialValue: info["ogImage"] as? String ?? "")
         _favicon = State(initialValue: info["favicon"] as? String ?? "")
         _touchIcon = State(initialValue: info["touchIcon"] as? String ?? "")
+        _iconPageOnly = State(initialValue: (info["ownIcons"] as? Int) == 1)
         _hideFromSearch = State(initialValue: (info["robotsMeta"] as? String ?? "").contains("noindex"))
     }
 
@@ -3995,10 +4005,20 @@ struct PageOptionsControls: View {
                     }
                     Spacer()
                 }
-                Text("Dock and Home Screen use the app icon; tabs and bookmarks use the favicon.")
+                Text(iconPageOnly
+                     ? "Dock and Home Screen use the app icon; tabs and bookmarks use the favicon. These apply to this page alone."
+                     : "Dock and Home Screen use the app icon; tabs and bookmarks use the favicon. Set once here, every page on the site gets them on Done.")
                     .font(.system(size: 9))
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
+                if currentSite != nil {
+                    Toggle("This page keeps its own icons", isOn: $iconPageOnly)
+                        .font(.system(size: 10))
+                        .onChange(of: iconPageOnly) { _, on in
+                            tab.setPageMeta("ownIcons", on ? "1" : "")
+                        }
+                        .help("On: icons set here stay on this page. Off: this page follows the site's icons.")
+                }
                 Toggle("Hide this page from search engines", isOn: $hideFromSearch)
                     .font(.system(size: 11))
                     .onChange(of: hideFromSearch) { _, on in
@@ -4061,8 +4081,10 @@ struct PageOptionsControls: View {
     private func prepareIconMaker() {
         if let s = currentSite, let url = tab.webView.url {
             SiteManifest.refreshIfStale(site: s)
-            let rel = s.relativePagePath(for: url)
-            makerRecipe = SiteManifest.load(fromMirror: s.localProjectPath).iconRecipes[rel]
+            let recipes = SiteManifest.load(fromMirror: s.localProjectPath).iconRecipes
+            makerRecipe = iconPageOnly
+                ? recipes[s.relativePagePath(for: url)]
+                : (recipes["site"] ?? recipes[s.relativePagePath(for: url)])
         } else if let url = tab.webView.url,
                   let data = UserDefaults.standard.data(forKey: "tim.iconRecipe." + url.absoluteString),
                   let recipe = try? JSONDecoder().decode(IconRecipe.self, from: data) {
@@ -4088,7 +4110,9 @@ struct PageOptionsControls: View {
 
     private func persistIconRecipe(_ recipe: IconRecipe) {
         if let s = currentSite, let url = tab.webView.url, !s.localProjectPath.isEmpty {
-            let rel = s.relativePagePath(for: url)
+            // Site icons keep one shared recipe; a page with its own icons
+            // keeps its own.
+            let rel = iconPageOnly ? s.relativePagePath(for: url) : "site"
             var manifest = SiteManifest.load(fromMirror: s.localProjectPath)
             manifest.iconRecipes[rel] = recipe
             manifest.iconRecipesUpdated = Date()
@@ -4210,6 +4234,22 @@ struct PageOptionsControls: View {
                         case "favicon": favicon = value
                         case "touchIcon": touchIcon = value
                         default: break
+                        }
+                    }
+                    // Icons are site-level unless this page keeps its own:
+                    // record them in the manifest so Done stamps every page.
+                    if !iconPageOnly, let s = resolvedSite,
+                       kinds.contains(where: { $0 == "favicon" || $0 == "touchIcon" }) {
+                        var manifest = SiteManifest.load(fromMirror: s.localProjectPath)
+                        if kinds.contains("favicon") { manifest.siteFavicon = staged }
+                        if kinds.contains("touchIcon") { manifest.siteTouchIcon = staged }
+                        manifest.iconsUpdated = Date()
+                        let json = manifest.save(toMirror: s.localProjectPath)
+                        if s.target == .sftp, let json {
+                            DispatchQueue.global(qos: .utility).async {
+                                let root = s.remoteRoot.hasSuffix("/") ? String(s.remoteRoot.dropLast()) : s.remoteRoot
+                                _ = try? SFTP.upload(html: json, to: root + "/tim.json", host: s.host, username: s.username, port: s.port)
+                            }
                         }
                     }
                 }

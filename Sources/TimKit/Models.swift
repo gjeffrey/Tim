@@ -1030,44 +1030,57 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       // editing folds the whole session into one canvas step.
       var undoStack = [], redoStack = [], lastCkptTag = '', lastCkptTime = 0;
       function canvasEl() { return doc.querySelector('[data-tim-canvas]'); }
-      function checkpoint(tag) {
+      // Snapshots carry the canvas AND the visible page options (the
+      // template rules), so undo covers background/color/layout changes
+      // the Keynote way. Invisible metadata stays out — text fields give
+      // it field-level undo while editing, and that's where it ends.
+      function takeSnapshot() {
         var c = canvasEl();
-        if (!c) { return; }
+        if (!c) { return null; }
+        return { c: c.innerHTML, p: JSON.stringify(templateProps) };
+      }
+      function sameSnapshot(a, b) { return !!a && !!b && a.c === b.c && a.p === b.p; }
+      function checkpoint(tag) {
+        var snap = takeSnapshot();
+        if (!snap) { return; }
         var now = Date.now();
         if (tag && tag === lastCkptTag && now - lastCkptTime < 900) { lastCkptTime = now; return; }
         lastCkptTag = tag || '';
         lastCkptTime = now;
-        var html = c.innerHTML;
-        if (undoStack.length && undoStack[undoStack.length - 1] === html) { return; }
-        undoStack.push(html);
+        if (undoStack.length && sameSnapshot(undoStack[undoStack.length - 1], snap)) { return; }
+        undoStack.push(snap);
         if (undoStack.length > 60) { undoStack.shift(); }
         redoStack.length = 0;
       }
-      function restoreCanvas(html) {
+      function restoreSnapshot(snap) {
         var c = canvasEl();
-        if (!c) { return; }
+        if (!c || !snap) { return; }
         stopTextEditing();
         clearGroup();
         sel = null;
         hide();
         lastCkptTag = '';
-        c.innerHTML = html;
+        c.innerHTML = snap.c;
+        try { templateProps = JSON.parse(snap.p) || {}; } catch (e) { templateProps = {}; }
+        writeTemplates();
         layout();
         notifySel(true);
       }
       window.__timUndo = function () {
         if (editingEl) { doc.execCommand('undo'); return; }
-        var c = canvasEl();
-        if (!c || !undoStack.length) { return; }
-        redoStack.push(c.innerHTML);
-        restoreCanvas(undoStack.pop());
+        if (!undoStack.length) { return; }
+        var now = takeSnapshot();
+        if (!now) { return; }
+        redoStack.push(now);
+        restoreSnapshot(undoStack.pop());
       };
       window.__timRedo = function () {
         if (editingEl) { doc.execCommand('redo'); return; }
-        var c = canvasEl();
-        if (!c || !redoStack.length) { return; }
-        undoStack.push(c.innerHTML);
-        restoreCanvas(redoStack.pop());
+        if (!redoStack.length) { return; }
+        var now = takeSnapshot();
+        if (!now) { return; }
+        undoStack.push(now);
+        restoreSnapshot(redoStack.pop());
       };
 
       // Keynote-style arrange: reorder the selection among the objects it
@@ -1400,6 +1413,11 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           upsertMeta('name', 'twitter:card', value ? 'summary_large_image' : '');
         } else if (kind === 'robots') {
           upsertMeta('name', 'robots', value);
+        } else if (kind === 'ownIcons') {
+          // This page keeps its own icons — Done's site-icon stamping
+          // passes it by.
+          if (value) { doc.body.setAttribute('data-tim-own-icons', ''); }
+          else { doc.body.removeAttribute('data-tim-own-icons'); }
         } else if (kind === 'touchIcon') {
           var touch = doc.querySelector('link[rel="apple-touch-icon"]');
           if (!value) { if (touch) { touch.remove(); } return; }
@@ -1427,6 +1445,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           upsertMeta('property', 'og:title', value);
           return;
         }
+        checkpoint('page:' + prop);
         if (!doc.body.getAttribute('data-tim-template')) {
           doc.body.setAttribute('data-tim-template', 'default');
         }
@@ -1472,7 +1491,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           robotsMeta: (function () {
             var m = doc.querySelector('meta[name="robots"]');
             return m ? (m.getAttribute('content') || '') : '';
-          })()
+          })(),
+          ownIcons: doc.body.hasAttribute('data-tim-own-icons') ? 1 : 0
         });
       };
 

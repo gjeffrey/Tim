@@ -22,11 +22,15 @@ public struct SiteManifest: Codable {
     public var iconRecipes: [String: IconRecipe] = [:]   // keyed by page rel path
     public var fontsUpdated: Date = Date()
     public var fonts: [String] = []                      // families in use across the site
+    public var iconsUpdated: Date = Date()
+    public var siteFavicon: String = ""                  // site-root-relative, e.g. "media/icon.png"
+    public var siteTouchIcon: String = ""
 
     public init() {}
 
     enum CodingKeys: String, CodingKey {
         case version, updated, iconRecipesUpdated, iconRecipes, fontsUpdated, fonts
+        case iconsUpdated, siteFavicon, siteTouchIcon
     }
 
     // decodeIfPresent throughout: a tim.json written by an older build must
@@ -39,6 +43,9 @@ public struct SiteManifest: Codable {
         iconRecipes = try c.decodeIfPresent([String: IconRecipe].self, forKey: .iconRecipes) ?? [:]
         fontsUpdated = try c.decodeIfPresent(Date.self, forKey: .fontsUpdated) ?? Date()
         fonts = try c.decodeIfPresent([String].self, forKey: .fonts) ?? []
+        iconsUpdated = try c.decodeIfPresent(Date.self, forKey: .iconsUpdated) ?? Date()
+        siteFavicon = try c.decodeIfPresent(String.self, forKey: .siteFavicon) ?? ""
+        siteTouchIcon = try c.decodeIfPresent(String.self, forKey: .siteTouchIcon) ?? ""
     }
 
     /// Folds newly seen font families into the cached list. Returns true
