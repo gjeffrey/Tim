@@ -148,21 +148,22 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     public var prefersDesktopViewport = false
 
     public func applyPreviewViewport() {
-        let wantWide = prefersDesktopViewport && !isMobilePreview
+        // WebKit re-evaluates a viewport meta when its CONTENT changes,
+        // but removing the node doesn't reliably revert to the page's own
+        // — so the override meta stays put and is rewritten both ways.
+        guard prefersDesktopViewport else { return }
+        let wantWide = !isMobilePreview
+        let content = wantWide ? "width=1180" : "width=device-width, initial-scale=1"
         let js = """
         (function () {
           var m = document.querySelector('meta[name="viewport"][data-tim-preview]');
-          if (\(wantWide ? "true" : "false")) {
-            if (!m) {
-              m = document.createElement('meta');
-              m.name = 'viewport';
-              m.setAttribute('data-tim-preview', '');
-              document.head.appendChild(m);
-            }
-            m.setAttribute('content', 'width=1180');
-          } else if (m) {
-            m.remove();
+          if (!m) {
+            m = document.createElement('meta');
+            m.name = 'viewport';
+            m.setAttribute('data-tim-preview', '');
+            document.head.appendChild(m);
           }
+          m.setAttribute('content', '\(content)');
           window.dispatchEvent(new Event('resize'));
         })();
         """
