@@ -16,14 +16,36 @@ public enum SiteFonts {
                     names += googleFamilies(inCSS: css)
                 }
             }
-            let manifest = SiteManifest.load(fromMirror: site.localProjectPath)
+            var manifest = SiteManifest.load(fromMirror: site.localProjectPath)
             // The manifest's cached list is the workhorse: every family the
             // site has ever used, accumulated on Done and synced via tim.json.
+            // An empty cache (older site, fresh mirror) backfills once from
+            // the mirror's pages, so pinning works before the next Done.
+            if manifest.fonts.isEmpty, !backfilled.contains(site.localProjectPath) {
+                backfilled.insert(site.localProjectPath)
+                if manifest.noteFonts(familiesInMirror(site.localProjectPath)) {
+                    _ = manifest.save(toMirror: site.localProjectPath)
+                }
+            }
             names += manifest.fonts
             names += manifest.iconRecipes.values.map(\.fontFamily).filter { !$0.isEmpty }
         }
         var seen = Set<String>()
         return names.filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    private static var backfilled = Set<String>()
+
+    /// Every family declared by any page in the mirror.
+    static func familiesInMirror(_ folder: String) -> [String] {
+        guard let subpaths = try? FileManager.default.subpathsOfDirectory(atPath: folder) else { return [] }
+        var out: [String] = []
+        for rel in subpaths where rel.hasSuffix(".html") && !rel.contains(".git") && !rel.contains("node_modules") {
+            if let html = try? String(contentsOfFile: (folder as NSString).appendingPathComponent(rel), encoding: .utf8) {
+                out += families(inPageHTML: html)
+            }
+        }
+        return out
     }
 
     /// Families a page declares via its data-tim-font links.
