@@ -200,7 +200,7 @@ struct ActivityIndicator: View {
                         .foregroundStyle(.secondary)
                     ForEach(center.activities) { activity in
                         HStack(spacing: 7) {
-                            ProgressView().controlSize(.mini)
+                            ProgressView().controlSize(.small)
                             Text(activity.label)
                                 .font(.system(size: 11))
                         }
@@ -215,14 +215,16 @@ struct ActivityIndicator: View {
 
 struct BrowserWindow: View {
     @EnvironmentObject var store: BrowserStore
-    @AppStorage("tim.siteSidebar") private var showSidebar = true
+    @State private var columns = NavigationSplitViewVisibility.all
 
+    // The system sidebar structure is what buys the Tahoe look: the
+    // wallpaper glows through the sidebar glass, the toolbar unifies
+    // with the window, and the whole app reads native instead of built.
     var body: some View {
-        HStack(spacing: 0) {
-            if showSidebar {
-                UnifiedSidebar()
-                Divider()
-            }
+        NavigationSplitView(columnVisibility: $columns) {
+            UnifiedSidebar()
+                .navigationSplitViewColumnWidth(min: 240, ideal: 256, max: 320)
+        } detail: {
             if let tab = store.selectedTab {
                 TabContentView(tab: tab)
                     .id(tab.id)
@@ -272,8 +274,6 @@ struct UnifiedSidebar: View {
             .padding(.bottom, 18)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(width: 252)
-        .timPanel()
     }
 }
 
@@ -865,7 +865,6 @@ struct TabContentView: View {
     @State private var previewLabel = ""
     @State private var previewHTML = ""
     @State private var viewMode: Int = 0  // 0 desktop · 1 both · 2 iPhone
-    @AppStorage("tim.siteSidebar") private var showSiteSidebar = true
     @FocusState private var addressFocused: Bool
 
     private var pageURL: URL? { URL(string: tab.urlString) }
@@ -1806,15 +1805,6 @@ struct TabContentView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItemGroup(placement: .navigation) {
-            Button {
-                showSiteSidebar.toggle()
-            } label: {
-                Image(systemName: "sidebar.left")
-            }
-            .help("Show tabs, your site's pages, and history")
-        }
-
         ToolbarItem(placement: .principal) {
             HStack(spacing: 12) {
                 // Back/forward live beside the address they act on.
@@ -3389,7 +3379,7 @@ struct SiteEditorSheet: View {
                                     CloudflareAPI.storeToken("")
                                     cfConnected = false
                                 }
-                                .controlSize(.mini)
+                                .controlSize(.small)
                             }
                         } else {
                             HStack(spacing: 6) {
@@ -3931,7 +3921,7 @@ struct InspectorControls: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .controlSize(.mini)
+                .controlSize(.small)
                 .onChange(of: videoAutoplay) { _, auto in
                     if auto {
                         // The ambient preset: silent, looping, chromeless —
@@ -3955,7 +3945,7 @@ struct InspectorControls: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .controlSize(.mini)
+                .controlSize(.small)
                 .onChange(of: videoRepeat) { _, mode in
                     if mode == "bounce" {
                         videoSound = false
@@ -4040,7 +4030,7 @@ struct InspectorControls: View {
                             .foregroundStyle(Color.accentColor)
                         Spacer()
                         Button("Group") { tab.groupSelection() }
-                            .controlSize(.mini)
+                            .controlSize(.small)
                             .help("One object from many: the group moves, resizes, fills, and rotates as a unit — and stays composed on phones.")
                     }
                 }
@@ -4255,7 +4245,7 @@ struct InspectorControls: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .controlSize(.mini)
+                .controlSize(.small)
                 .onChange(of: weightIndex) { _, i in tab.setSelectionStyle("fontWeight", "\(weights[i])") }
             }
 
@@ -4271,7 +4261,7 @@ struct InspectorControls: View {
                                 .frame(width: 26, height: 16)
                         }
                         .buttonStyle(.bordered)
-                        .controlSize(.mini)
+                        .controlSize(.small)
                     }
                 }
                 Spacer()
@@ -4299,7 +4289,7 @@ struct InspectorControls: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .controlSize(.mini)
+                .controlSize(.small)
                 .onChange(of: columnCount) { _, n in
                     // Real flowing text: fills one column, continues in the
                     // next, balances. Phones always read a single column.
@@ -4318,7 +4308,7 @@ struct InspectorControls: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .controlSize(.mini)
+                .controlSize(.small)
                 .onChange(of: capsMode) { _, mode in
                     tab.setSelectionStyle("textTransform", mode == "upper" ? "uppercase" : (mode == "title" ? "capitalize" : "none"))
                     tab.setSelectionStyle("fontVariant", mode == "small" ? "small-caps" : "normal")
@@ -4344,7 +4334,7 @@ struct InspectorControls: View {
                 rowLabel("Shadow")
                 Toggle("", isOn: $textShadowOn)
                     .toggleStyle(.switch)
-                    .controlSize(.mini)
+                    .controlSize(.small)
                     .labelsHidden()
                     .onChange(of: textShadowOn) { _, _ in applyTextShadow() }
                 if textShadowOn {
@@ -4368,7 +4358,7 @@ struct InspectorControls: View {
         }
         .buttonStyle(.bordered)
         .tint(on.wrappedValue ? Color.accentColor : nil)
-        .controlSize(.mini)
+        .controlSize(.small)
     }
 
     private func applyDecoration() {
@@ -4440,7 +4430,7 @@ struct InspectorControls: View {
                 .help("Off: this object appears on desktop only. Use it for decorative pieces the phone layout doesn't need.")
             if (info["label"] as? String) == "Group" {
                 Button("Ungroup") { tab.ungroupSelection() }
-                    .controlSize(.mini)
+                    .controlSize(.small)
                     .help("Dissolves the group — its objects return to the page, keeping their places.")
             }
         }
@@ -4455,7 +4445,7 @@ struct InspectorControls: View {
                 .frame(width: 22, height: 16)
         }
         .buttonStyle(.bordered)
-        .controlSize(.mini)
+        .controlSize(.small)
         .help(help)
     }
 
@@ -4468,7 +4458,7 @@ struct InspectorControls: View {
                 .frame(width: 26, height: 16)
         }
         .buttonStyle(.bordered)
-        .controlSize(.mini)
+        .controlSize(.small)
         .help(help)
     }
 
@@ -4498,13 +4488,13 @@ struct InspectorControls: View {
                 }
                 .buttonStyle(.bordered)
                 .tint(fillIsGradient ? Color.accentColor : nil)
-                .controlSize(.mini)
+                .controlSize(.small)
                 .help("Gradient fill")
                 Button("None") {
                     fillIsGradient = false
                     tab.setSelectionStyle("background", "")
                 }
-                .controlSize(.mini)
+                .controlSize(.small)
                 Spacer()
             }
             if fillIsGradient {
@@ -4521,7 +4511,7 @@ struct InspectorControls: View {
                 rowLabel("Shadow")
                 Toggle("", isOn: $hasShadow)
                     .toggleStyle(.switch)
-                    .controlSize(.mini)
+                    .controlSize(.small)
                     .labelsHidden()
                     .onChange(of: hasShadow) { _, _ in applyBoxShadow() }
                 if hasShadow {
@@ -4540,16 +4530,16 @@ struct InspectorControls: View {
         VStack(alignment: .leading, spacing: 9) {
             if let title {
                 Text(title.uppercased())
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .kerning(0.7)
+                    .font(.system(size: 10, weight: .semibold))
+                    .kerning(0.8)
                     .foregroundStyle(.secondary)
             }
             content()
         }
-        .padding(10)
+        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Color.primary.opacity(0.07), lineWidth: 1))
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.07), lineWidth: 1))
     }
 
     private func rowLabel(_ text: String) -> some View {
@@ -4569,7 +4559,7 @@ struct InspectorControls: View {
                 get: { min(range.upperBound, max(range.lowerBound, value.wrappedValue)) },
                 set: { value.wrappedValue = min(range.upperBound, max(range.lowerBound, snap?($0) ?? $0)) }
             ), in: range, step: step)
-                .controlSize(.mini)
+                .controlSize(.small)
             // Typed values are exact — snapping applies to the slider only.
             TextField("", value: Binding(
                 get: { value.wrappedValue },
@@ -4718,7 +4708,7 @@ struct PageOptionsControls: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .controlSize(.mini)
+                .controlSize(.small)
                 .onChange(of: bgMode) { old, mode in
                     if old == "video", mode != "video" { tab.setPageBackgroundVideo("") }
                     switch mode {
@@ -4746,7 +4736,7 @@ struct PageOptionsControls: View {
                         .onChange(of: bgAngle) { _, _ in applyPageGradient() }
                 case "image":
                     Button("Choose Image…") { choosePageBackground(video: false) }
-                        .controlSize(.mini)
+                        .controlSize(.small)
                     Text("Fills the page edge to edge, behind everything, on every page with this template.")
                         .font(.system(size: 9.5))
                         .foregroundStyle(.tertiary)
@@ -4754,7 +4744,7 @@ struct PageOptionsControls: View {
                 case "video":
                     HStack(spacing: 8) {
                         Button("Choose Video…") { choosePageBackground(video: true) }
-                            .controlSize(.mini)
+                            .controlSize(.small)
                         Toggle("Bounce", isOn: $bgVideoBounce)
                             .font(.system(size: 10))
                             .help("Forward, then backward, forever — baked into the file.")
@@ -4799,7 +4789,7 @@ struct PageOptionsControls: View {
                     bgMode = "color"
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { reload() }
                 }
-                .controlSize(.mini)
+                .controlSize(.small)
             }
 
             card("Layout") {
@@ -4830,13 +4820,13 @@ struct PageOptionsControls: View {
                     HStack(spacing: 8) {
                         rowLabel("Social Image")
                         Button("Thumbnail") { useThumbnailAsSocial() }
-                            .controlSize(.mini)
+                            .controlSize(.small)
                             .help("Snapshot this page as its share card (1200×630).")
                         Button("Choose…") { chooseMetaImage(kind: "ogImage") }
-                            .controlSize(.mini)
+                            .controlSize(.small)
                         if !ogImage.isEmpty {
                             Button("Clear") { tab.setPageMeta("ogImage", ""); ogImage = "" }
-                                .controlSize(.mini)
+                                .controlSize(.small)
                         }
                         Spacer()
                     }
@@ -4897,12 +4887,12 @@ struct PageOptionsControls: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.primary.opacity(0.12), lineWidth: 1))
                         HStack(spacing: 4) {
-                            Button("Make…") { prepareIconMaker() }.controlSize(.mini)
-                            Button("Choose…") { chooseMetaImage(kind: "touchIcon") }.controlSize(.mini)
+                            Button("Make…") { prepareIconMaker() }.controlSize(.small)
+                            Button("Choose…") { chooseMetaImage(kind: "touchIcon") }.controlSize(.small)
                         }
                         if !touchIcon.isEmpty {
                             Button("Clear") { tab.setPageMeta("touchIcon", ""); touchIcon = "" }
-                                .controlSize(.mini)
+                                .controlSize(.small)
                         }
                     }
                     VStack(alignment: .leading, spacing: 6) {
@@ -4928,10 +4918,10 @@ struct PageOptionsControls: View {
                         .padding(.horizontal, 7)
                         .background(Capsule().fill(Color.primary.opacity(0.06)))
                         HStack(spacing: 4) {
-                            Button("Choose…") { chooseMetaImage(kind: "favicon") }.controlSize(.mini)
+                            Button("Choose…") { chooseMetaImage(kind: "favicon") }.controlSize(.small)
                             if !favicon.isEmpty {
                                 Button("Clear") { tab.setPageMeta("favicon", ""); favicon = "" }
-                                    .controlSize(.mini)
+                                    .controlSize(.small)
                             }
                         }
                     }
@@ -5170,13 +5160,13 @@ struct PageOptionsControls: View {
             HStack(spacing: 8) {
                 rowLabel(label)
                 Button("Choose…") { chooseMetaImage(kind: kind) }
-                    .controlSize(.mini)
+                    .controlSize(.small)
                 if !value.isEmpty {
                     Button("Clear") {
                         tab.setPageMeta(kind, "")
                         if kind == "ogImage" { ogImage = "" } else { favicon = "" }
                     }
-                    .controlSize(.mini)
+                    .controlSize(.small)
                 }
                 Spacer()
             }
@@ -5281,16 +5271,16 @@ struct PageOptionsControls: View {
         VStack(alignment: .leading, spacing: 9) {
             if let title {
                 Text(title.uppercased())
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .kerning(0.7)
+                    .font(.system(size: 10, weight: .semibold))
+                    .kerning(0.8)
                     .foregroundStyle(.secondary)
             }
             content()
         }
-        .padding(10)
+        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Color.primary.opacity(0.07), lineWidth: 1))
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.07), lineWidth: 1))
     }
 
     private func rowLabel(_ text: String) -> some View {
@@ -5304,7 +5294,7 @@ struct PageOptionsControls: View {
         HStack(spacing: 8) {
             rowLabel(name)
             Slider(value: value, in: range, step: step)
-                .controlSize(.mini)
+                .controlSize(.small)
             Text(display)
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(.secondary)
