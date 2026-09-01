@@ -27,13 +27,17 @@ let package = Package(
         )
     ],
     dependencies: [
-        .package(path: "..")
+        .package(path: ".."),
+        // Pure-Swift SSH/SFTP — publishing without Process, as the
+        // Publisher.swift architecture note always planned for iOS.
+        .package(url: "https://github.com/orlandos-nl/Citadel.git", from: "0.7.0")
     ],
     targets: [
         .executableTarget(
             name: "TimPad",
             dependencies: [
-                .product(name: "TimKit", package: "Tim")
+                .product(name: "TimKit", package: "Tim"),
+                .product(name: "Citadel", package: "Citadel")
             ],
             path: "Sources"
         )
