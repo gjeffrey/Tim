@@ -712,31 +712,47 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         hideGrid();
         for (var k in handles) { handles[k].style.display = 'none'; }
       }
+      function angleOf(el) {
+        var m = /rotate\\((-?[0-9.]+)deg\\)/.exec((el && el.style && el.style.transform) || '');
+        return m ? parseFloat(m[1]) : 0;
+      }
       function layout() {
         if (!sel || !doc.contains(sel)) { hide(); return; }
         var r = rectOf(sel);
+        // The selection box matches the object's own frame — a rotated
+        // object gets a rotated box, Keynote-style, not the upright
+        // bounding rectangle CSS reports. Rotation preserves the center,
+        // and offsetWidth/Height are the untransformed layout size.
+        var angle = angleOf(sel);
+        var cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+        var w0 = angle ? sel.offsetWidth : r.w;
+        var h0 = angle ? sel.offsetHeight : r.h;
         box.style.display = 'block';
-        box.style.left = r.x + 'px'; box.style.top = r.y + 'px';
-        box.style.width = r.w + 'px'; box.style.height = r.h + 'px';
+        box.style.left = (cx - w0 / 2) + 'px'; box.style.top = (cy - h0 / 2) + 'px';
+        box.style.width = w0 + 'px'; box.style.height = h0 + 'px';
+        box.style.transform = angle ? 'rotate(' + angle + 'deg)' : '';
         badge.style.display = 'block';
         badge.style.left = r.x + 'px';
         badge.style.top = Math.max(2, r.y - 24) + 'px';
         if (!drag) {
           var p = placement(sel);
           badge.textContent = (p ? '✥ ' : '') + sel.tagName.toLowerCase() +
-            (p ? ' · ' + (p.ce - p.cs) + '×' + (p.re - p.rs) + ' cells' : '');
+            (p ? ' · ' + (p.ce - p.cs) + '×' + (p.re - p.rs) + ' cells' : '') +
+            (angle ? ' · ' + angle + '°' : '');
         }
         var resizable = isObject(sel) && canvasFor(sel) && placement(sel) && !collapsed();
         for (var k in handles) { handles[k].style.display = resizable ? 'block' : 'none'; }
         if (resizable) {
-          handles.w.style.left = (r.x - 5) + 'px';
-          handles.w.style.top = (r.y + r.h / 2 - 5) + 'px';
-          handles.e.style.left = (r.x + r.w - 5) + 'px';
-          handles.e.style.top = (r.y + r.h / 2 - 5) + 'px';
-          handles.s.style.left = (r.x + r.w / 2 - 5) + 'px';
-          handles.s.style.top = (r.y + r.h - 5) + 'px';
-          handles.se.style.left = (r.x + r.w - 5) + 'px';
-          handles.se.style.top = (r.y + r.h - 5) + 'px';
+          var rad = angle * Math.PI / 180;
+          var cos = Math.cos(rad), sin = Math.sin(rad);
+          function place(h, dx, dy) {
+            h.style.left = (cx + dx * cos - dy * sin - 5) + 'px';
+            h.style.top = (cy + dx * sin + dy * cos - 5) + 'px';
+          }
+          place(handles.w, -w0 / 2, 0);
+          place(handles.e, w0 / 2, 0);
+          place(handles.s, 0, h0 / 2);
+          place(handles.se, w0 / 2, h0 / 2);
         }
         layoutGroup();
       }
@@ -745,6 +761,19 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (collapsed()) { return; }
         var k = e.target && e.target.getAttribute ? e.target.getAttribute('data-tim-handle') : null;
         if (k && sel && isObject(sel)) {
+          // Option-drag a handle rotates instead of resizing.
+          if (e.altKey) {
+            var rr = rectOf(sel);
+            checkpoint('rotate');
+            drag = {
+              mode: 'rotate',
+              cx: rr.x + rr.w / 2, cy: rr.y + rr.h / 2,
+              a0: Math.atan2(e.pageY - (rr.y + rr.h / 2), e.pageX - (rr.x + rr.w / 2)) * 180 / Math.PI,
+              r0: angleOf(sel), moved: false
+            };
+            e.preventDefault(); e.stopPropagation();
+            return;
+          }
           var canvas = canvasFor(sel);
           var p0 = placement(sel);
           if (!canvas || !p0) { return; }
@@ -785,6 +814,20 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       function onMove(e) {
         if (!drag || !sel) { return; }
         e.preventDefault();
+        if (drag.mode === 'rotate') {
+          var a = Math.atan2(e.pageY - drag.cy, e.pageX - drag.cx) * 180 / Math.PI;
+          var next = drag.r0 + (a - drag.a0);
+          while (next > 180) { next -= 360; }
+          while (next <= -180) { next += 360; }
+          var nearest = Math.round(next / 45) * 45;
+          if (Math.abs(next - nearest) <= 5) { next = nearest; }
+          next = Math.round(next);
+          drag.moved = true;
+          sel.style.transform = next === 0 ? '' : 'rotate(' + next + 'deg)';
+          badge.textContent = next + '°';
+          layout();
+          return;
+        }
         var g = gridInfo(drag.canvas);
         var dc = Math.round((e.pageX - drag.sx) / (g.colW + g.gap));
         var dr = Math.round((e.pageY - drag.sy) / (g.rowH + g.rowGap));
@@ -818,11 +861,14 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (!drag) { return; }
         var canvas = drag.canvas;
         var moved = drag.moved;
+        var wasRotate = drag.mode === 'rotate';
         drag = null;
         hideGrid();
-        if (sel) { fitSpan(sel); }
-        if (moved) { resort(canvas); }
+        if (sel && !wasRotate) { fitSpan(sel); }
+        if (moved && canvas) { resort(canvas); }
         layout();
+        // Reseed the inspector so its Rotate control shows the new angle.
+        if (wasRotate) { notifySel(true); }
       }
 
       function onClick(e) {
