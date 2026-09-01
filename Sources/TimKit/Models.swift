@@ -225,6 +225,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           for (var q = 0; q < replacing.length; q++) { replacing[q].removeAttribute('data-tim-replace'); }
           var reviewing = clone.querySelectorAll('[data-tim-review]');
           for (var v = 0; v < reviewing.length; v++) { reviewing[v].removeAttribute('data-tim-review'); }
+          var offpage = clone.querySelectorAll('[data-tim-offpage]');
+          for (var op = 0; op < offpage.length; op++) { offpage[op].removeAttribute('data-tim-offpage'); }
           // The product page's try-the-editor chrome is runtime-only.
           var demo = clone.querySelectorAll('[data-tim-demo]');
           for (var dm = 0; dm < demo.length; dm++) { demo[dm].remove(); }
@@ -903,6 +905,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         // its own aspect at phone width, never stretched into its grid
         // box — so what you see while editing is what publishes.
         '@media (max-width:700px){html.tim-editing .tim-canvas img.tim-object,html.tim-editing .tim-canvas video.tim-object{height:auto !important;align-self:start}}' +
+        // Off-page objects: reachable (the page scrolls sideways while
+        // editing) and unmistakable (faded, dashed) — never just gone.
+        'html.tim-editing, html.tim-editing body{overflow-x:auto !important}' +
+        'html.tim-editing [data-tim-offpage]{opacity:0.4;filter:saturate(0.5);outline:1.5px dashed rgba(127,127,127,0.55);outline-offset:2px}' +
         'html.tim-editing [data-tim-review]{outline:2px solid rgba(255,159,10,0.85) !important;outline-offset:3px;animation:timReviewPulse 1.6s ease-in-out infinite}' +
         '@keyframes timReviewPulse{50%{outline-color:rgba(255,159,10,0.25)}}';
 
@@ -1117,7 +1123,33 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
         return total;
       }
+      // Illustrator's pasteboard, adapted: an object that has slipped
+      // entirely past the page's left or right edge stays visible while
+      // editing — faded, still clickable, draggable back on. (Vertical
+      // has no off-page: the page simply grows.)
+      function markOffPage() {
+        var canvas = doc.querySelector('[data-tim-canvas]');
+        if (!canvas) { return; }
+        var cr = canvas.getBoundingClientRect();
+        var cols = colCount();
+        Array.prototype.forEach.call(canvas.querySelectorAll('.tim-object'), function (el) {
+          var r = el.getBoundingClientRect();
+          // Off the page two ways: the rendered box sits wholly past an
+          // edge (transforms, margins), or the placement runs past the
+          // page's columns — the grid then squeezes every column to fit,
+          // which reads as the whole page quietly distorting.
+          var p = canvasFor(el) === canvas ? placement(el) : null;
+          var off = (r.width > 0 && (r.left >= cr.right - 4 || r.right <= cr.left + 4))
+            || !!(p && (p.cs > cols || p.ce > cols + 1));
+          if (off) {
+            if (!el.hasAttribute('data-tim-offpage')) { el.setAttribute('data-tim-offpage', ''); }
+          } else if (el.hasAttribute('data-tim-offpage')) {
+            el.removeAttribute('data-tim-offpage');
+          }
+        });
+      }
       function layout() {
+        markOffPage();
         if (!sel || !doc.contains(sel)) { hide(); return; }
         var r = rectOf(sel);
         // The selection box matches the object's own frame — a rotated
@@ -1758,22 +1790,71 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         var parentCanvas = canvasFor(sel);
         if (!p0 || !parentCanvas) { return; }
         var hadMobile = Object.keys(mobileLayout).length > 0;
+        var selId = sel.getAttribute('data-tim-id');
+        var groupEntry = hadMobile && selId ? mobileLayout[selId] : null;
+        // Ungrouping must not move anything the eye can see. The group's
+        // rotation can't survive (children return to the page grid), so
+        // shed it first — then measure each child exactly as rendered and
+        // write those pixels back as cells of the layout being edited.
+        // The old arithmetic restore drifted off the page whenever the
+        // group had been moved or resized since it was made.
+        sel.style.transform = '';
+        var kids = Array.prototype.slice.call(sel.children);
+        var g = gridInfo(parentCanvas);
+        var cols = colCount();
+        var measured = kids.map(function (el) {
+          var r = el.getBoundingClientRect();
+          var ang = angleOf(el);
+          if (ang) {
+            // A rotated child keeps its own tilt — place its unrotated
+            // frame, not the swollen bounding box.
+            var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+            r = { left: cx - el.offsetWidth / 2, right: cx + el.offsetWidth / 2,
+                  top: cy - el.offsetHeight / 2, bottom: cy + el.offsetHeight / 2 };
+          }
+          var mcs = Math.round((r.left - g.originX) / (g.colW + g.gap)) + 1;
+          var mce = Math.round((r.right - g.originX + g.gap) / (g.colW + g.gap)) + 1;
+          var mrs = Math.round((r.top - g.originY) / (g.rowH + g.rowGap)) + 1;
+          var mre = Math.round((r.bottom - g.originY + g.rowGap) / (g.rowH + g.rowGap)) + 1;
+          var w = Math.max(1, Math.min(cols, mce - mcs));
+          mcs = Math.max(1, Math.min(cols + 1 - w, mcs));
+          mrs = Math.max(1, mrs);
+          return { rs: mrs, cs: mcs, re: Math.max(mrs + 1, mre), ce: mcs + w };
+        });
         var mobileRow = 1;
         if (hadMobile) {
-          for (var mk in mobileLayout) { mobileRow = Math.max(mobileRow, mobileLayout[mk][2]); }
-          delete mobileLayout[sel.getAttribute('data-tim-id')];
+          // Children take over the group's old slot in the stack — never
+          // the bottom of the page; overlap resolution nudges what sat below.
+          if (groupEntry) { mobileRow = groupEntry[0]; }
+          else { for (var mk in mobileLayout) { mobileRow = Math.max(mobileRow, mobileLayout[mk][2]); } }
+          if (selId) { delete mobileLayout[selId]; }
         }
-        var kids = Array.prototype.slice.call(sel.children);
-        kids.forEach(function (el) {
+        kids.forEach(function (el, i) {
+          var isObj = el.classList && el.classList.contains('tim-object');
+          var m = measured[i];
           var p = desktopPlacement(el);
-          if (p) {
-            setDesktopArea(el, p.rs + p0.rs - 1, p.cs + p0.cs - 1, p.re + p0.rs - 1, p.ce + p0.cs - 1);
+          if (isObj) {
+            if (mobileActive()) {
+              // Mobile is on screen: measurements are the mobile cells;
+              // desktop restores arithmetically, clamped onto the page.
+              if (p) {
+                var dw = Math.max(1, Math.min(COLS, p.ce - p.cs));
+                var dcs = Math.max(1, Math.min(COLS + 1 - dw, p.cs + p0.cs - 1));
+                setDesktopArea(el, p.rs + p0.rs - 1, dcs, p.re + p0.rs - 1, dcs + dw);
+              }
+            } else {
+              setDesktopArea(el, m.rs, m.cs, m.re, m.ce);
+            }
           }
           parentCanvas.insertBefore(el, sel);
-          if (hadMobile && el.classList && el.classList.contains('tim-object')) {
-            var rows = p ? (p.re - p.rs) : 2;
-            mobileLayout[ensureObjectId(el)] = [mobileRow, 1, mobileRow + rows, MOBILE_COLS + 1];
-            mobileRow += rows;
+          if (hadMobile && isObj) {
+            if (mobileActive()) {
+              mobileLayout[ensureObjectId(el)] = [m.rs, m.cs, m.re, m.ce];
+            } else {
+              var rows = p ? (p.re - p.rs) : 2;
+              mobileLayout[ensureObjectId(el)] = [mobileRow, 1, mobileRow + rows, MOBILE_COLS + 1];
+              mobileRow += rows;
+            }
           }
         });
         sel.remove();

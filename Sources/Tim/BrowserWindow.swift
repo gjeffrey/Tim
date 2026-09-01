@@ -438,6 +438,7 @@ struct TabCard: View {
     let togglePin: () -> Void
     @EnvironmentObject var siteStore: SiteStore
     @State private var hovering = false
+    @AppStorage("tim.tabDomains") private var tabDomains = false
 
     static let height: CGFloat = 46
     static let spacing: CGFloat = 5
@@ -473,10 +474,12 @@ struct TabCard: View {
                             .help("Being edited — not published yet.")
                     }
                 }
-                Text(subtitle)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                if tabDomains {
+                    Text(subtitle)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 0)
             trailing
@@ -1099,6 +1102,7 @@ struct TabContentView: View {
     @State private var previewHTML = ""
     @State private var viewMode: Int = 0  // 0 desktop · 1 both · 2 iPhone
     @FocusState private var addressFocused: Bool
+    @AppStorage("tim.cleanAddresses") private var cleanAddresses = true
 
     private var pageURL: URL? { URL(string: tab.urlString) }
     private var matchedSite: Site? {
@@ -1292,7 +1296,9 @@ struct TabContentView: View {
     // capsule's floor, and reload lives inside where your eye already is.
 
     private var prettyAddress: (host: String, path: String)? {
-        guard !addressFocused, !tab.isEditing,
+        // Safari's manner: the address reads as a name at rest — scheme
+        // and www only appear when the field is focused for editing.
+        guard cleanAddresses, !addressFocused,
               let url = URL(string: tab.urlString),
               let host = url.host()
         else { return nil }

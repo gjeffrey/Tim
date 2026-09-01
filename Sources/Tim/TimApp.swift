@@ -3,6 +3,33 @@ import AppKit
 import TimKit
 import Sparkle
 
+/// App settings — the small, opinionated set. Defaults lean clean;
+/// each toggle brings back the traditional chrome for those who want it.
+struct TimSettings: View {
+    @AppStorage("tim.cleanAddresses") private var cleanAddresses = true
+    @AppStorage("tim.tabDomains") private var tabDomains = false
+
+    var body: some View {
+        Form {
+            Section("Address Bar") {
+                Toggle("Simplified addresses", isOn: $cleanAddresses)
+                Text("Show the page as a name — no http:// or www — until you click the address to edit it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Tabs") {
+                Toggle("Show domains in tabs", isOn: $tabDomains)
+                Text("Add each page's domain under its title in the sidebar.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 400)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
 @main
 struct TimApp: App {
     @StateObject private var store = BrowserStore()
@@ -43,6 +70,9 @@ struct TimApp: App {
                 .frame(minWidth: 900, minHeight: 560)
         }
         .windowToolbarStyle(.unified(showsTitle: false))
+        Settings {
+            TimSettings()
+        }
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") { TimApp.checkForUpdates() }
