@@ -333,7 +333,9 @@ struct UnifiedSidebar: View {
     @State private var dragTargetIndex = 0
     @State private var dragTranslation: CGFloat = 0
 
-    private var rowStep: CGFloat { TabCard.height + TabCard.spacing }
+    @AppStorage("tim.tabDomains") private var tabDomains = false
+
+    private var rowStep: CGFloat { TabCard.height(showingDomains: tabDomains) + TabCard.spacing }
 
     var body: some View {
         ScrollView {
@@ -440,7 +442,8 @@ struct TabCard: View {
     @State private var hovering = false
     @AppStorage("tim.tabDomains") private var tabDomains = false
 
-    static let height: CGFloat = 46
+    // Title-only cards sit tighter; the domain line earns the extra room.
+    static func height(showingDomains: Bool) -> CGFloat { showingDomains ? 46 : 36 }
     static let spacing: CGFloat = 5
 
     private var isEditable: Bool {
@@ -486,7 +489,7 @@ struct TabCard: View {
         }
         .padding(.leading, 10)
         .padding(.trailing, 8)
-        .frame(height: Self.height)
+        .frame(height: Self.height(showingDomains: tabDomains))
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             if isSelected {
