@@ -808,6 +808,7 @@ struct TabContentView: View {
                 // navigation, tab closes, even quitting the app.
                 tab.stashDraft()
             }
+            if tab.isEditing { tab.refreshReviewCounts() }
         }
     }
 
@@ -1637,6 +1638,21 @@ struct TabContentView: View {
             .labelsHidden()
             .fixedSize()
             .help("Preview as Mac or iPhone — same content, both must be excellent")
+            .overlay(alignment: tab.isMobilePreview ? .topLeading : .topTrailing) {
+                // The other layout has objects whose placement was guessed —
+                // the dot sits on the side that wants a look.
+                let pending = tab.isMobilePreview ? tab.reviewDesktop : tab.reviewMobile
+                if tab.isEditing, pending > 0 {
+                    Circle()
+                        .fill(Color.orange)
+                        .frame(width: 7, height: 7)
+                        .offset(x: tab.isMobilePreview ? -3 : 3, y: -3)
+                        .help(tab.isMobilePreview
+                              ? "\(pending) object\(pending == 1 ? "" : "s") to review on desktop — flip over and they'll be outlined."
+                              : "\(pending) object\(pending == 1 ? "" : "s") to review on iPhone — flip over and they'll be outlined.")
+                        .allowsHitTesting(false)
+                }
+            }
 
             ActivityIndicator()
 

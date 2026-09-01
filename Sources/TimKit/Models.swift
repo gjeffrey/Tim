@@ -14,6 +14,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     /// or generator meta) — what lets editing light up on any folder of a
     /// server we can already write to.
     @Published public var isTimPage: Bool = false
+    /// Objects on each layout waiting for a look because an edit on the
+    /// other layout guessed their placement (or outgrew their box).
+    @Published public var reviewDesktop: Int = 0
+    @Published public var reviewMobile: Int = 0
     var restoringDraft = false
     /// One-shot: the next page load must not auto-resume a draft (set
     /// while showing a version preview, which loads over the same URL).
@@ -145,7 +149,13 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
                     "setTimeout(function () { window.__timEnsureMobileLayout && window.__timEnsureMobileLayout(); }, 300);",
                     completionHandler: nil
                 )
+            } else {
+                webView.evaluateJavaScript(
+                    "setTimeout(function () { window.__timBeginReview && window.__timBeginReview('desktop'); }, 300);",
+                    completionHandler: nil
+                )
             }
+            refreshReviewCounts()
             return
         }
         webView.customUserAgent = mobile
@@ -210,6 +220,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           for (var p = 0; p < pending.length; p++) { pending[p].remove(); }
           var replacing = clone.querySelectorAll('[data-tim-replace]');
           for (var q = 0; q < replacing.length; q++) { replacing[q].removeAttribute('data-tim-replace'); }
+          var reviewing = clone.querySelectorAll('[data-tim-review]');
+          for (var v = 0; v < reviewing.length; v++) { reviewing[v].removeAttribute('data-tim-review'); }
           var head = clone.querySelector('head');
           if (head && !head.querySelector('meta[name="generator"]')) {
             var gen = document.createElement('meta');
@@ -670,12 +682,67 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         styleEl.textContent = css;
         styleEl.setAttribute('data-props', JSON.stringify(mobileLayout));
       }
+      // Cross-layout review: edits on one layout that leave a GUESS on the
+      // other (a new object's default placement, text that outgrew its
+      // fixed mobile box) flag that object for review over there. Routine
+      // edits — shared content, deletions, styling — never nag.
+      var reviewSets = { desktop: {}, mobile: {} };
+      function flagReview(mode, el) {
+        reviewSets[mode][ensureObjectId(el)] = 1;
+      }
+      window.__timReviewCounts = function () {
+        return JSON.stringify({
+          desktop: Object.keys(reviewSets.desktop).length,
+          mobile: Object.keys(reviewSets.mobile).length
+        });
+      };
+      window.__timBeginReview = function (mode) {
+        var set = reviewSets[mode];
+        var first = null;
+        for (var id in set) {
+          var el = doc.querySelector('[data-tim-id="' + id + '"]');
+          if (el) {
+            el.setAttribute('data-tim-review', '');
+            if (!first) { first = el; }
+          }
+        }
+        if (first) { first.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+      };
+      function clearReview(el) {
+        if (!el || !el.getAttribute) { return; }
+        var id = el.getAttribute('data-tim-id');
+        if (!id) { return; }
+        el.removeAttribute('data-tim-review');
+        delete reviewSets.desktop[id];
+        delete reviewSets.mobile[id];
+      }
+      // Text with a fixed mobile box that its content no longer fits —
+      // the silent-overlap case, caught on every entry into phone width.
+      function scanMobileOverflow() {
+        for (var id in mobileLayout) {
+          var el = doc.querySelector('[data-tim-id="' + id + '"]');
+          if (!el || !el.classList || !el.classList.contains('tim-text')) { continue; }
+          var a = mobileLayout[id];
+          var boxH = (a[2] - a[0]) * 48 - 16;
+          var prev = el.style.height;
+          el.style.height = 'max-content';
+          var content = el.scrollHeight;
+          el.style.height = prev;
+          if (content > boxH + 4) { reviewSets.mobile[id] = 1; }
+        }
+      }
+
       // First entry into phone-width editing: freeze the automatic stack,
       // as rendered right now, into explicit placements — bands of
       // side-by-side objects stay side by side, gaps stay gaps.
       window.__timEnsureMobileLayout = function () {
         if (!collapsed()) { return; }
-        if (Object.keys(mobileLayout).length) { layout(); return; }
+        if (Object.keys(mobileLayout).length) {
+          scanMobileOverflow();
+          window.__timBeginReview('mobile');
+          layout();
+          return;
+        }
         var canvas = doc.querySelector('[data-tim-canvas]');
         if (!canvas) { return; }
         var objs = Array.prototype.slice.call(canvas.querySelectorAll('.tim-object')).filter(function (el) {
@@ -744,7 +811,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         '.tim-media-failed{animation:none;outline-color:rgba(255,59,48,0.65);background:rgba(255,59,48,0.06)}' +
         '.tim-media-replacing{outline:2px dashed rgba(10,132,255,0.7) !important;outline-offset:-1px;animation:timPulse 1.1s ease-in-out infinite}' +
         '@keyframes timPulse{50%{opacity:0.55}}' +
-        '@media (max-width:700px){html.tim-editing [data-tim-mobile-hidden]{display:revert !important;opacity:0.25;outline:1.5px dashed rgba(127,127,127,0.5);outline-offset:-1px}}';
+        '@media (max-width:700px){html.tim-editing [data-tim-mobile-hidden]{display:revert !important;opacity:0.25;outline:1.5px dashed rgba(127,127,127,0.5);outline-offset:-1px}}' +
+        'html.tim-editing [data-tim-review]{outline:2px solid rgba(255,159,10,0.85) !important;outline-offset:3px;animation:timReviewPulse 1.6s ease-in-out infinite}' +
+        '@keyframes timReviewPulse{50%{outline-color:rgba(255,159,10,0.25)}}';
 
       var overlay = doc.createElement('div');
       overlay.id = '__tim-overlay';
@@ -1096,7 +1165,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           }
         }
         sel = (!el || el === doc.body) ? null : el;
-        if (sel) { layout(); } else { hide(); }
+        if (sel) { clearReview(sel); layout(); } else { hide(); }
         notifySel(true);
       }
 
@@ -1251,6 +1320,12 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           var span = Math.min(MOBILE_COLS, colSpan);
           mobileLayout[ensureObjectId(placed)] = [mMax, 1, mMax + rowSpan, 1 + Math.max(2, span)];
           writeMobileLayout();
+          // The desktop position was a guess (end of page) — worth a look.
+          flagReview('desktop', placed);
+        } else if (Object.keys(mobileLayout).length) {
+          // A hand-tuned mobile layout exists; this object will join its
+          // bottom by default — worth a look over there.
+          flagReview('mobile', placed);
         }
         canvas.appendChild(el);
         el = placed;
@@ -2051,6 +2126,17 @@ extension Tab: WKNavigationDelegate {
                   let draft = DraftStore.html(for: url.absoluteString) {
             restoringDraft = true
             webView.loadHTMLString(draft, baseURL: url)
+        }
+    }
+
+    public func refreshReviewCounts() {
+        webView.evaluateJavaScript("window.__timReviewCounts ? window.__timReviewCounts() : ''") { [weak self] result, _ in
+            guard let json = result as? String, !json.isEmpty,
+                  let data = json.data(using: .utf8),
+                  let counts = try? JSONSerialization.jsonObject(with: data) as? [String: Int]
+            else { return }
+            self?.reviewDesktop = counts["desktop"] ?? 0
+            self?.reviewMobile = counts["mobile"] ?? 0
         }
     }
 
