@@ -584,6 +584,10 @@ struct PadInspector: View {
     @State private var rotation: Double = 0
     @State private var fontSize: Double = 16
     @State private var seededSeq: Int = -1
+    @State private var areaRow = 0
+    @State private var areaCol = 0
+    @State private var areaW = 0
+    @State private var areaH = 0
 
     private var info: [String: Any]? { tab.selectionInfo }
     private var isText: Bool { (info?["isText"] as? Int ?? 0) == 1 }
@@ -660,6 +664,14 @@ struct PadInspector: View {
                     }
                 }
                 Section("Position") {
+                    if areaW > 0 {
+                        HStack(spacing: 8) {
+                            padCellField("Col", $areaCol)
+                            padCellField("Row", $areaRow)
+                            padCellField("W", $areaW)
+                            padCellField("H", $areaH)
+                        }
+                    }
                     HStack(spacing: 6) {
                         alignButton("align.horizontal.left", "left")
                         alignButton("align.horizontal.center", "centerX")
@@ -700,6 +712,27 @@ struct PadInspector: View {
             seededSeq = seq
             fontSize = info?["fontSize"] as? Double ?? 16
             rotation = 0
+            let area = info?["area"] as? [Int] ?? []
+            areaRow = area.count == 4 ? area[0] : 0
+            areaCol = area.count == 4 ? area[1] : 0
+            areaH = area.count == 4 ? area[2] - area[0] : 0
+            areaW = area.count == 4 ? area[3] - area[1] : 0
+        }
+    }
+
+    private func padCellField(_ label: String, _ value: Binding<Int>) -> some View {
+        VStack(spacing: 2) {
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+            TextField("", value: value, format: .number)
+                .textFieldStyle(.roundedBorder)
+                .keyboardType(.numberPad)
+                .multilineTextAlignment(.center)
+        }
+        .onChange(of: value.wrappedValue) { _, _ in
+            guard areaRow > 0, areaCol > 0, areaW > 0, areaH > 0 else { return }
+            tab.setSelectionArea(rs: areaRow, cs: areaCol, re: areaRow + areaH, ce: areaCol + areaW)
         }
     }
 

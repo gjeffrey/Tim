@@ -102,6 +102,31 @@ struct TimApp: App {
                 Button("Reload") { store.selectedTab?.webView.reload() }
                     .keyboardShortcut("r", modifiers: .command)
                 Divider()
+                Button("Zoom In") {
+                    if let view = store.selectedTab?.webView { view.magnification = min(3, view.magnification * 1.25) }
+                }
+                .keyboardShortcut("=", modifiers: .command)
+                Button("Zoom Out") {
+                    if let view = store.selectedTab?.webView { view.magnification = max(0.2, view.magnification / 1.25) }
+                }
+                .keyboardShortcut("-", modifiers: .command)
+                Button("Actual Size") {
+                    store.selectedTab?.webView.magnification = 1
+                }
+                .keyboardShortcut("0", modifiers: .command)
+                Button("Zoom to Fit") {
+                    guard let tab = store.selectedTab else { return }
+                    // Fit everything, pasteboard included: the overflow
+                    // ratio of the canvas decides the magnification.
+                    tab.webView.evaluateJavaScript(
+                        "(function(){var c=document.querySelector('[data-tim-canvas]');return c?Math.max(1,c.scrollWidth/c.clientWidth):1;})()"
+                    ) { result, _ in
+                        let ratio = (result as? Double) ?? 1
+                        tab.webView.magnification = ratio > 1.01 ? 1 / ratio : 1
+                    }
+                }
+                .keyboardShortcut("0", modifiers: [.command, .option])
+                Divider()
                 Button("Back") { store.selectedTab?.webView.goBack() }
                     .keyboardShortcut("[", modifiers: .command)
                 Button("Forward") { store.selectedTab?.webView.goForward() }

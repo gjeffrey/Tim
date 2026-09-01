@@ -153,7 +153,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         // — so the override meta stays put and is rewritten both ways.
         guard prefersDesktopViewport else { return }
         let wantWide = !isMobilePreview
-        let content = wantWide ? "width=1180" : "width=device-width, initial-scale=1"
+        // minimum-scale leaves pinch-out headroom for the pasteboard —
+        // objects past the page edge are one pinch away on iPad.
+        let content = wantWide ? "width=1180, minimum-scale=0.25" : "width=device-width, initial-scale=1"
         let js = """
         (function () {
           var m = document.querySelector('meta[name="viewport"][data-tim-preview]');
@@ -364,6 +366,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
 
     /// Groups the multi-selection into a container object (its own little
     /// canvas — moves, fills, and rotates as one), and back.
+    /// Typed placement from the inspector's cell fields — row/column
+    /// start and end in the current layout's grid.
+    public func setSelectionArea(rs: Int, cs: Int, re: Int, ce: Int) {
+        webView.evaluateJavaScript(
+            "window.__timSetArea && window.__timSetArea(\(rs), \(cs), \(re), \(ce));",
+            completionHandler: nil
+        )
+    }
+
     public func groupSelection() {
         webView.evaluateJavaScript("window.__timGroupSel && window.__timGroupSel();", completionHandler: nil)
     }
@@ -993,7 +1004,39 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       rotKnob.appendChild(rotDot);
       rotKnob.setAttribute('data-tim-handle', 'rotate');
       overlay.appendChild(rotKnob);
+      // The page's right edge, drawn — Keynote's slide boundary. Only
+      // meaningful while editing, when the pasteboard extends past it.
+      var pageEdge = doc.createElement('div');
+      pageEdge.style.cssText = 'position:absolute;width:0;border-left:1.5px dashed rgba(127,127,127,0.5);display:none;pointer-events:none;';
+      overlay.appendChild(pageEdge);
       doc.body.appendChild(overlay);
+
+      // The pasteboard: while editing at desktop width, the 24 columns
+      // pin to true pixel widths, so an object past column 24 extends
+      // BEYOND the page edge (visible, reachable) instead of squeezing
+      // every column — the CSS-grid behavior that made things vanish.
+      // Editor-only; published pages keep their elastic 1fr tracks.
+      var pinCols = doc.createElement('style');
+      pinCols.id = '__tim-pin-cols';
+      doc.head.appendChild(pinCols);
+      var lastPin = '';
+      function pinPageColumns() {
+        var canvas = doc.querySelector('[data-tim-canvas]');
+        if (!canvas || !active || collapsed()) {
+          if (lastPin) { lastPin = ''; pinCols.textContent = ''; }
+          return;
+        }
+        var cs2 = getComputedStyle(canvas);
+        var padL = parseFloat(cs2.paddingLeft) || 0;
+        var padR = parseFloat(cs2.paddingRight) || 0;
+        var gap = parseFloat(cs2.columnGap) || 16;
+        var inner = canvas.clientWidth - padL - padR;
+        var colW = Math.max(8, (inner - gap * 23) / 24).toFixed(2);
+        var css = 'html.tim-editing .tim-canvas:not(.tim-container){'
+          + 'grid-template-columns:repeat(24, ' + colW + 'px) !important;'
+          + 'grid-auto-columns:' + colW + 'px !important}';
+        if (css !== lastPin) { lastPin = css; pinCols.textContent = css; }
+      }
 
       var sel = null, drag = null, active = false, editingEl = null;
       var selGroup = [];
@@ -1182,6 +1225,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (!canvas) { return; }
         var cr = canvas.getBoundingClientRect();
         var cols = colCount();
+        if (active && !collapsed()) {
+          var pr = rectOf(canvas);
+          pageEdge.style.display = 'block';
+          pageEdge.style.left = (pr.x + canvas.clientWidth) + 'px';
+          pageEdge.style.top = pr.y + 'px';
+          pageEdge.style.height = Math.max(canvas.clientHeight, 240) + 'px';
+        } else {
+          pageEdge.style.display = 'none';
+        }
         Array.prototype.forEach.call(canvas.querySelectorAll('.tim-object'), function (el) {
           var r = el.getBoundingClientRect();
           // Off the page two ways: the rendered box sits wholly past an
@@ -1199,6 +1251,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         });
       }
       function layout() {
+        pinPageColumns();
         markOffPage();
         if (!sel || !doc.contains(sel)) { hide(); return; }
         var r = rectOf(sel);
@@ -1789,6 +1842,17 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         restoreSnapshot(redoStack.pop());
       };
 
+      // Typed placement from the inspector's cell fields — mode-aware,
+      // clamped onto the page (which makes them the rescue lane for
+      // anything stranded off it).
+      window.__timSetArea = function (rs, cs, re, ce) {
+        if (!sel || !isObject(sel) || !placement(sel)) { return; }
+        checkpoint('area');
+        setArea(sel, rs, cs, re, ce);
+        fitSpan(sel);
+        layout();
+      };
+
       // Groups: a composition becomes one object. The container is itself
       // a small canvas — same column rhythm as the cells it occupies, so
       // children keep their exact size and position — and as an object it
@@ -2163,6 +2227,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
               radius: parseFloat(sel.style.borderRadius) || 0,
               opacity: parseFloat(cs.opacity) || 1,
               padding: parseFloat(sel.style.padding) || 0,
+              area: (function () { var pp = placement(sel); return pp ? [pp.rs, pp.cs, pp.re, pp.ce] : null; })(),
+              maxCols: colCount(),
               hasShadow: sel.style.boxShadow ? 1 : 0,
               hasTextShadow: sel.style.textShadow ? 1 : 0,
               selCount: groupAll().length,
@@ -2667,6 +2733,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         active = true;
         overlay.style.display = 'block';
         doc.documentElement.classList.add('tim-editing');
+        pinPageColumns();
         // Editing at phone width edits the mobile layout.
         if (collapsed()) { window.__timEnsureMobileLayout(); }
       };
@@ -2679,6 +2746,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         overlay.style.display = 'none';
         notifySel();
         doc.documentElement.classList.remove('tim-editing');
+        pinPageColumns();
       };
     })();
     """

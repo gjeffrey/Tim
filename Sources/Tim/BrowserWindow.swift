@@ -4081,6 +4081,10 @@ struct InspectorControls: View {
     @State private var radius: Double
     @State private var padding: Double
     @State private var opacity: Double
+    @State private var areaRow: Int = 0
+    @State private var areaCol: Int = 0
+    @State private var areaW: Int = 0
+    @State private var areaH: Int = 0
     @State private var hasShadow: Bool
     @State private var shadowColor: Color = .black
     @State private var textShadowOn: Bool
@@ -4113,6 +4117,11 @@ struct InspectorControls: View {
         _radius = State(initialValue: info["radius"] as? Double ?? 0)
         _padding = State(initialValue: info["padding"] as? Double ?? 0)
         _opacity = State(initialValue: info["opacity"] as? Double ?? 1)
+        let area = info["area"] as? [Int] ?? []
+        _areaRow = State(initialValue: area.count == 4 ? area[0] : 0)
+        _areaCol = State(initialValue: area.count == 4 ? area[1] : 0)
+        _areaH = State(initialValue: area.count == 4 ? area[2] - area[0] : 0)
+        _areaW = State(initialValue: area.count == 4 ? area[3] - area[1] : 0)
         _hasShadow = State(initialValue: (info["hasShadow"] as? Int) == 1)
         _textShadowOn = State(initialValue: (info["hasTextShadow"] as? Int) == 1)
         _isItalic = State(initialValue: (info["italic"] as? Int) == 1)
@@ -4659,6 +4668,21 @@ struct InspectorControls: View {
                 .onChange(of: rotation) { _, value in
                     tab.setSelectionStyle("transform", value == 0 ? "" : "rotate(\(String(format: "%g", value))deg)")
                 }
+            // Position and size, typed — in the page's own unit (grid
+            // cells), so what you enter is exactly what publishes. Also
+            // the rescue lane: values clamp onto the page.
+            if areaW > 0 {
+                HStack(spacing: 8) {
+                    cellField("Col", $areaCol)
+                    cellField("Row", $areaRow)
+                    cellField("W", $areaW)
+                    cellField("H", $areaH)
+                }
+                Text("Position and size in grid cells — the page is \(info["maxCols"] as? Int ?? 24) across.")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Toggle("Show on iPhone", isOn: $showOnMobile)
                 .font(.system(size: 11))
                 .onChange(of: showOnMobile) { _, on in
@@ -4666,6 +4690,26 @@ struct InspectorControls: View {
                 }
                 .help("Off: this object appears on desktop only. Use it for decorative pieces the phone layout doesn't need.")
         }
+    }
+
+    private func cellField(_ label: String, _ value: Binding<Int>) -> some View {
+        VStack(spacing: 2) {
+            Text(label)
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+            TextField("", value: value, format: .number)
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+                .font(.system(size: 11).monospacedDigit())
+                .multilineTextAlignment(.center)
+                .onSubmit { applyTypedArea() }
+        }
+        .onChange(of: value.wrappedValue) { _, _ in applyTypedArea() }
+    }
+
+    private func applyTypedArea() {
+        guard areaRow > 0, areaCol > 0, areaW > 0, areaH > 0 else { return }
+        tab.setSelectionArea(rs: areaRow, cs: areaCol, re: areaRow + areaH, ce: areaCol + areaW)
     }
 
     private func alignButton(_ help: String, _ symbol: String, _ edge: String) -> some View {
