@@ -84,9 +84,25 @@ public enum MobileCSS {
         return rules
     }
 
+    /// Objects whose mobile size was set BY HAND (style[data-tim-mobile-type])
+    /// are the author's word — synthesis leaves them alone entirely.
+    static func handSizedIDs(in html: String) -> Set<String> {
+        guard let tagRange = html.range(of: "<style[^>]*data-tim-mobile-type[^>]*>", options: .regularExpression) else { return [] }
+        let tag = String(html[tagRange])
+        guard let raw = capture(tag, "data-props=\"([^\"]*)\"") ?? capture(tag, "data-props='([^']*)'") else { return [] }
+        let json = raw
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&amp;", with: "&")
+        guard let data = json.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return [] }
+        return Set(dict.keys)
+    }
+
     /// Objects with big inline sizes (set from the inspector) get the
     /// same treatment, addressed by their identity.
     static func inlineSizeRules(in html: String) -> [String] {
+        let handSized = handSizedIDs(in: html)
         var rules: [String] = []
         for pattern in [
             "data-tim-id=\"([^\"]+)\"[^>]*style=\"[^\"]*?font-size:\\s*([0-9.]+)px",
@@ -99,7 +115,7 @@ public enum MobileCSS {
                       let b = Range(match.range(at: 2), in: html)
                 else { continue }
                 let id = String(html[idFirst ? a : b])
-                guard let px = Double(html[idFirst ? b : a]) else { continue }
+                guard !handSized.contains(id), let px = Double(html[idFirst ? b : a]) else { continue }
                 if let rule = scaleRule(px: px, selector: "[data-tim-id=\"\(id)\"]") { rules.append(rule) }
             }
         }

@@ -729,6 +729,31 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       })();
       function mobileActive() { return collapsed() && Object.keys(mobileLayout).length > 0; }
       function colCount() { return mobileActive() ? MOBILE_COLS : COLS; }
+      // Type sized BY HAND at phone width is the author's word for that
+      // layout: it lives in its own mobile rule (higher specificity than
+      // the synthesized readability sizes, so it always wins), leaves the
+      // desktop size untouched, and persists with the page.
+      var mobileType = {};
+      (function parseMobileType() {
+        var el = doc.querySelector('style[data-tim-mobile-type]');
+        if (!el) { return; }
+        try { mobileType = JSON.parse(el.getAttribute('data-props') || '{}') || {}; } catch (e) {}
+      })();
+      function writeMobileType() {
+        var st = doc.querySelector('style[data-tim-mobile-type]');
+        if (!st) {
+          st = doc.createElement('style');
+          st.setAttribute('data-tim-mobile-type', '');
+          doc.head.appendChild(st);
+        }
+        var css = '@media (max-width: 700px){\\n';
+        for (var id in mobileType) {
+          css += '.tim-canvas [data-tim-id="' + id + '"]{font-size:' + mobileType[id] + 'px !important}\\n';
+        }
+        css += '}';
+        st.textContent = css;
+        st.setAttribute('data-props', JSON.stringify(mobileType));
+      }
       function ensureObjectId(el) {
         var id = el.getAttribute('data-tim-id');
         if (!id) {
@@ -1794,9 +1819,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       function takeSnapshot() {
         var c = canvasEl();
         if (!c) { return null; }
-        return { c: c.innerHTML, p: JSON.stringify(templateProps), m: JSON.stringify(mobileLayout) };
+        return { c: c.innerHTML, p: JSON.stringify(templateProps), m: JSON.stringify(mobileLayout), t: JSON.stringify(mobileType) };
       }
-      function sameSnapshot(a, b) { return !!a && !!b && a.c === b.c && a.p === b.p && a.m === b.m; }
+      function sameSnapshot(a, b) { return !!a && !!b && a.c === b.c && a.p === b.p && a.m === b.m && a.t === b.t; }
       function checkpoint(tag) {
         var snap = takeSnapshot();
         if (!snap) { return; }
@@ -1820,8 +1845,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         c.innerHTML = snap.c;
         try { templateProps = JSON.parse(snap.p) || {}; } catch (e) { templateProps = {}; }
         try { mobileLayout = JSON.parse(snap.m || '{}') || {}; } catch (e2) { mobileLayout = {}; }
+        try { mobileType = JSON.parse(snap.t || '{}') || {}; } catch (e3) { mobileType = {}; }
         writeTemplates();
         if (Object.keys(mobileLayout).length) { writeMobileLayout(); }
+        writeMobileType();
         layout();
         notifySel(true);
       }
@@ -2276,6 +2303,17 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (prop === 'transform' && sel.hasAttribute && sel.hasAttribute('data-tim-canvas')
             && !(sel.classList && sel.classList.contains('tim-container'))) { return; }
         checkpoint('style:' + prop);
+        // A size chosen while looking at the phone belongs to the phone.
+        if (prop === 'fontSize' && mobileActive()) {
+          groupAll().forEach(function (member) {
+            var px = parseFloat(value);
+            if (px > 0) { mobileType[ensureObjectId(member)] = px; }
+          });
+          writeMobileType();
+          layout();
+          notifySel();
+          return;
+        }
         groupAll().forEach(function (member) { member.style[prop] = value; });
         layout();
         notifySel();
