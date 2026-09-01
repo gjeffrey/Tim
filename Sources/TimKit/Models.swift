@@ -192,6 +192,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           for (var j = 0; j < loading.length; j++) { loading[j].classList.remove('tim-loading'); }
           var chrome = clone.querySelector('#__tim-editor-css');
           if (chrome) { chrome.remove(); }
+          var pending = clone.querySelectorAll('[data-tim-placeholder]');
+          for (var p = 0; p < pending.length; p++) { pending[p].remove(); }
+          var replacing = clone.querySelectorAll('[data-tim-replace]');
+          for (var q = 0; q < replacing.length; q++) { replacing[q].removeAttribute('data-tim-replace'); }
           var head = clone.querySelector('head');
           if (head && !head.querySelector('meta[name="generator"]')) {
             var gen = document.createElement('meta');
@@ -268,6 +272,41 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         webView.evaluateJavaScript(js) { result, _ in
             completion(result as? Bool ?? false)
         }
+    }
+
+    /// Swaps a media placeholder for the real element once its upload
+    /// lands (any move/resize of the placeholder carries over).
+    public func resolvePlaceholder(id: String, html: String) {
+        webView.evaluateJavaScript(
+            "window.__timResolvePlaceholder && window.__timResolvePlaceholder(\(Self.jsLiteral(id)), \(Self.jsLiteral(html)));",
+            completionHandler: nil
+        )
+    }
+
+    public func failPlaceholder(id: String, message: String) {
+        webView.evaluateJavaScript(
+            "window.__timFailPlaceholder && window.__timFailPlaceholder(\(Self.jsLiteral(id)), \(Self.jsLiteral(message)));",
+            completionHandler: nil
+        )
+    }
+
+    /// Tags the selected media element for replacement; false when the
+    /// selection holds no media.
+    public func markSelectedMedia(id: String, _ completion: @escaping (Bool) -> Void) {
+        webView.evaluateJavaScript(
+            "window.__timMarkSelMedia ? window.__timMarkSelMedia(\(Self.jsLiteral(id))) : false"
+        ) { result, _ in
+            completion(result as? Bool ?? false)
+        }
+    }
+
+    /// Swaps the tagged media element for a new one — placement, styling,
+    /// and classes survive the swap.
+    public func replaceMedia(id: String, html: String) {
+        webView.evaluateJavaScript(
+            "window.__timReplaceMedia && window.__timReplaceMedia(\(Self.jsLiteral(id)), \(Self.jsLiteral(html)));",
+            completionHandler: nil
+        )
     }
 
     /// Applies a global text style class (tim-style-*) to the selected
@@ -508,7 +547,14 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       editorCSS.textContent =
         'html.tim-editing .tim-object{cursor:grab}' +
         'html.tim-editing .tim-object:active{cursor:grabbing}' +
-        '.tim-object.tim-loading{background:rgba(10,132,255,0.07);outline:1.5px dashed rgba(10,132,255,0.45);outline-offset:-1px;border-radius:6px;min-height:48px}';
+        '.tim-object.tim-loading{background:rgba(10,132,255,0.07);outline:1.5px dashed rgba(10,132,255,0.45);outline-offset:-1px;border-radius:6px;min-height:48px}' +
+        '.tim-media-loading{position:relative;min-height:64px;border-radius:8px;display:flex;align-items:center;justify-content:center;' +
+          'outline:1.5px dashed rgba(127,127,127,0.5);outline-offset:-1px;' +
+          'background:linear-gradient(100deg,rgba(127,127,127,0.10) 30%,rgba(127,127,127,0.22) 50%,rgba(127,127,127,0.10) 70%);' +
+          'background-size:200% 100%;animation:timShimmer 1.4s linear infinite}' +
+        '@keyframes timShimmer{from{background-position:200% 0}to{background-position:-200% 0}}' +
+        '.tim-media-loading-label{font:500 12px -apple-system,sans-serif;color:rgba(127,127,127,0.95);padding:4px 12px;text-align:center}' +
+        '.tim-media-failed{animation:none;outline-color:rgba(255,59,48,0.65);background:rgba(255,59,48,0.06)}';
 
       var overlay = doc.createElement('div');
       overlay.id = '__tim-overlay';
@@ -941,6 +987,54 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         layout();
         notifySel();
         el.scrollIntoView({ block: 'nearest' });
+      };
+
+      // Media arrives in two beats: a shimmer placeholder right away, the
+      // real element when the upload lands (keeping any move/resize the
+      // user did to the placeholder meanwhile).
+      window.__timResolvePlaceholder = function (id, html) {
+        var ph = doc.querySelector('[data-tim-placeholder=' + JSON.stringify(id) + ']');
+        if (!ph) { return; }
+        var tmp = doc.createElement('div');
+        tmp.innerHTML = html;
+        var el = tmp.firstElementChild;
+        if (!el) { ph.remove(); layout(); return; }
+        if (ph.style && ph.style.gridArea) { el.style.gridArea = ph.style.gridArea; }
+        ph.parentNode.replaceChild(el, ph);
+        if (sel === ph) { sel = el; }
+        layout();
+        notifySel(true);
+      };
+      window.__timFailPlaceholder = function (id, message) {
+        var ph = doc.querySelector('[data-tim-placeholder=' + JSON.stringify(id) + ']');
+        if (!ph) { return; }
+        ph.classList.add('tim-media-failed');
+        var lbl = ph.querySelector('.tim-media-loading-label');
+        if (lbl) { lbl.textContent = message; }
+      };
+      // Replace flow: tag the selected media now, swap it by tag when the
+      // new file's upload lands — placement, styling, and classes survive.
+      window.__timMarkSelMedia = function (id) {
+        if (!sel) { return false; }
+        var target = (sel.matches && sel.matches('img,video,audio'))
+          ? sel : (sel.querySelector ? sel.querySelector('img,video,audio') : null);
+        if (!target) { return false; }
+        target.setAttribute('data-tim-replace', id);
+        return true;
+      };
+      window.__timReplaceMedia = function (id, html) {
+        var target = doc.querySelector('[data-tim-replace=' + JSON.stringify(id) + ']');
+        if (!target) { return; }
+        var tmp = doc.createElement('div');
+        tmp.innerHTML = html;
+        var el = tmp.firstElementChild;
+        if (!el) { target.removeAttribute('data-tim-replace'); return; }
+        if (target.className) { el.className = target.className; }
+        if (target.style && target.style.cssText) { el.style.cssText = target.style.cssText; }
+        target.parentNode.replaceChild(el, target);
+        if (sel === target) { sel = el; }
+        layout();
+        notifySel(true);
       };
 
       var selSeq = 0;

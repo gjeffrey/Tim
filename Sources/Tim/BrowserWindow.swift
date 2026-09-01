@@ -28,6 +28,7 @@ extension Notification.Name {
     static let timThumbsUpdated = Notification.Name("tim.thumbsUpdated")
     static let timPreviewVersion = Notification.Name("tim.previewVersion")
     static let timEditNav = Notification.Name("tim.editNav")
+    static let timReplaceMedia = Notification.Name("tim.replaceMedia")
 }
 
 struct BrowserWindow: View {
@@ -1632,6 +1633,9 @@ struct EditingToolbar: View {
         .onReceive(NotificationCenter.default.publisher(for: .timEditNav)) { _ in
             if let site, tab.isEditing { navBuilderSite = site }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .timReplaceMedia)) { _ in
+            if tab.isEditing { replaceSelectedMedia() }
+        }
     }
 
     /// One Media command: pick any file — images, video, and audio embed
@@ -1657,12 +1661,16 @@ struct EditingToolbar: View {
             resolvedSite = s
         }
         let pageURL = tab.webView.url
+        let placeholderID = UUID().uuidString
         isWorking = true
         statusMessage = "Adding \(name)…"
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                var src = try Self.stage(fileURL: fileURL, site: resolvedSite, pageURL: pageURL)
+                // Two beats: the file lands in the mirror (fast) and a
+                // shimmer placeholder appears on the canvas immediately;
+                // the real element swaps in when the upload finishes.
+                var src = try Self.stage(fileURL: fileURL, site: resolvedSite, pageURL: pageURL, upload: false)
                 // Relative to the current page, so it works under any base
                 // path, on file:// previews, and on the live site alike.
                 if let resolvedSite, let pageURL {
@@ -1670,21 +1678,95 @@ struct EditingToolbar: View {
                     let depth = max(0, rel.split(separator: "/").count - 1)
                     src = String(repeating: "../", count: depth) + src
                 }
+                let spans = Self.mediaSpans(for: kind)
+                DispatchQueue.main.async {
+                    statusMessage = "Uploading \(name)…"
+                    tab.insertObject(
+                        html: Self.placeholderHTML(id: placeholderID, label: "Uploading \(name)…"),
+                        colSpan: spans.cols, rowSpan: spans.rows
+                    )
+                }
+                try Self.uploadStagedMedia(site: resolvedSite, name: name)
                 DispatchQueue.main.async {
                     isWorking = false
                     statusMessage = nil
-                    insertStaged(kind: kind, src: src, name: name)
+                    tab.resolvePlaceholder(id: placeholderID, html: Self.mediaHTML(kind: kind, src: src, name: name))
                 }
             } catch {
                 DispatchQueue.main.async {
                     isWorking = false
                     statusMessage = "Couldn’t add \(name): \(error.localizedDescription)"
+                    tab.failPlaceholder(id: placeholderID, message: "Upload failed — \(name)")
                 }
             }
         }
     }
 
-    static func stage(fileURL: URL, site: Site?, pageURL: URL?) throws -> String {
+    /// Replace the selected media in place: pick a new file, keep the
+    /// element's placement, size, and styling. The old media stays visible
+    /// until the new upload lands.
+    private func replaceSelectedMedia() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let fileURL = panel.url else { return }
+        let name = fileURL.lastPathComponent
+        let kind = MediaKind.of(fileExtension: fileURL.pathExtension)
+        guard kind != .file else {
+            statusMessage = "That's not a media file — use Insert → Media… to link files."
+            return
+        }
+        let replaceID = UUID().uuidString
+        tab.markSelectedMedia(id: replaceID) { marked in
+            guard marked else {
+                statusMessage = "Select an image, video, or audio object first."
+                return
+            }
+            let resolvedSite = site
+            let pageURL = tab.webView.url
+            isWorking = true
+            statusMessage = "Uploading \(name)…"
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    var src = try Self.stage(fileURL: fileURL, site: resolvedSite, pageURL: pageURL, upload: false)
+                    if let resolvedSite, let pageURL {
+                        let rel = resolvedSite.relativePagePath(for: pageURL)
+                        let depth = max(0, rel.split(separator: "/").count - 1)
+                        src = String(repeating: "../", count: depth) + src
+                    }
+                    try Self.uploadStagedMedia(site: resolvedSite, name: name)
+                    DispatchQueue.main.async {
+                        isWorking = false
+                        statusMessage = nil
+                        tab.replaceMedia(id: replaceID, html: Self.mediaHTML(kind: kind, src: src, name: name))
+                    }
+                } catch {
+                    DispatchQueue.main.async {
+                        isWorking = false
+                        statusMessage = "Couldn’t replace with \(name): \(error.localizedDescription)"
+                    }
+                }
+            }
+        }
+    }
+
+    static func mediaSpans(for kind: MediaKind) -> (cols: Int, rows: Int) {
+        switch kind {
+        case .image: return (8, 8)
+        case .video: return (12, 8)
+        case .audio: return (8, 2)
+        case .file: return (6, 2)
+        }
+    }
+
+    static func placeholderHTML(id: String, label: String) -> String {
+        let escaped = label
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+        return "<div class=\"tim-object tim-media-loading\" data-tim-placeholder=\"\(id)\"><span class=\"tim-media-loading-label\">\(escaped)</span></div>"
+    }
+
+    static func stage(fileURL: URL, site: Site?, pageURL: URL?, upload: Bool = true) throws -> String {
         let fm = FileManager.default
         let name = fileURL.lastPathComponent
         if let site, !site.localProjectPath.isEmpty {
@@ -1703,18 +1785,7 @@ struct EditingToolbar: View {
             let dest = (mediaDir as NSString).appendingPathComponent(name)
             if fm.fileExists(atPath: dest) { try fm.removeItem(atPath: dest) }
             try fm.copyItem(atPath: fileURL.path, toPath: dest)
-            switch site.target {
-            case .sftp:
-                let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
-                _ = try SFTP.uploadFile(
-                    localPath: dest, toDirectory: root.isEmpty ? "media" : root + "/media", named: name,
-                    host: site.host, username: site.username, port: site.port
-                )
-            case .cloudflare:
-                _ = try CloudflarePublisher.deploy(folder: site.localProjectPath, projectName: site.cfProjectName)
-            case .githubPages:
-                _ = try GitHubPagesPublisher.publish(repo: site.localProjectPath, message: "Add media \(name)")
-            }
+            if upload { try uploadStagedMedia(site: site, name: name) }
             return "media/\(name)"
         }
         if let pageURL, pageURL.isFileURL {
@@ -1726,16 +1797,36 @@ struct EditingToolbar: View {
         throw PublishError.failed("Media needs a connected site or a local page to live in.")
     }
 
-    private func insertStaged(kind: MediaKind, src: String, name: String) {
+    /// The slow half of staging: pushes an already-mirrored media file to
+    /// the site's target. No-op for local pages.
+    static func uploadStagedMedia(site: Site?, name: String) throws {
+        guard let site, !site.localProjectPath.isEmpty,
+              !AstroProject.isAstroProject(site.localProjectPath) else { return }
+        switch site.target {
+        case .sftp:
+            let dest = ((site.localProjectPath as NSString).appendingPathComponent("media") as NSString).appendingPathComponent(name)
+            let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
+            _ = try SFTP.uploadFile(
+                localPath: dest, toDirectory: root.isEmpty ? "media" : root + "/media", named: name,
+                host: site.host, username: site.username, port: site.port
+            )
+        case .cloudflare:
+            _ = try CloudflarePublisher.deploy(folder: site.localProjectPath, projectName: site.cfProjectName)
+        case .githubPages:
+            _ = try GitHubPagesPublisher.publish(repo: site.localProjectPath, message: "Add media \(name)")
+        }
+    }
+
+    static func mediaHTML(kind: MediaKind, src: String, name: String) -> String {
         switch kind {
         case .image:
-            tab.insertObject(html: #"<img class="tim-object" src="\#(src)" alt="" />"#, colSpan: 8, rowSpan: 8)
+            return #"<img class="tim-object" src="\#(src)" alt="" />"#
         case .video:
-            tab.insertObject(html: #"<video class="tim-object" controls src="\#(src)"></video>"#, colSpan: 12, rowSpan: 8)
+            return #"<video class="tim-object" controls src="\#(src)"></video>"#
         case .audio:
-            tab.insertObject(html: #"<audio class="tim-object" controls src="\#(src)"></audio>"#, colSpan: 8, rowSpan: 2)
+            return #"<audio class="tim-object" controls src="\#(src)"></audio>"#
         case .file:
-            tab.insertObject(html: "<div class=\"tim-object tim-text tim-style-body\"><a href=\"\(src)\">\(name)</a></div>", colSpan: 6, rowSpan: 2)
+            return "<div class=\"tim-object tim-text tim-style-body\"><a href=\"\(src)\">\(name)</a></div>"
         }
     }
 
@@ -3140,6 +3231,21 @@ struct InspectorControls: View {
         (info["isText"] as? Int) == 1
             || ["h1", "h2", "h3", "h4", "h5", "h6", "p", "blockquote", "li"].contains(info["tag"] as? String ?? "")
     }
+    private var isMedia: Bool {
+        ["img", "video", "audio"].contains(info["tag"] as? String ?? "")
+    }
+    private var mediaCard: some View {
+        card {
+            Button("Replace Media…") {
+                NotificationCenter.default.post(name: .timReplaceMedia, object: nil)
+            }
+            .font(.system(size: 11))
+            Text("Swap the file — position, size, and styling stay put.")
+                .font(.system(size: 9.5))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
     private var hasOverrides: Bool { (info["overrides"] as? Int) == 1 }
     private var selectionCount: Int { info["selCount"] as? Int ?? 1 }
     private var customStyles: [String] {
@@ -3164,6 +3270,9 @@ struct InspectorControls: View {
                 Text((info["tag"] as? String ?? "object").capitalized)
                     .font(.system(size: 13, weight: .semibold))
                     .padding(.horizontal, 2)
+            }
+            if isMedia {
+                mediaCard
             }
             appearanceCard
             if allowsTemplates, isCanvasObject {
