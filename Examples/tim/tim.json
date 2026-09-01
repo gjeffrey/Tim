@@ -1,4 +1,8 @@
 {
+  "fonts" : [
+    "EB Garamond"
+  ],
+  "fontsUpdated" : "2026-09-01T22:14:28Z",
   "iconRecipes" : {
     "\/holland.html" : {
       "backgroundEndHex" : "#CB30E0",
@@ -10,6 +14,9 @@
     }
   },
   "iconRecipesUpdated" : "2026-08-31T21:22:01Z",
-  "updated" : "2026-08-31T21:22:01Z",
+  "iconsUpdated" : "2026-09-01T22:14:28Z",
+  "siteFavicon" : "",
+  "siteTouchIcon" : "",
+  "updated" : "2026-09-01T22:14:28Z",
   "version" : 1
 }

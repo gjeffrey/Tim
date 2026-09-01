@@ -977,7 +977,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         '@media (max-width:700px){html.tim-editing .tim-canvas img.tim-object,html.tim-editing .tim-canvas video.tim-object{height:auto !important;align-self:start}}' +
         // Off-page objects: reachable (the page scrolls sideways while
         // editing) and unmistakable (faded, dashed) — never just gone.
-        'html.tim-editing, html.tim-editing body{overflow-x:auto !important}' +
+        // One scroll context: the WINDOW scrolls onto the pasteboard.
+        // (body overflow-x:auto would nest a second scrollport that
+        // clips the overflow — the bug that hid everything.)
+        'html.tim-editing{overflow-x:auto !important}' +
+        'html.tim-editing body{overflow-x:visible !important;overflow-y:visible !important}' +
+        // The pasteboard is always there while editing: a probe extends
+        // the scrollable area past the page edge so there is somewhere
+        // to put things even before anything lives out there.
+        'html.tim-editing body::after{content:"";position:absolute;top:0;left:calc(100vw + 320px);width:1px;height:1px;}' +
         'html.tim-editing [data-tim-offpage]{opacity:0.4;filter:saturate(0.5);outline:1.5px dashed rgba(127,127,127,0.55);outline-offset:2px}' +
         'html.tim-editing [data-tim-review]{outline:2px solid rgba(255,159,10,0.85) !important;outline-offset:3px;animation:timReviewPulse 1.6s ease-in-out infinite}' +
         '@keyframes timReviewPulse{50%{outline-color:rgba(255,159,10,0.25)}}';
@@ -1156,9 +1164,14 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
         return desktopPlacement(el);
       }
+      // The page ends at its columns; the pasteboard doesn't. An object
+      // may rest this many columns past the right edge while composing —
+      // published pages hide whatever still lives out there.
+      var PASTE_COLS = 12;
+      var PASTE_COLS_MOBILE = 6;
       function setDesktopArea(el, rs, cs, re, ce) {
         var rh = Math.max(1, re - rs), cw = Math.max(1, ce - cs);
-        cs = Math.max(1, Math.min(COLS + 1 - cw, cs));
+        cs = Math.max(1, Math.min(COLS + PASTE_COLS + 1 - cw, cs));
         rs = Math.max(1, rs);
         el.style.gridArea = rs + ' / ' + cs + ' / ' + (rs + rh) + ' / ' + (cs + cw);
       }
@@ -1166,7 +1179,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (mobileActive()) {
           var cols = colCount();
           var rh = Math.max(1, re - rs), cw = Math.max(1, Math.min(cols, ce - cs));
-          var ncs = Math.max(1, Math.min(cols + 1 - cw, cs));
+          var ncs = Math.max(1, Math.min(cols + PASTE_COLS_MOBILE + 1 - cw, cs));
           var nrs = Math.max(1, rs);
           mobileLayout[ensureObjectId(el)] = [nrs, ncs, nrs + rh, ncs + cw];
           writeMobileLayout();

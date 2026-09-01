@@ -38,7 +38,49 @@ public enum MobileCSS {
         } else if let head = out.range(of: "</head>") {
             out.insert(contentsOf: block + "\n", at: head.lowerBound)
         }
+        out = ensuringPasteboardRules(in: out)
         return out
+    }
+
+    /// Keynote semantics for the pasteboard: an object resting wholly past
+    /// the page's columns stays in the document but doesn't render for
+    /// visitors — it shows only while editing (the tim-editing session).
+    /// Per layout: off the desktop page hides at desktop widths, off the
+    /// phone stack hides at phone widths.
+    static func ensuringPasteboardRules(in html: String) -> String {
+        var out = html
+        var blocks: [String] = []
+        let deskOff = objects(in: out).filter { $0.cs > 24 }.map(\.id)
+        if !deskOff.isEmpty {
+            let sel = deskOff.map { "html:not(.tim-editing) [data-tim-id=\"\($0)\"]" }.joined(separator: ",")
+            blocks.append("@media (min-width: 701px){\(sel){display:none !important}}")
+        }
+        let mobileOff = mobileEntries(in: out).filter { $0.value.count == 4 && $0.value[1] > 8 }.map(\.key)
+        if !mobileOff.isEmpty {
+            let sel = mobileOff.map { "html:not(.tim-editing) [data-tim-id=\"\($0)\"]" }.joined(separator: ",")
+            blocks.append("@media (max-width: 700px){\(sel){display:none !important}}")
+        }
+        let block = "<style data-tim-pasteboard>" + blocks.joined(separator: "\n") + "</style>"
+        if let existing = out.range(of: "<style data-tim-pasteboard>[\\s\\S]*?</style>", options: .regularExpression) {
+            out.replaceSubrange(existing, with: block)
+        } else if let head = out.range(of: "</head>") {
+            out.insert(contentsOf: block + "\n", at: head.lowerBound)
+        }
+        return out
+    }
+
+    /// The explicit mobile layout, read back from its style element.
+    static func mobileEntries(in html: String) -> [String: [Int]] {
+        guard let tagRange = html.range(of: "<style[^>]*data-tim-mobile-layout[^>]*>", options: .regularExpression) else { return [:] }
+        let tag = String(html[tagRange])
+        guard let raw = capture(tag, "data-props=\"([^\"]*)\"") ?? capture(tag, "data-props='([^']*)'") else { return [:] }
+        let json = raw
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&amp;", with: "&")
+        guard let data = json.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: [Int]]
+        else { return [:] }
+        return dict
     }
 
     /// Every canvas object gets a stable identity the first time it's
