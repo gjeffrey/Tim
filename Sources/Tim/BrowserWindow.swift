@@ -4267,6 +4267,7 @@ struct PageOptionsControls: View {
     @State private var bgMode: String
     @State private var bgEnd: Color
     @State private var bgAngle: Double
+    @State private var bgVideoBounce = false
 
     init(tab: Tab, info: [String: Any], reload: @escaping () -> Void) {
         self.tab = tab
@@ -4375,8 +4376,13 @@ struct PageOptionsControls: View {
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 case "video":
-                    Button("Choose Video…") { choosePageBackground(video: true) }
-                        .controlSize(.mini)
+                    HStack(spacing: 8) {
+                        Button("Choose Video…") { choosePageBackground(video: true) }
+                            .controlSize(.mini)
+                        Toggle("Bounce", isOn: $bgVideoBounce)
+                            .font(.system(size: 10))
+                            .help("Forward, then backward, forever — baked into the file.")
+                    }
                     Text("Plays silently behind the whole page, on this page. Optimized for the web automatically.")
                         .font(.system(size: 9.5))
                         .foregroundStyle(.tertiary)
@@ -4637,6 +4643,7 @@ struct PageOptionsControls: View {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let fileURL = panel.url else { return }
+        let bounce = bgVideoBounce
         let kind = MediaKind.of(fileExtension: fileURL.pathExtension)
         guard kind == (video ? .video : .image) else {
             let alert = NSAlert()
@@ -4655,6 +4662,11 @@ struct PageOptionsControls: View {
                     activity = ActivityCenter.shared.begin("Optimizing \(fileURL.lastPathComponent) for the web…")
                     publishURL = try MediaOptimizer.transcode(fileURL: fileURL, kind: kind)
                     if let s = resolvedSite { MediaOptimizer.stashOriginal(fileURL, mirror: s.localProjectPath) }
+                }
+                if video, bounce {
+                    ActivityCenter.shared.end(activity)
+                    activity = ActivityCenter.shared.begin("Making \(fileURL.lastPathComponent) bounce…")
+                    publishURL = try MediaOptimizer.bounceVideo(publishURL)
                 }
                 let staged = try EditingToolbar.stage(fileURL: publishURL, site: resolvedSite, pageURL: pageURL)
                 let full = (resolvedSite?.origin.hasPrefix("http") == true)
