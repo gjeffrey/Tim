@@ -945,14 +945,18 @@ struct TabContentView: View {
             previewSha = nil
         }
         .onChange(of: tab.isLoading) { _, loading in
-            // Thumbnails fall out of browsing: snapshot owned pages on load.
+            // Thumbnails fall out of browsing: snapshot owned pages on
+            // load — filed under the rendition the tab is showing, so a
+            // phone visit refreshes the phone thumb, never the desktop one.
             guard !loading, let url = tab.webView.url, matchedSite != nil else { return }
+            let mobile = tab.isMobilePreview
             let config = WKSnapshotConfiguration()
-            config.snapshotWidth = 280
+            config.snapshotWidth = mobile ? 160 : 280
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                guard tab.isMobilePreview == mobile, tab.webView.url == url else { return }
                 tab.webView.takeSnapshot(with: config) { image, _ in
                     if let image {
-                        ThumbnailStore.save(image, for: url.absoluteString)
+                        ThumbnailStore.save(image, for: mobile ? MobileThumbs.key(url.absoluteString) : url.absoluteString)
                         NotificationCenter.default.post(name: .timThumbsUpdated, object: nil)
                     }
                 }
@@ -1468,6 +1472,19 @@ struct TabContentView: View {
     private func captureThumbnailSoon(expecting: URL? = nil) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
             guard let url = tab.webView.url, expecting == nil || url == expecting else { return }
+            // In phone view, the live snapshot belongs to the phone thumb;
+            // the offscreen factory keeps the desktop one honest instead.
+            if tab.isMobilePreview {
+                let config = WKSnapshotConfiguration()
+                config.snapshotWidth = 160
+                tab.webView.takeSnapshot(with: config) { image, _ in
+                    if let image {
+                        ThumbnailStore.save(image, for: MobileThumbs.key(url.absoluteString))
+                        NotificationCenter.default.post(name: .timThumbsUpdated, object: nil)
+                    }
+                }
+                return
+            }
             let config = WKSnapshotConfiguration()
             config.snapshotWidth = 280
             tab.webView.takeSnapshot(with: config) { image, _ in
