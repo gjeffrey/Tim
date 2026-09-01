@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "Tim",
-    platforms: [.macOS(.v14), .iOS(.v17)],
+    platforms: [.macOS("26.0"), .iOS("26.0")],
     products: [
         // Cross-platform core: tabs, sites, ownership matching, edit
         // tracking, and the publish/round-trip logic. Compiles for macOS,

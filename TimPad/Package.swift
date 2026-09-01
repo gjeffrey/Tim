@@ -8,7 +8,7 @@ import AppleProductTypes
 
 let package = Package(
     name: "TimPad",
-    platforms: [.iOS("17.0")],
+    platforms: [.iOS("26.0")],
     products: [
         .iOSApplication(
             name: "TimPad",

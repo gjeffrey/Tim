@@ -36,13 +36,8 @@ extension Notification.Name {
 /// The creative-app posture: chrome recedes into glass, the page is the
 /// hero, and Tim's identity colors ride on top as accents.
 extension View {
-    @ViewBuilder
     func timGlass(in shape: some InsettableShape, interactive: Bool = false) -> some View {
-        if #available(macOS 26.0, *) {
-            self.glassEffect(interactive ? .regular.interactive() : .regular, in: shape)
-        } else {
-            self.background(.thinMaterial, in: shape)
-        }
+        self.glassEffect(interactive ? .regular.interactive() : .regular, in: shape)
     }
 
     /// Panel chrome: the soft translucent ground sidebars and inspectors
