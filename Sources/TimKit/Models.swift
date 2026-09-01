@@ -329,6 +329,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
     }
 
+    /// Marks the selection (or group) desktop-only: hidden on phones by
+    /// the generated mobile stylesheet.
+    public func setMobileHidden(_ hidden: Bool) {
+        webView.evaluateJavaScript(
+            "window.__timSetMobileHidden && window.__timSetMobileHidden(\(hidden ? "true" : "false"));",
+            completionHandler: nil
+        )
+    }
+
     /// Applies video behavior (autoplay, loop, sound, controls) to the
     /// selected video as one coherent state.
     public func setVideoOptions(autoplay: Bool, loop: Bool, muted: Bool, controls: Bool) {
@@ -621,7 +630,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         '.tim-media-loading-label{font:500 12px -apple-system,sans-serif;color:rgba(127,127,127,0.95);padding:4px 12px;text-align:center}' +
         '.tim-media-failed{animation:none;outline-color:rgba(255,59,48,0.65);background:rgba(255,59,48,0.06)}' +
         '.tim-media-replacing{outline:2px dashed rgba(10,132,255,0.7) !important;outline-offset:-1px;animation:timPulse 1.1s ease-in-out infinite}' +
-        '@keyframes timPulse{50%{opacity:0.55}}';
+        '@keyframes timPulse{50%{opacity:0.55}}' +
+        '@media (max-width:700px){html.tim-editing [data-tim-mobile-hidden]{display:revert !important;opacity:0.25;outline:1.5px dashed rgba(127,127,127,0.5);outline-offset:-1px}}';
 
       var overlay = doc.createElement('div');
       overlay.id = '__tim-overlay';
@@ -1358,6 +1368,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
                 bounce: sel.hasAttribute('data-tim-plain-src') ? 1 : 0,
                 src: sel.getAttribute('src') || ''
               } : 0,
+              mobileHidden: (sel.hasAttribute && sel.hasAttribute('data-tim-mobile-hidden')) ? 1 : 0,
               rotation: (function () {
                 var m = /rotate\\((-?[0-9.]+)deg\\)/.exec(sel.style.transform || '');
                 return m ? parseFloat(m[1]) : 0;
@@ -1722,6 +1733,20 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           if (p2 && p2.catch) { p2.catch(function () {}); }
         }
         notifySel(true);
+      };
+
+      // Desktop-only objects: hidden on phones by the generated mobile
+      // stylesheet; while editing at phone width they show dimmed so
+      // they stay reachable.
+      window.__timSetMobileHidden = function (hidden) {
+        if (!sel) { return; }
+        checkpoint('mobile');
+        groupAll().forEach(function (member) {
+          if (hidden) { member.setAttribute('data-tim-mobile-hidden', ''); }
+          else { member.removeAttribute('data-tim-mobile-hidden'); }
+        });
+        layout();
+        notifySel();
       };
 
       window.__timSelHTML = function () { return sel ? sel.outerHTML : ''; };

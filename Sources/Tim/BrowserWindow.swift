@@ -998,7 +998,7 @@ struct TabContentView: View {
             // The 3-second draft is the fallback if capture raced a navigation.
             guard let raw = captured ?? DraftStore.html(for: url.absoluteString) else { return }
             let rel = site.relativePagePath(for: url)
-            let html = Self.ensuringAutoSocialMeta(in: raw, rel: rel, site: site)
+            let html = MobileCSS.regenerate(in: Self.ensuringAutoSocialMeta(in: raw, rel: rel, site: site))
             let publishing = ActivityCenter.shared.begin("Publishing \((rel as NSString).lastPathComponent)…")
             refreshAutoSocialCard(for: url, site: site, pageHTML: html)
             DispatchQueue.global(qos: .userInitiated).async {
@@ -1562,25 +1562,29 @@ struct TabContentView: View {
                 Image(systemName: "sidebar.left")
             }
             .help("Show tabs, your site's pages, and history")
-            Button {
-                tab.webView.goBack()
-            } label: {
-                Image(systemName: "chevron.left")
-            }
-            .disabled(!tab.canGoBack)
-            .help("Back (⌘[)")
-
-            Button {
-                tab.webView.goForward()
-            } label: {
-                Image(systemName: "chevron.right")
-            }
-            .disabled(!tab.canGoForward)
-            .help("Forward (⌘])")
         }
 
         ToolbarItem(placement: .principal) {
             HStack(spacing: 8) {
+                // Back/forward live beside the address they act on.
+                HStack(spacing: 2) {
+                    Button {
+                        tab.webView.goBack()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                    .disabled(!tab.canGoBack)
+                    .help("Back (⌘[)")
+
+                    Button {
+                        tab.webView.goForward()
+                    } label: {
+                        Image(systemName: "chevron.right")
+                    }
+                    .disabled(!tab.canGoForward)
+                    .help("Forward (⌘])")
+                }
+
                 addressCapsule
                     .frame(minWidth: 280, idealWidth: 470, maxWidth: 560)
 
@@ -3494,6 +3498,7 @@ struct InspectorControls: View {
     @State private var isStruck: Bool = false
     @State private var capsMode: String = "none"
     @State private var rotation: Double = 0
+    @State private var showOnMobile: Bool = true
     @State private var videoAutoplay: Bool = false
     @State private var videoRepeat: String = "none"
     @State private var videoSound: Bool = true
@@ -3537,6 +3542,7 @@ struct InspectorControls: View {
         _isStruck = State(initialValue: (info["strike"] as? Int) == 1)
         _capsMode = State(initialValue: info["caps"] as? String ?? "none")
         _rotation = State(initialValue: info["rotation"] as? Double ?? 0)
+        _showOnMobile = State(initialValue: (info["mobileHidden"] as? Int) != 1)
         let video = info["video"] as? [String: Any] ?? [:]
         _videoAutoplay = State(initialValue: (video["autoplay"] as? Int) == 1)
         _videoRepeat = State(initialValue: (video["bounce"] as? Int) == 1
@@ -4018,6 +4024,12 @@ struct InspectorControls: View {
                 .onChange(of: rotation) { _, value in
                     tab.setSelectionStyle("transform", value == 0 ? "" : "rotate(\(String(format: "%g", value))deg)")
                 }
+            Toggle("Show on iPhone", isOn: $showOnMobile)
+                .font(.system(size: 11))
+                .onChange(of: showOnMobile) { _, on in
+                    tab.setMobileHidden(!on)
+                }
+                .help("Off: this object appears on desktop only. Use it for decorative pieces the phone layout doesn't need.")
         }
     }
 
