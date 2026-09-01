@@ -4221,8 +4221,17 @@ struct InspectorControls: View {
                 styleCard
                 typographyCard
             } else {
-                Text(info["label"] as? String ?? "Object")
-                    .font(.system(size: 13, weight: .semibold))
+                HStack {
+                    Text(info["label"] as? String ?? "Object")
+                        .font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    // The mirror of the Group button multi-selections get.
+                    if (info["label"] as? String) == "Group" {
+                        Button("Ungroup") { tab.ungroupSelection() }
+                            .controlSize(.small)
+                            .help("Dissolves the group — its objects return to the page, keeping their places.")
+                    }
+                }
             }
             if selectionCount > 1 {
                 card {
@@ -4630,11 +4639,6 @@ struct InspectorControls: View {
                     tab.setMobileHidden(!on)
                 }
                 .help("Off: this object appears on desktop only. Use it for decorative pieces the phone layout doesn't need.")
-            if (info["label"] as? String) == "Group" {
-                Button("Ungroup") { tab.ungroupSelection() }
-                    .controlSize(.small)
-                    .help("Dissolves the group — its objects return to the page, keeping their places.")
-            }
         }
     }
 
