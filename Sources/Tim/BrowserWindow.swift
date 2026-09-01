@@ -324,28 +324,45 @@ struct UnifiedSidebar: View {
     @EnvironmentObject var store: BrowserStore
     @EnvironmentObject var siteStore: SiteStore
 
+    // Press-and-drag reorder: the pressed card lifts and tracks the
+    // cursor raw; neighbors slide aside with a spring as the target slot
+    // changes; the array itself only reorders on release. Pinned tabs
+    // reorder among pinned, the rest among the rest.
+    @State private var draggedID: UUID?
+    @State private var dragStartIndex = 0
+    @State private var dragTargetIndex = 0
+    @State private var dragTranslation: CGFloat = 0
+
+    private var rowStep: CGFloat { TabCard.height + TabCard.spacing }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 4) {
-                ForEach(store.tabs) { t in
-                    VerticalTabRow(
-                        tab: t,
-                        isSelected: t.id == store.selectedTabID,
-                        select: { store.selectedTabID = t.id },
-                        close: { store.close(t) }
-                    )
+                VStack(spacing: TabCard.spacing) {
+                    ForEach(store.tabs) { t in
+                        TabCard(
+                            tab: t,
+                            isSelected: t.id == store.selectedTabID,
+                            isDragging: draggedID == t.id,
+                            close: { store.close(t) },
+                            closeOthers: {
+                                for other in store.tabs where other.id != t.id && !other.isPinned {
+                                    store.close(other)
+                                }
+                                store.selectedTabID = t.id
+                            },
+                            togglePin: {
+                                withAnimation(.spring(duration: 0.3)) { store.setPinned(t, !t.isPinned) }
+                            }
+                        )
+                        .offset(y: rowOffset(for: t))
+                        .zIndex(draggedID == t.id ? 1 : 0)
+                        .onTapGesture { store.selectedTabID = t.id }
+                        .gesture(reorderGesture(for: t))
+                    }
                 }
-                Button {
-                    store.newTab()
-                } label: {
-                    Label("New Tab", systemImage: "plus")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 6)
-                        .padding(.horizontal, 8)
-                }
-                .buttonStyle(.plain)
-                .padding(.top, 2)
+                NewTabButton { store.newTab() }
+                    .padding(.top, 2)
 
                 if let tab = store.selectedTab {
                     SiteSection(tab: tab)
@@ -358,52 +375,185 @@ struct UnifiedSidebar: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
+
+    /// Where the dragged tab may land: pinned tabs stay in the pinned
+    /// block, everything else below it.
+    private func groupBounds(for tab: Tab) -> ClosedRange<Int> {
+        let boundary = store.tabs.firstIndex(where: { !$0.isPinned }) ?? store.tabs.count
+        if tab.isPinned { return 0...max(0, boundary - 1) }
+        return min(boundary, store.tabs.count - 1)...(store.tabs.count - 1)
+    }
+
+    private func rowOffset(for tab: Tab) -> CGFloat {
+        guard let draggedID else { return 0 }
+        if tab.id == draggedID { return dragTranslation }
+        guard let index = store.tabs.firstIndex(where: { $0.id == tab.id }) else { return 0 }
+        // Neighbors step aside as the lifted card's target slot passes them.
+        if dragStartIndex < dragTargetIndex, index > dragStartIndex, index <= dragTargetIndex {
+            return -rowStep
+        }
+        if dragStartIndex > dragTargetIndex, index < dragStartIndex, index >= dragTargetIndex {
+            return rowStep
+        }
+        return 0
+    }
+
+    private func reorderGesture(for tab: Tab) -> some Gesture {
+        DragGesture(minimumDistance: 4)
+            .onChanged { value in
+                if draggedID != tab.id {
+                    draggedID = tab.id
+                    dragStartIndex = store.tabs.firstIndex(where: { $0.id == tab.id }) ?? 0
+                    dragTargetIndex = dragStartIndex
+                }
+                dragTranslation = value.translation.height
+                let bounds = groupBounds(for: tab)
+                let proposed = dragStartIndex + Int((dragTranslation / rowStep).rounded())
+                let target = max(bounds.lowerBound, min(bounds.upperBound, proposed))
+                if target != dragTargetIndex {
+                    withAnimation(.spring(duration: 0.28)) { dragTargetIndex = target }
+                }
+            }
+            .onEnded { _ in
+                let target = dragTargetIndex
+                withAnimation(.spring(duration: 0.32)) {
+                    store.move(tab, to: target)
+                    draggedID = nil
+                    dragTranslation = 0
+                }
+            }
+    }
 }
 
-struct VerticalTabRow: View {
+/// A tab as a card: a rectangular object you press to switch, drag to
+/// reorder, pin to keep, and close from its own corner. The identity
+/// badge speaks the ownership grammar — a black pencil on Tim yellow
+/// when the page is yours, a quiet globe when it isn't.
+struct TabCard: View {
     @ObservedObject var tab: Tab
     let isSelected: Bool
-    let select: () -> Void
+    let isDragging: Bool
     let close: () -> Void
+    let closeOthers: () -> Void
+    let togglePin: () -> Void
     @EnvironmentObject var siteStore: SiteStore
     @State private var hovering = false
+
+    static let height: CGFloat = 46
+    static let spacing: CGFloat = 5
 
     private var isEditable: Bool {
         siteStore.isEditable(URL(string: tab.urlString), timAuthored: tab.isTimPage)
     }
 
+    private var subtitle: String {
+        guard let host = URL(string: tab.urlString)?.host, !host.isEmpty else { return "Start Page" }
+        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+    }
+
     var body: some View {
-        Button(action: select) {
-            HStack(spacing: 7) {
-                Image(systemName: isEditable ? "pencil.circle.fill" : "globe")
-                    .font(.system(size: 11))
-                    .foregroundStyle(isEditable ? Color.accentColor : (isSelected ? Color.accentColor : Color.secondary))
-                    .help(isEditable ? "This page is yours — you can edit it." : "")
-                Text(tab.title.isEmpty ? "New Tab" : tab.title)
-                    .font(.system(size: 12.5))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                if tab.isLoading {
-                    ProgressView().controlSize(.small).scaleEffect(0.5)
-                } else if hovering {
-                    Button(action: close) {
-                        Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                }
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        HStack(spacing: 9) {
+            ZStack {
+                Circle().fill(isEditable ? timYellow : Color.primary.opacity(0.07))
+                Image(systemName: isEditable ? "pencil" : "globe")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(isEditable ? Color.black : Color.secondary)
             }
-            .padding(.vertical, 6)
-            .padding(.horizontal, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(isSelected ? Color.primary.opacity(0.09) : (hovering ? Color.primary.opacity(0.04) : .clear))
-            )
-            .contentShape(Rectangle())
+            .frame(width: 23, height: 23)
+            .help(isEditable ? "This page is yours — you can edit it." : "")
+
+            VStack(alignment: .leading, spacing: 1.5) {
+                HStack(spacing: 5) {
+                    Text(tab.title.isEmpty ? "New Tab" : tab.title)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .lineLimit(1)
+                    if tab.isEditing {
+                        Circle().fill(timYellow).frame(width: 5, height: 5)
+                            .help("Being edited — not published yet.")
+                    }
+                }
+                Text(subtitle)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            trailing
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 8)
+        .frame(height: Self.height)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            if isSelected {
+                shape.fill(Color.primary.opacity(0.02))
+                    .timGlass(in: shape, interactive: true)
+                    .overlay(shape.strokeBorder(Color.primary.opacity(0.1), lineWidth: 1))
+            } else {
+                shape.fill(Color.primary.opacity(hovering ? 0.075 : 0.04))
+            }
+        }
+        .contentShape(shape)
+        .scaleEffect(isDragging ? 1.03 : 1)
+        .shadow(color: .black.opacity(isDragging ? 0.22 : 0), radius: 9, y: 4)
+        .onHover { hovering = $0 }
+        .contextMenu {
+            Button(tab.isPinned ? "Unpin Tab" : "Pin Tab", action: togglePin)
+            Divider()
+            Button("Close Tab", action: close)
+            Button("Close Other Tabs", action: closeOthers)
+        }
+    }
+
+    // Pinned tabs trade the hover ✕ for the pin itself (click to unpin) —
+    // pinning means "don't let me close this casually."
+    @ViewBuilder private var trailing: some View {
+        if tab.isLoading {
+            ProgressView().controlSize(.small).scaleEffect(0.55)
+        } else if tab.isPinned {
+            Button(action: togglePin) {
+                Image(systemName: "pin.fill")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(hovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.plain)
+            .help("Unpin")
+        } else if hovering {
+            Button(action: close) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                    .background(Circle().fill(Color.primary.opacity(0.08)))
+            }
+            .buttonStyle(.plain)
+            .help("Close Tab")
+        }
+    }
+}
+
+struct NewTabButton: View {
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Label("New Tab", systemImage: "plus")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(.vertical, 7)
+                .padding(.horizontal, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.primary.opacity(hovering ? 0.05 : 0))
+                )
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .contextMenu { Button("Close Tab") { close() } }
     }
 }
 

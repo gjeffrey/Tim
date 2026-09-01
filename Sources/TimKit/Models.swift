@@ -10,6 +10,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     @Published public var title: String = "New Tab"
     @Published public var urlString: String = ""
     @Published public var isEditing: Bool = false
+    /// Pinned tabs stay at the top of the tab list and survive casual
+    /// closing (no hover ✕ — unpin or use the menu, deliberately).
+    @Published public var isPinned: Bool = false
     /// The loaded page identifies itself as Tim-authored (canvas attribute
     /// or generator meta) — what lets editing light up on any folder of a
     /// server we can already write to.
@@ -2635,15 +2638,18 @@ public final class BrowserStore: ObservableObject {
 
     private static let sessionKey = "tim.session.tabs"
     private static let sessionSelectedKey = "tim.session.selected"
+    private static let sessionPinnedKey = "tim.session.pinned"
 
     public init() {
         // Pick up where you left off: reopen last session's tabs.
         let saved = UserDefaults.standard.array(forKey: Self.sessionKey) as? [String] ?? []
+        let pinned = UserDefaults.standard.array(forKey: Self.sessionPinnedKey) as? [Bool] ?? []
         if saved.isEmpty {
             newTab()
         } else {
-            for url in saved {
+            for (index, url) in saved.enumerated() {
                 let tab = Tab()
+                tab.isPinned = index < pinned.count && pinned[index]
                 if url.isEmpty { tab.loadStartPage() } else { tab.navigate(to: url) }
                 tabs.append(tab)
             }
@@ -2659,8 +2665,30 @@ public final class BrowserStore: ObservableObject {
 
     public func persistSession() {
         UserDefaults.standard.set(tabs.map { $0.urlString }, forKey: Self.sessionKey)
+        UserDefaults.standard.set(tabs.map { $0.isPinned }, forKey: Self.sessionPinnedKey)
         let index = tabs.firstIndex(where: { $0.id == selectedTabID }) ?? 0
         UserDefaults.standard.set(index, forKey: Self.sessionSelectedKey)
+    }
+
+    /// Reorder a tab to a new position (drag-to-reorder in the tab list).
+    public func move(_ tab: Tab, to index: Int) {
+        guard let from = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+        let to = max(0, min(index, tabs.count - 1))
+        guard to != from else { return }
+        tabs.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
+        persistSession()
+    }
+
+    /// Pinning floats the tab up to the pinned block; unpinning drops it
+    /// to the top of the regular tabs — the list order always keeps
+    /// pinned tabs contiguous at the top.
+    public func setPinned(_ tab: Tab, _ pinned: Bool) {
+        guard let from = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+        tab.isPinned = pinned
+        let moved = tabs.remove(at: from)
+        let boundary = tabs.firstIndex(where: { !$0.isPinned }) ?? tabs.count
+        tabs.insert(moved, at: boundary)
+        persistSession()
     }
 
     public func newTab() {
