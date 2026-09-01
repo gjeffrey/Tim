@@ -337,6 +337,22 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         )
     }
 
+    /// Points the selected video at its baked bounce file (remembering
+    /// the plain one), or back again.
+    public func setVideoBounceSrc(_ src: String) {
+        webView.evaluateJavaScript(
+            "window.__timBounceVideoSrc && window.__timBounceVideoSrc(\(Self.jsLiteral(src)));",
+            completionHandler: nil
+        )
+    }
+
+    public func restorePlainVideo() {
+        webView.evaluateJavaScript(
+            "window.__timRestorePlainVideo && window.__timRestorePlainVideo();",
+            completionHandler: nil
+        )
+    }
+
     /// Clears a replace mark (the upload failed or was abandoned).
     public func unmarkMedia(id: String) {
         webView.evaluateJavaScript(
@@ -1314,7 +1330,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
                 autoplay: sel.hasAttribute('autoplay') ? 1 : 0,
                 loop: sel.hasAttribute('loop') ? 1 : 0,
                 muted: sel.hasAttribute('muted') ? 1 : 0,
-                controls: sel.hasAttribute('controls') ? 1 : 0
+                controls: sel.hasAttribute('controls') ? 1 : 0,
+                bounce: sel.hasAttribute('data-tim-plain-src') ? 1 : 0,
+                src: sel.getAttribute('src') || ''
               } : 0,
               rotation: (function () {
                 var m = /rotate\\((-?[0-9.]+)deg\\)/.exec(sel.style.transform || '');
@@ -1649,6 +1667,37 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           sel.currentTime = 0;
         }
         notifySel();
+      };
+
+      // Bounce swaps the video's file for its baked forward+reverse
+      // sibling, remembering the plain one so it can swap back.
+      window.__timBounceVideoSrc = function (src) {
+        if (!sel || sel.tagName !== 'VIDEO') { return; }
+        checkpoint('video');
+        if (!sel.hasAttribute('data-tim-plain-src')) {
+          sel.setAttribute('data-tim-plain-src', sel.getAttribute('src') || '');
+        }
+        sel.setAttribute('src', src);
+        sel.load();
+        if (sel.hasAttribute('autoplay')) {
+          var p = sel.play();
+          if (p && p.catch) { p.catch(function () {}); }
+        }
+        notifySel(true);
+      };
+      window.__timRestorePlainVideo = function () {
+        if (!sel || sel.tagName !== 'VIDEO') { return; }
+        var plain = sel.getAttribute('data-tim-plain-src');
+        if (!plain) { return; }
+        checkpoint('video');
+        sel.setAttribute('src', plain);
+        sel.removeAttribute('data-tim-plain-src');
+        sel.load();
+        if (sel.hasAttribute('autoplay')) {
+          var p2 = sel.play();
+          if (p2 && p2.catch) { p2.catch(function () {}); }
+        }
+        notifySel(true);
       };
 
       window.__timSelHTML = function () { return sel ? sel.outerHTML : ''; };

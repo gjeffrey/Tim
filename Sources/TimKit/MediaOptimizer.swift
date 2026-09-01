@@ -140,6 +140,111 @@ public enum MediaOptimizer {
         return out
     }
 
+    // MARK: Bounce — forward + reversed, baked into one file. A plain
+    // looping <video> then bounces everywhere, with zero runtime tricks.
+    // Silent by design (reversed audio is nonsense; bounces are ambient).
+
+    public static func bounceVideo(_ url: URL) throws -> URL {
+        // Work from a web-ready rendition so frames are 1080p at most.
+        let source: URL
+        if case .transcode = videoPlan(url) {
+            source = try transcodeVideo(url)
+        } else {
+            source = url
+        }
+        let reversed = try reversedVideo(source)
+        let forward = AVURLAsset(url: source)
+        let backward = AVURLAsset(url: reversed)
+        let composition = AVMutableComposition()
+        guard let forwardTrack = forward.tracks(withMediaType: .video).first,
+              let backwardTrack = backward.tracks(withMediaType: .video).first,
+              let track = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
+        else { throw OptimizeError.unreadable }
+        // Trim one frame from each end of the reversed half so the turn
+        // and the loop restart don't hold a doubled frame.
+        let fps = forwardTrack.nominalFrameRate > 0 ? Double(forwardTrack.nominalFrameRate) : 30
+        let oneFrame = CMTime(seconds: 1 / fps, preferredTimescale: 600)
+        try track.insertTimeRange(CMTimeRange(start: .zero, duration: forward.duration), of: forwardTrack, at: .zero)
+        let trimmed = CMTimeRange(start: oneFrame, duration: CMTimeSubtract(backward.duration, CMTimeMultiply(oneFrame, multiplier: 2)))
+        try track.insertTimeRange(trimmed, of: backwardTrack, at: forward.duration)
+        guard let session = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else {
+            throw OptimizeError.unreadable
+        }
+        let base = url.deletingPathExtension().lastPathComponent
+        let out = try scratchFile(named: base + "-bounce.mp4")
+        session.outputURL = out
+        session.outputFileType = .mp4
+        session.shouldOptimizeForNetworkUse = true
+        let done = DispatchSemaphore(value: 0)
+        session.exportAsynchronously { done.signal() }
+        done.wait()
+        guard session.status == .completed else {
+            throw OptimizeError.failed(session.error?.localizedDescription ?? "Couldn't build the bounce.")
+        }
+        return out
+    }
+
+    /// Decodes the video in one-second chunks from the end and writes the
+    /// frames back-to-front — memory stays bounded regardless of length.
+    static func reversedVideo(_ url: URL) throws -> URL {
+        let asset = AVURLAsset(url: url)
+        guard let track = asset.tracks(withMediaType: .video).first else { throw OptimizeError.unreadable }
+        let size = track.naturalSize.applying(track.preferredTransform)
+        let fps = track.nominalFrameRate > 0 ? Double(track.nominalFrameRate) : 30
+        let timescale = CMTimeScale(max(1, Int32(fps.rounded())))
+        let out = try scratchFile(named: "reversed.mp4")
+        let writer = try AVAssetWriter(outputURL: out, fileType: .mp4)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: Int(abs(size.width).rounded()),
+            AVVideoHeightKey: Int(abs(size.height).rounded()),
+            AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 8_000_000]
+        ])
+        input.expectsMediaDataInRealTime = false
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: nil)
+        writer.add(input)
+        guard writer.startWriting() else {
+            throw OptimizeError.failed(writer.error?.localizedDescription ?? "Couldn't start writing.")
+        }
+        writer.startSession(atSourceTime: .zero)
+
+        let total = asset.duration.seconds
+        var end = total
+        var frameIndex = 0
+        while end > 0.0005 {
+            let start = max(0, end - 1.0)
+            let reader = try AVAssetReader(asset: asset)
+            let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            ])
+            reader.add(output)
+            reader.timeRange = CMTimeRange(
+                start: CMTime(seconds: start, preferredTimescale: 600),
+                end: CMTime(seconds: end, preferredTimescale: 600)
+            )
+            reader.startReading()
+            var frames: [CVPixelBuffer] = []
+            while let sample = output.copyNextSampleBuffer() {
+                if let buffer = CMSampleBufferGetImageBuffer(sample) { frames.append(buffer) }
+            }
+            reader.cancelReading()
+            for frame in frames.reversed() {
+                while !input.isReadyForMoreMediaData { Thread.sleep(forTimeInterval: 0.005) }
+                adaptor.append(frame, withPresentationTime: CMTime(value: CMTimeValue(frameIndex), timescale: timescale))
+                frameIndex += 1
+            }
+            end = start
+        }
+        input.markAsFinished()
+        let done = DispatchSemaphore(value: 0)
+        writer.finishWriting { done.signal() }
+        done.wait()
+        guard writer.status == .completed else {
+            throw OptimizeError.failed(writer.error?.localizedDescription ?? "Couldn't reverse the video.")
+        }
+        return out
+    }
+
     static func scratchFile(named name: String) throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("tim-media-\(UUID().uuidString)", isDirectory: true)

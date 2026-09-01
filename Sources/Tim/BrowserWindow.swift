@@ -29,6 +29,7 @@ extension Notification.Name {
     static let timPreviewVersion = Notification.Name("tim.previewVersion")
     static let timEditNav = Notification.Name("tim.editNav")
     static let timReplaceMedia = Notification.Name("tim.replaceMedia")
+    static let timBounceVideo = Notification.Name("tim.bounceVideo")
 }
 
 /// Everything Tim does behind your back — publishing, uploads, mirror
@@ -1803,6 +1804,60 @@ struct EditingToolbar: View {
         .onReceive(NotificationCenter.default.publisher(for: .timReplaceMedia)) { _ in
             if tab.isEditing { replaceSelectedMedia() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .timBounceVideo)) { _ in
+            if tab.isEditing { bounceSelectedVideo() }
+        }
+    }
+
+    /// Bounce is baked, not simulated: the video's forward+reverse
+    /// rendition is generated once (reused thereafter), uploaded, and the
+    /// element points at it — a plain looping video that bounces in every
+    /// browser with zero runtime tricks.
+    private func bounceSelectedVideo() {
+        guard let info = tab.selectionInfo,
+              let video = info["video"] as? [String: Any],
+              let src = video["src"] as? String, !src.isEmpty,
+              (video["bounce"] as? Int) != 1
+        else { return }
+        guard let s = site, !s.localProjectPath.isEmpty else {
+            statusMessage = "Bounce needs a connected site."
+            return
+        }
+        let fileName = (src as NSString).lastPathComponent
+        let bounceName = ((fileName as NSString).deletingPathExtension) + "-bounce.mp4"
+        let bounceSrc = ((src as NSString).deletingLastPathComponent as NSString).appendingPathComponent(bounceName)
+        let mirrorFile = (s.localProjectPath as NSString).appendingPathComponent("media/" + fileName)
+        let mirrorBounce = (s.localProjectPath as NSString).appendingPathComponent("media/" + bounceName)
+        isWorking = true
+        statusMessage = "Making \(fileName) bounce…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            var activity = ActivityCenter.shared.begin("Making \(fileName) bounce…")
+            do {
+                if !FileManager.default.fileExists(atPath: mirrorBounce) {
+                    guard FileManager.default.fileExists(atPath: mirrorFile) else {
+                        throw MediaOptimizer.OptimizeError.failed("The video isn't in this site's local copy yet.")
+                    }
+                    let built = try MediaOptimizer.bounceVideo(URL(fileURLWithPath: mirrorFile))
+                    try? FileManager.default.removeItem(atPath: mirrorBounce)
+                    try FileManager.default.copyItem(atPath: built.path, toPath: mirrorBounce)
+                }
+                ActivityCenter.shared.end(activity)
+                activity = ActivityCenter.shared.begin("Uploading \(bounceName)…")
+                try Self.uploadStagedMedia(site: s, name: bounceName)
+                DispatchQueue.main.async {
+                    ActivityCenter.shared.end(activity)
+                    isWorking = false
+                    statusMessage = nil
+                    tab.setVideoBounceSrc(bounceSrc)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    ActivityCenter.shared.end(activity)
+                    isWorking = false
+                    statusMessage = "Couldn’t make it bounce: \(error.localizedDescription)"
+                }
+            }
+        }
     }
 
     /// One Media command: pick any file — images, video, and audio embed
@@ -3388,7 +3443,7 @@ struct InspectorControls: View {
     @State private var capsMode: String = "none"
     @State private var rotation: Double = 0
     @State private var videoAutoplay: Bool = false
-    @State private var videoLoop: Bool = false
+    @State private var videoRepeat: String = "none"
     @State private var videoSound: Bool = true
     @State private var videoControls: Bool = true
     @State private var textColor: Color
@@ -3432,7 +3487,8 @@ struct InspectorControls: View {
         _rotation = State(initialValue: info["rotation"] as? Double ?? 0)
         let video = info["video"] as? [String: Any] ?? [:]
         _videoAutoplay = State(initialValue: (video["autoplay"] as? Int) == 1)
-        _videoLoop = State(initialValue: (video["loop"] as? Int) == 1)
+        _videoRepeat = State(initialValue: (video["bounce"] as? Int) == 1
+            ? "bounce" : ((video["loop"] as? Int) == 1 ? "loop" : "none"))
         _videoSound = State(initialValue: (video["muted"] as? Int) != 1)
         _videoControls = State(initialValue: (video["controls"] as? Int) == 1)
     }
@@ -3464,25 +3520,47 @@ struct InspectorControls: View {
                         // the only way browsers allow autoplay, and the way
                         // it looks best.
                         videoSound = false
-                        videoLoop = true
                         videoControls = false
+                        if videoRepeat == "none" { videoRepeat = "loop" }
                     } else {
                         videoControls = true
                     }
                     applyVideo()
                 }
             }
-            Toggle("Loop", isOn: $videoLoop)
-                .font(.system(size: 11))
-                .onChange(of: videoLoop) { _, _ in applyVideo() }
+            HStack(spacing: 8) {
+                rowLabel("Repeat")
+                Picker("", selection: $videoRepeat) {
+                    Text("None").tag("none")
+                    Text("Loop").tag("loop")
+                    Text("Bounce").tag("bounce")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.mini)
+                .onChange(of: videoRepeat) { _, mode in
+                    if mode == "bounce" {
+                        videoSound = false
+                        NotificationCenter.default.post(name: .timBounceVideo, object: nil)
+                    } else {
+                        tab.restorePlainVideo()
+                    }
+                    applyVideo()
+                }
+            }
             Toggle("Sound", isOn: $videoSound)
                 .font(.system(size: 11))
-                .disabled(videoAutoplay)
+                .disabled(videoAutoplay || videoRepeat == "bounce")
                 .onChange(of: videoSound) { _, _ in applyVideo() }
             Toggle("Controls", isOn: $videoControls)
                 .font(.system(size: 11))
                 .onChange(of: videoControls) { _, _ in applyVideo() }
-            if videoAutoplay {
+            if videoRepeat == "bounce" {
+                Text("Bounce plays forward, then backward, forever — baked into the video itself so it works in every browser. Bounces are silent.")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if videoAutoplay {
                 Text("Autoplaying video is always silent — every browser requires it. Visitors get sound from videos they start themselves.")
                     .font(.system(size: 9.5))
                     .foregroundStyle(.tertiary)
@@ -3494,8 +3572,8 @@ struct InspectorControls: View {
     private func applyVideo() {
         tab.setVideoOptions(
             autoplay: videoAutoplay,
-            loop: videoLoop,
-            muted: videoAutoplay || !videoSound,
+            loop: videoRepeat != "none",
+            muted: videoAutoplay || videoRepeat == "bounce" || !videoSound,
             controls: videoControls
         )
     }
