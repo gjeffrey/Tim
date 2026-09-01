@@ -945,6 +945,20 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         h.setAttribute('data-tim-handle', k);
         overlay.appendChild(h); handles[k] = h;
       });
+      // The rotation lollipop: a stem off the box's top edge ending in a
+      // knob — grab it and turn. The touch-first way to rotate (fingers
+      // can't option-drag); on the Mac both ways work.
+      var rotStem = doc.createElement('div');
+      rotStem.style.cssText = 'position:absolute;width:1.5px;height:22px;background:#0a84ff;opacity:0.85;display:none;pointer-events:none;';
+      overlay.appendChild(rotStem);
+      var rotKnob = doc.createElement('div');
+      rotKnob.style.cssText = 'position:absolute;width:28px;height:28px;background:transparent;pointer-events:auto;display:none;cursor:grab;';
+      var rotDot = doc.createElement('div');
+      rotDot.style.cssText = 'position:absolute;left:6px;top:6px;width:16px;height:16px;background:#fff;border:1.5px solid #0a84ff;border-radius:50%;box-sizing:border-box;pointer-events:none;color:#0a84ff;font:600 10px/13px -apple-system,sans-serif;text-align:center;';
+      rotDot.textContent = '\\u21bb';
+      rotKnob.appendChild(rotDot);
+      rotKnob.setAttribute('data-tim-handle', 'rotate');
+      overlay.appendChild(rotKnob);
       doc.body.appendChild(overlay);
 
       var sel = null, drag = null, active = false, editingEl = null;
@@ -1106,6 +1120,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         groupBox.innerHTML = '';
         hideGrid();
         for (var k in handles) { handles[k].style.display = 'none'; }
+        rotStem.style.display = 'none';
+        rotKnob.style.display = 'none';
       }
       function angleOf(el) {
         var m = /rotate\\((-?[0-9.]+)deg\\)/.exec((el && el.style && el.style.transform) || '');
@@ -1191,6 +1207,21 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           place(handles.ne, w0 / 2, -h0 / 2);
           place(handles.sw, -w0 / 2, h0 / 2);
           place(handles.se, w0 / 2, h0 / 2);
+          // Lollipop: stem from the top edge, knob at its tip — both
+          // riding the box's rotation so the handle turns with it.
+          function world(dx, dy) { return { x: cx + dx * cos - dy * sin, y: cy + dx * sin + dy * cos }; }
+          var stemC = world(0, -h0 / 2 - 11);
+          rotStem.style.display = 'block';
+          rotStem.style.left = (stemC.x - 0.75) + 'px';
+          rotStem.style.top = (stemC.y - 11) + 'px';
+          rotStem.style.transform = angle ? 'rotate(' + angle + 'deg)' : '';
+          var knobC = world(0, -h0 / 2 - 30);
+          rotKnob.style.display = 'block';
+          rotKnob.style.left = (knobC.x - 14) + 'px';
+          rotKnob.style.top = (knobC.y - 14) + 'px';
+        } else {
+          rotStem.style.display = 'none';
+          rotKnob.style.display = 'none';
         }
         // A selected group whose contents reach beyond its box gets the
         // dotted truth: the actual extent of what's inside.
@@ -1219,8 +1250,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (collapsed() && !mobileActive()) { return; }
         var k = e.target && e.target.getAttribute ? e.target.getAttribute('data-tim-handle') : null;
         if (k && sel && isObject(sel)) {
-          // Option-drag a handle rotates instead of resizing.
-          if (e.altKey) {
+          // The rotate knob turns; option-drag on any handle does too.
+          if (e.altKey || k === 'rotate') {
             var rr = rectOf(sel);
             checkpoint('rotate');
             drag = {
