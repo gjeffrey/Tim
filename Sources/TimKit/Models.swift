@@ -139,8 +139,39 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
 
     /// Mobile preview: iPhone-width viewport + iPhone Safari user agent,
     /// so media queries and UA-sniffing sites both behave as on the phone.
+    /// iPad: desktop view must mean desktop no matter how many points the
+    /// pane happens to have (a portrait split or an open inspector can dip
+    /// under the 700px breakpoint). The same move iPad Safari makes for
+    /// desktop sites — pin the layout viewport wide, scaled to fit — via
+    /// an injected meta that outranks the page's own and never survives a
+    /// save. Live-mutable, so it holds mid-edit too.
+    public var prefersDesktopViewport = false
+
+    public func applyPreviewViewport() {
+        let wantWide = prefersDesktopViewport && !isMobilePreview
+        let js = """
+        (function () {
+          var m = document.querySelector('meta[name="viewport"][data-tim-preview]');
+          if (\(wantWide ? "true" : "false")) {
+            if (!m) {
+              m = document.createElement('meta');
+              m.name = 'viewport';
+              m.setAttribute('data-tim-preview', '');
+              document.head.appendChild(m);
+            }
+            m.setAttribute('content', 'width=1180');
+          } else if (m) {
+            m.remove();
+          }
+          window.dispatchEvent(new Event('resize'));
+        })();
+        """
+        webView.evaluateJavaScript(js, completionHandler: nil)
+    }
+
     public func setMobilePreview(_ mobile: Bool) {
         isMobilePreview = mobile
+        applyPreviewViewport()
         // While editing, only the viewport changes — media queries respond
         // instantly and the edit session survives. Entering phone width
         // mid-edit switches the canvas to the mobile layout (creating it
@@ -227,6 +258,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           for (var v = 0; v < reviewing.length; v++) { reviewing[v].removeAttribute('data-tim-review'); }
           var offpage = clone.querySelectorAll('[data-tim-offpage]');
           for (var op = 0; op < offpage.length; op++) { offpage[op].removeAttribute('data-tim-offpage'); }
+          var previewVp = clone.querySelector('meta[name="viewport"][data-tim-preview]');
+          if (previewVp) { previewVp.remove(); }
           // The product page's try-the-editor chrome is runtime-only.
           var demo = clone.querySelectorAll('[data-tim-demo]');
           for (var dm = 0; dm < demo.length; dm++) { demo[dm].remove(); }
@@ -2677,6 +2710,7 @@ extension Tab: WKNavigationDelegate {
         ) { [weak self] result, _ in
             self?.isTimPage = (result as? Bool) ?? false
         }
+        applyPreviewViewport()
         // An unfinished edit of this page picks up where it left off.
         if restoringDraft {
             restoringDraft = false

@@ -303,7 +303,13 @@ struct PadBrowser: View {
             PadInspector(tab: tab)
                 .inspectorColumnWidth(min: 280, ideal: 300, max: 360)
         }
-        .onAppear { addressText = tab.urlString }
+        .onAppear {
+            addressText = tab.urlString
+            // Desktop view means desktop, whatever the pane's width —
+            // the layout viewport pins wide (scaled to fit) on iPad.
+            tab.prefersDesktopViewport = UIDevice.current.userInterfaceIdiom == .pad
+            tab.applyPreviewViewport()
+        }
         .onChange(of: tab.urlString) { _, value in
             if !addressFocused { addressText = value }
         }
