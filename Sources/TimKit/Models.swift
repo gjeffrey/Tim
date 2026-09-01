@@ -19,6 +19,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     /// while showing a version preview, which loads over the same URL).
     public var suppressDraftResume = false
     @Published public var isLoading: Bool = false
+    @Published public var loadingProgress: Double = 0
     @Published public var canGoBack: Bool = false
     @Published public var canGoForward: Bool = false
     @Published public var isMobilePreview: Bool = false
@@ -73,6 +74,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         })
         observations.append(webView.observe(\.isLoading, options: [.new]) { [weak self] view, _ in
             DispatchQueue.main.async { self?.isLoading = view.isLoading }
+        })
+        observations.append(webView.observe(\.estimatedProgress, options: [.new]) { [weak self] view, _ in
+            DispatchQueue.main.async { self?.loadingProgress = view.estimatedProgress }
         })
         observations.append(webView.observe(\.canGoBack, options: [.new]) { [weak self] view, _ in
             DispatchQueue.main.async { self?.canGoBack = view.canGoBack }

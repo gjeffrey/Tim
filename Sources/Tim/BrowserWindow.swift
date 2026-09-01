@@ -813,6 +813,99 @@ struct TabContentView: View {
         }
     }
 
+    // MARK: The address capsule — the toolbar's centerpiece. Familiar
+    // (a centered Safari-style field) but Tim's own: the host reads
+    // strong with the path quiet, a page you own wears a soft accent
+    // glow and a pencil, loading draws a hairline of progress along the
+    // capsule's floor, and reload lives inside where your eye already is.
+
+    private var prettyAddress: (host: String, path: String)? {
+        guard !addressFocused, !tab.isEditing,
+              let url = URL(string: tab.urlString),
+              let host = url.host()
+        else { return nil }
+        let cleanHost = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        var path = url.path
+        if path == "/" || path.isEmpty { path = "" }
+        return (cleanHost, path)
+    }
+
+    private var addressCapsule: some View {
+        HStack(spacing: 7) {
+            Image(systemName: isPageEditable ? "pencil.circle.fill" : "globe")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(isPageEditable ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
+                .contentTransition(.symbolEffect(.replace))
+                .help(isPageEditable ? "This page is yours — ⌘E edits it, Done publishes it." : "")
+
+            ZStack {
+                TextField("Search or enter address", text: $addressText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                    .multilineTextAlignment(addressFocused ? .leading : .center)
+                    .foregroundStyle(prettyAddress == nil ? AnyShapeStyle(.primary) : AnyShapeStyle(.clear))
+                    .focused($addressFocused)
+                    .onSubmit {
+                        tab.navigate(to: addressText)
+                        addressFocused = false
+                    }
+                // At rest, the URL reads like a name: host strong, path quiet.
+                if let pretty = prettyAddress {
+                    HStack(spacing: 0) {
+                        Text(pretty.host)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.primary)
+                        Text(pretty.path)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .allowsHitTesting(false)
+                }
+            }
+            .frame(maxWidth: .infinity)
+
+            Button {
+                if tab.isLoading { tab.webView.stopLoading() } else { tab.webView.reload() }
+            } label: {
+                Image(systemName: tab.isLoading ? "xmark" : "arrow.clockwise")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help(tab.isLoading ? "Stop" : "Reload (⌘R)")
+        }
+        .padding(.horizontal, 11)
+        .frame(height: 30)
+        .background(Capsule(style: .continuous).fill(Color.primary.opacity(addressFocused ? 0.09 : 0.055)))
+        .overlay(alignment: .bottomLeading) {
+            // Loading is a hairline of light along the capsule's floor.
+            if tab.isLoading {
+                Capsule()
+                    .fill(Color.accentColor)
+                    .frame(width: max(26, 500 * tab.loadingProgress), height: 2)
+                    .padding(.leading, 14)
+                    .padding(.bottom, 1.5)
+                    .animation(.easeOut(duration: 0.3), value: tab.loadingProgress)
+                    .allowsHitTesting(false)
+            }
+        }
+        .clipShape(Capsule(style: .continuous))
+        .overlay(
+            Capsule(style: .continuous)
+                .stroke(
+                    isPageEditable ? Color.accentColor.opacity(0.55) : Color.primary.opacity(0.08),
+                    lineWidth: 1
+                )
+        )
+        .shadow(color: isPageEditable ? Color.accentColor.opacity(0.28) : .clear, radius: 7, y: 1)
+        .animation(.easeOut(duration: 0.22), value: isPageEditable)
+        .animation(.easeOut(duration: 0.15), value: addressFocused)
+    }
+
     /// Entering edit mode materializes a derived site (a Tim page on a
     /// server we can write to, but outside every explicit connection):
     /// it's saved as a real connection and its mirror starts downloading
@@ -1488,20 +1581,8 @@ struct TabContentView: View {
 
         ToolbarItem(placement: .principal) {
             HStack(spacing: 8) {
-                if let site = matchedSite {
-                    HStack(spacing: 4) {
-                        Image(systemName: "pencil")
-                            .font(.system(size: 9, weight: .semibold))
-                        Text(site.name.isEmpty ? "Editable" : site.name)
-                            .font(.caption)
-                            .lineLimit(1)
-                    }
-                    .padding(.vertical, 4)
-                    .padding(.horizontal, 8)
-                    .background(Capsule().fill(Color.accentColor.opacity(0.14)))
-                    .foregroundStyle(Color.accentColor)
-                    .help("You own this page — press ⌘E to edit and publish it.")
-                }
+                addressCapsule
+                    .frame(minWidth: 280, idealWidth: 470, maxWidth: 560)
 
                 if matchedSite != nil, tab.lastHTTPStatus == 404, !tab.isEditing {
                     Button {
@@ -1513,43 +1594,14 @@ struct TabContentView: View {
                             Text("Create This Page")
                                 .font(.caption)
                         }
-                        .padding(.vertical, 4)
-                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .padding(.horizontal, 9)
                         .background(Capsule().fill(Color.accentColor))
                         .foregroundStyle(Color.white)
                     }
                     .buttonStyle(.plain)
                     .help("This page doesn't exist on your site yet — create and publish it at this address.")
                 }
-
-                TextField("Search or enter website name", text: $addressText)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .multilineTextAlignment(addressFocused ? .leading : .center)
-                    .padding(.vertical, 5)
-                    .padding(.horizontal, 10)
-                    .frame(minWidth: 240, idealWidth: 440, maxWidth: 520)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(isPageEditable ? Color.accentColor.opacity(0.08) : Color.primary.opacity(0.06))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(isPageEditable ? Color.accentColor.opacity(0.25) : Color.clear, lineWidth: 1)
-                    )
-                    .focused($addressFocused)
-                    .onSubmit {
-                        tab.navigate(to: addressText)
-                        addressFocused = false
-                    }
-
-                Button {
-                    if tab.isLoading { tab.webView.stopLoading() } else { tab.webView.reload() }
-                } label: {
-                    Image(systemName: tab.isLoading ? "xmark" : "arrow.clockwise")
-                        .font(.system(size: 11, weight: .medium))
-                }
-                .help(tab.isLoading ? "Stop" : "Reload (⌘R)")
             }
         }
 

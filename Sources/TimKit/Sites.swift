@@ -84,11 +84,9 @@ public struct Site: Codable, Identifiable, Equatable {
         }
         guard let originURL = URL(string: origin),
               let originScheme = originURL.scheme?.lowercased(),
-              let originHost = originURL.host()?.lowercased(),
               let scheme = url.scheme?.lowercased(),
-              let host = url.host()?.lowercased(),
               scheme == originScheme,
-              host == originHost,
+              Site.hostsMatch(url.host(), originURL.host()),
               url.port == originURL.port
         else { return false }
 
@@ -123,6 +121,16 @@ public struct Site: Codable, Identifiable, Equatable {
     public func remotePath(for url: URL) -> String {
         let root = remoteRoot.hasSuffix("/") ? String(remoteRoot.dropLast()) : remoteRoot
         return root + relativePagePath(for: url)
+    }
+
+    /// The same site answers with and without www — one host, two spellings.
+    public static func hostsMatch(_ a: String?, _ b: String?) -> Bool {
+        func canonical(_ host: String?) -> String? {
+            guard let host = host?.lowercased() else { return nil }
+            return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        }
+        guard let ca = canonical(a), let cb = canonical(b) else { return false }
+        return ca == cb
     }
 
     /// Normalizes user input: adds a scheme if missing (local paths become
@@ -258,7 +266,7 @@ public final class SiteStore: ObservableObject {
         for site in sites where site.target == .sftp && !site.remoteRoot.isEmpty {
             guard let originURL = URL(string: site.origin),
                   originURL.scheme?.lowercased() == scheme,
-                  originURL.host()?.lowercased() == host,
+                  Site.hostsMatch(host, originURL.host()),
                   url.port == originURL.port
             else { continue }
             let originPath = (originURL.path.isEmpty || originURL.path == "/") ? "" : originURL.path
@@ -268,9 +276,11 @@ public final class SiteStore: ObservableObject {
             let first = url.path.split(separator: "/").first.map(String.init) ?? ""
             // A file at the domain root belongs to a site at the domain root.
             let base = (first.isEmpty || first.contains(".")) ? "" : "/" + first
+            // Canonical host (no www): both spellings derive the same site.
+            let canonicalHost = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
             var derived = Site()
-            derived.name = host + base
-            derived.origin = scheme + "://" + host + base
+            derived.name = canonicalHost + base
+            derived.origin = scheme + "://" + canonicalHost + base
             derived.target = .sftp
             derived.host = site.host
             derived.username = site.username
