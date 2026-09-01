@@ -276,8 +276,28 @@ struct PadBrowser: View {
             toolbar
             if tab.isEditing { editBar }
             Divider()
-            PadWebView(webView: tab.webView)
-                .ignoresSafeArea(edges: .bottom)
+            // Mobile view: the same web view at true phone width, so the
+            // page's media queries — and mobile editing — engage exactly
+            // as they will on a phone.
+            if tab.isMobilePreview {
+                HStack {
+                    Spacer(minLength: 0)
+                    PadWebView(webView: tab.webView)
+                        .frame(width: 390)
+                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                .strokeBorder(Color.primary.opacity(0.16), lineWidth: 1)
+                        )
+                        .padding(.vertical, 14)
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.primary.opacity(0.05))
+            } else {
+                PadWebView(webView: tab.webView)
+                    .ignoresSafeArea(edges: .bottom)
+            }
         }
         .inspector(isPresented: $showInspector) {
             PadInspector(tab: tab)
@@ -312,6 +332,17 @@ struct PadBrowser: View {
                 .disabled(!tab.canGoForward)
 
             addressCapsule
+
+            Picker("", selection: Binding(
+                get: { tab.isMobilePreview ? 1 : 0 },
+                set: { tab.setMobilePreview($0 == 1) }
+            )) {
+                Image(systemName: "desktopcomputer").tag(0)
+                Image(systemName: "iphone").tag(1)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
 
             if !tab.isEditing, matchedSite != nil, tab.lastHTTPStatus == 404 {
                 // Same move as the Mac: type an address on your own site
