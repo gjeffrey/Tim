@@ -4768,30 +4768,36 @@ struct InspectorControls: View {
         // The slider covers the sensible range; the field quietly accepts
         // any valid value for people who know exactly what they want.
         let typedRange = typed ?? range
-        // Pixelmator's register: full-size slider, a legible value field,
-        // and a stepper — every numeric control nudges the same way.
-        return HStack(spacing: 8) {
-            rowLabel(name)
+        // Two lines so the slider gets the panel's full width: name and
+        // value up top, the track beneath. The field quietly accepts any
+        // valid value for people who know exactly what they want.
+        return VStack(spacing: 3) {
+            HStack(spacing: 6) {
+                Text(name)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                // Typed values are exact — snapping applies to the slider only.
+                TextField("", value: Binding(
+                    get: { value.wrappedValue },
+                    set: { value.wrappedValue = min(typedRange.upperBound, max(typedRange.lowerBound, $0)) }
+                ), format: .number.precision(.fractionLength(0...2)))
+                    .font(.system(size: 11).monospacedDigit())
+                    .multilineTextAlignment(.trailing)
+                    .textFieldStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 48, alignment: .trailing)
+                Stepper("", value: Binding(
+                    get: { value.wrappedValue },
+                    set: { value.wrappedValue = min(typedRange.upperBound, max(typedRange.lowerBound, $0)) }
+                ), step: step)
+                    .labelsHidden()
+                    .controlSize(.small)
+            }
             Slider(value: Binding(
                 get: { min(range.upperBound, max(range.lowerBound, value.wrappedValue)) },
                 set: { value.wrappedValue = min(range.upperBound, max(range.lowerBound, snap?($0) ?? $0)) }
             ), in: range, step: step)
-            // Typed values are exact — snapping applies to the slider only.
-            TextField("", value: Binding(
-                get: { value.wrappedValue },
-                set: { value.wrappedValue = min(typedRange.upperBound, max(typedRange.lowerBound, $0)) }
-            ), format: .number.precision(.fractionLength(0...2)))
-                .font(.system(size: 11).monospacedDigit())
-                .multilineTextAlignment(.trailing)
-                .textFieldStyle(.plain)
-                .foregroundStyle(.secondary)
-                .frame(width: 38, alignment: .trailing)
-            Stepper("", value: Binding(
-                get: { value.wrappedValue },
-                set: { value.wrappedValue = min(typedRange.upperBound, max(typedRange.lowerBound, $0)) }
-            ), step: step)
-                .labelsHidden()
-                .controlSize(.small)
         }
     }
 }
@@ -5514,16 +5520,20 @@ struct PageOptionsControls: View {
     }
 
     private func sliderRow(_ name: String, _ value: Binding<Double>, _ range: ClosedRange<Double>, _ step: Double, _ display: String) -> some View {
-        HStack(spacing: 8) {
-            rowLabel(name)
+        VStack(spacing: 3) {
+            HStack(spacing: 6) {
+                Text(name)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Text(display)
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Stepper("", value: value, in: range, step: step)
+                    .labelsHidden()
+                    .controlSize(.small)
+            }
             Slider(value: value, in: range, step: step)
-            Text(display)
-                .font(.system(size: 11).monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 38, alignment: .trailing)
-            Stepper("", value: value, in: range, step: step)
-                .labelsHidden()
-                .controlSize(.small)
         }
     }
 }
