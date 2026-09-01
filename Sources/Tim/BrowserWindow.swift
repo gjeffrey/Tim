@@ -242,56 +242,68 @@ final class ActivityCenter: ObservableObject {
     }
 }
 
+/// The activity item, the Transmit way: always in the toolbar, quiet
+/// when idle, spinning while anything's in flight, badged when several
+/// are. Clicking it shows the work. It never appears or disappears —
+/// the toolbar is the toolbar.
 struct ActivityIndicator: View {
     @ObservedObject var center = ActivityCenter.shared
     @State private var showList = false
 
     var body: some View {
-        if !center.activities.isEmpty {
-            Button {
-                showList.toggle()
-            } label: {
-                HStack(spacing: 5) {
+        Button {
+            showList.toggle()
+        } label: {
+            Group {
+                if center.activities.isEmpty {
+                    Image(systemName: "arrow.up.circle")
+                        .foregroundStyle(.secondary)
+                } else {
                     ProgressView()
                         .controlSize(.small)
-                        .scaleEffect(0.65)
-                    // One thing in flight: name it right in the toolbar.
-                    // Several: show the count; the popover has the list.
-                    if center.activities.count == 1, let only = center.activities.first {
-                        Text(only.label)
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .frame(maxWidth: 160)
-                    } else {
-                        Text("\(center.activities.count)")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
+                        .scaleEffect(0.75)
                 }
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .timGlass(in: Capsule(style: .continuous), interactive: true)
             }
-            .buttonStyle(.plain)
-            .help("Working in the background — click for details")
-            .popover(isPresented: $showList, arrowEdge: .bottom) {
-                VStack(alignment: .leading, spacing: 8) {
+            .frame(width: 24, height: 22)
+            .contentShape(Rectangle())
+        }
+        .overlay(alignment: .topTrailing) {
+            if center.activities.count > 1 {
+                Text("\(center.activities.count)")
+                    .font(.system(size: 8, weight: .semibold))
+                    .padding(.horizontal, 3)
+                    .padding(.vertical, 1)
+                    .background(Capsule().fill(Color.accentColor))
+                    .foregroundStyle(Color.white)
+                    .offset(x: 5, y: -3)
+                    .allowsHitTesting(false)
+            }
+        }
+        .help(center.activities.first?.label ?? "Activity — publishes and uploads show here while they work")
+        .popover(isPresented: $showList, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 10) {
+                if center.activities.isEmpty {
+                    Text("No Activity")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("Publishing, media uploads, and share cards appear here while they work.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
                     Text("In Progress")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                     ForEach(center.activities) { activity in
-                        HStack(spacing: 7) {
-                            ProgressView().controlSize(.small)
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small).scaleEffect(0.75)
                             Text(activity.label)
-                                .font(.system(size: 11))
+                                .font(.system(size: 12))
                         }
                     }
                 }
-                .padding(12)
-                .frame(minWidth: 220, alignment: .leading)
             }
+            .padding(14)
+            .frame(width: 260, alignment: .leading)
         }
     }
 }
@@ -1210,6 +1222,10 @@ struct TabContentView: View {
             // A fixed width: the flexible column re-resolved itself on
             // every selection update, so dragging a slider made the whole
             // panel jitter between widths. Predictable beats resizable.
+            // And no implicit animations — selection changes swap the
+            // panel's contents in one clean frame instead of snapping
+            // pieces into place.
+            .transaction { $0.animation = nil }
             .inspectorColumnWidth(280)
         }
         .sheet(isPresented: $showImportSheet) {
@@ -1363,6 +1379,39 @@ struct TabContentView: View {
                 }
             }
             .frame(maxWidth: .infinity)
+
+            // Contextual page actions live IN the field, Safari's way —
+            // they come and go inside the capsule without moving a single
+            // toolbar item. Create a missing page on your site; claim a
+            // page that isn't yours.
+            if matchedSite != nil, tab.lastHTTPStatus == 404, !tab.isEditing {
+                Button {
+                    createMissingPage()
+                } label: {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 13, weight: .medium))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(Color.black, AnyShapeStyle(timYellow))
+                        .frame(width: 18, height: 18)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("This page doesn't exist on your site yet — create and publish it at this address.")
+            } else if matchedSite == nil, !siteStore.sites.isEmpty, !tab.isEditing,
+                      let claimURL = tab.webView.url, claimURL.scheme?.hasPrefix("http") == true {
+                Button {
+                    showImportSheet = true
+                } label: {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.system(size: 13, weight: .medium))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(Color.black, AnyShapeStyle(timYellow))
+                        .frame(width: 18, height: 18)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Make It Mine — copy this page, with its images, styles, and fonts, onto your own site, ready to edit.")
+            }
 
             Button {
                 if tab.isLoading { tab.webView.stopLoading() } else { tab.webView.reload() }
@@ -2050,45 +2099,6 @@ struct TabContentView: View {
                 addressCapsule
                     .frame(minWidth: 280, idealWidth: 470, maxWidth: 560)
 
-                // A page that ISN'T yours: one click starts making it so.
-                if matchedSite == nil, !siteStore.sites.isEmpty,
-                   let pageURL = tab.webView.url, pageURL.scheme?.hasPrefix("http") == true {
-                    Button {
-                        showImportSheet = true
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "square.and.arrow.down")
-                                .font(.system(size: 9, weight: .semibold))
-                            Text("Make It Mine…")
-                                .font(.caption)
-                        }
-                        .padding(.vertical, 5)
-                        .padding(.horizontal, 9)
-                        .background(Capsule().fill(timYellow))
-                        .foregroundStyle(Color.black)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Copy this page — with all its images, styles, and fonts — onto your own site, ready to edit and publish.")
-                }
-
-                if matchedSite != nil, tab.lastHTTPStatus == 404, !tab.isEditing {
-                    Button {
-                        createMissingPage()
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "plus")
-                                .font(.system(size: 9, weight: .semibold))
-                            Text("Create This Page")
-                                .font(.caption)
-                        }
-                        .padding(.vertical, 5)
-                        .padding(.horizontal, 9)
-                        .background(Capsule().fill(Color.accentColor))
-                        .foregroundStyle(Color.white)
-                    }
-                    .buttonStyle(.plain)
-                    .help("This page doesn't exist on your site yet — create and publish it at this address.")
-                }
             }
         }
 
@@ -2127,37 +2137,39 @@ struct TabContentView: View {
 
             ActivityIndicator()
 
-            if tab.isEditing {
-                HStack(spacing: 6) {
-                    Button {
-                        tab.undoEdit()
-                    } label: {
-                        Image(systemName: "arrow.uturn.backward")
-                            .frame(width: 24, height: 22)
-                            .contentShape(Rectangle())
-                    }
-                    .help("Undo (⌘Z)")
-                    Button {
-                        tab.redoEdit()
-                    } label: {
-                        Image(systemName: "arrow.uturn.forward")
-                            .frame(width: 24, height: 22)
-                            .contentShape(Rectangle())
-                    }
-                    .help("Redo (⇧⌘Z)")
-                    Button("Done") { finishEditing() }
-                        .buttonStyle(.borderedProminent)
-                        .help("Done (⌘E) — your changes are saved")
-                        .padding(.leading, 4)
+            // Fixed slots — the toolbar is the toolbar. Undo and redo are
+            // always here (Keynote keeps them too), disabled outside an
+            // edit session; Edit and Done share one slot, one width.
+            HStack(spacing: 6) {
+                Button {
+                    tab.undoEdit()
+                } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                        .frame(width: 24, height: 22)
+                        .contentShape(Rectangle())
                 }
-                .padding(.horizontal, 4)
-            } else if isPageEditable, previewSha == nil {
-                Button("Edit") { beginEditing() }
-                    .buttonStyle(.bordered)
-                    .tint(.accentColor)
-                    .help("Edit This Page (⌘E)")
-                    .padding(.horizontal, 4)
+                .disabled(!tab.isEditing)
+                .help("Undo (⌘Z)")
+                Button {
+                    tab.redoEdit()
+                } label: {
+                    Image(systemName: "arrow.uturn.forward")
+                        .frame(width: 24, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .disabled(!tab.isEditing)
+                .help("Redo (⇧⌘Z)")
+                Button(tab.isEditing ? "Done" : "Edit") {
+                    if tab.isEditing { finishEditing() } else { beginEditing() }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(tab.isEditing ? Color.accentColor : Color.accentColor.opacity(0.85))
+                .frame(width: 56)
+                .disabled(!tab.isEditing && (!isPageEditable || previewSha != nil))
+                .help(tab.isEditing ? "Done (⌘E) — your changes are saved" : "Edit This Page (⌘E)")
+                .padding(.leading, 4)
             }
+            .padding(.horizontal, 4)
 
             Menu {
                 ForEach(siteStore.sites) { site in
