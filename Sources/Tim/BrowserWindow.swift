@@ -63,16 +63,28 @@ struct ActivityIndicator: View {
             Button {
                 showList.toggle()
             } label: {
-                HStack(spacing: 3) {
+                HStack(spacing: 5) {
                     ProgressView()
                         .controlSize(.small)
                         .scaleEffect(0.65)
-                    if center.activities.count > 1 {
+                    // One thing in flight: name it right in the toolbar.
+                    // Several: show the count; the popover has the list.
+                    if center.activities.count == 1, let only = center.activities.first {
+                        Text(only.label)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: 160)
+                    } else {
                         Text("\(center.activities.count)")
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.secondary)
                     }
                 }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(Color.primary.opacity(0.06)))
             }
             .buttonStyle(.plain)
             .help("Working in the background — click for details")
@@ -1305,7 +1317,10 @@ struct TabContentView: View {
         }
         let rel = site.relativePagePath(for: url)
         let name = ((rel as NSString).lastPathComponent as NSString).deletingPathExtension
-        let html = LocalPage.html(title: name == "index" ? (site.name.isEmpty ? "Home" : site.name) : name.capitalized)
+        let html = LocalPage.html(
+            title: name == "index" ? (site.name.isEmpty ? "Home" : site.name) : name.capitalized,
+            likeSiteAt: site.localProjectPath
+        )
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 try PageWriter.write(html: html, folder: site.localProjectPath, relativePath: rel)
@@ -1902,6 +1917,7 @@ struct EditingToolbar: View {
                         ActivityCenter.shared.end(activity)
                         isWorking = false
                         statusMessage = "Couldn’t replace with \(name): \(error.localizedDescription)"
+                        tab.unmarkMedia(id: replaceID)
                     }
                 }
             }
@@ -2450,7 +2466,10 @@ struct NewPageSheet: View {
                 } else {
                     // Plain site: write the page into the mirror, publish it.
                     rel = pageSlug == "index" ? "/index.html" : "/\(pageSlug).html"
-                    let html = LocalPage.html(title: pageTitle.isEmpty ? pageSlug : pageTitle)
+                    let html = LocalPage.html(
+                        title: pageTitle.isEmpty ? pageSlug : pageTitle,
+                        likeSiteAt: workingSite.localProjectPath
+                    )
                     try PageWriter.write(html: html, folder: workingSite.localProjectPath, relativePath: rel)
                     switch workingSite.target {
                     case .sftp:

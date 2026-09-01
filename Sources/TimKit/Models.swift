@@ -325,6 +325,14 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
     }
 
+    /// Clears a replace mark (the upload failed or was abandoned).
+    public func unmarkMedia(id: String) {
+        webView.evaluateJavaScript(
+            "window.__timUnmarkMedia && window.__timUnmarkMedia(\(Self.jsLiteral(id)));",
+            completionHandler: nil
+        )
+    }
+
     /// Swaps the tagged media element for a new one — placement, styling,
     /// and classes survive the swap.
     public func replaceMedia(id: String, html: String) {
@@ -579,7 +587,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           'background-size:200% 100%;animation:timShimmer 1.4s linear infinite}' +
         '@keyframes timShimmer{from{background-position:200% 0}to{background-position:-200% 0}}' +
         '.tim-media-loading-label{font:500 12px -apple-system,sans-serif;color:rgba(127,127,127,0.95);padding:4px 12px;text-align:center}' +
-        '.tim-media-failed{animation:none;outline-color:rgba(255,59,48,0.65);background:rgba(255,59,48,0.06)}';
+        '.tim-media-failed{animation:none;outline-color:rgba(255,59,48,0.65);background:rgba(255,59,48,0.06)}' +
+        '.tim-media-replacing{outline:2px dashed rgba(10,132,255,0.7) !important;outline-offset:-1px;animation:timPulse 1.1s ease-in-out infinite}' +
+        '@keyframes timPulse{50%{opacity:0.55}}';
 
       var overlay = doc.createElement('div');
       overlay.id = '__tim-overlay';
@@ -1194,7 +1204,14 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           ? sel : (sel.querySelector ? sel.querySelector('img,video,audio') : null);
         if (!target) { return false; }
         target.setAttribute('data-tim-replace', id);
+        target.classList.add('tim-media-replacing');
         return true;
+      };
+      window.__timUnmarkMedia = function (id) {
+        var target = doc.querySelector('[data-tim-replace=' + JSON.stringify(id) + ']');
+        if (!target) { return; }
+        target.removeAttribute('data-tim-replace');
+        target.classList.remove('tim-media-replacing');
       };
       window.__timReplaceMedia = function (id, html) {
         var target = doc.querySelector('[data-tim-replace=' + JSON.stringify(id) + ']');
@@ -1202,8 +1219,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         var tmp = doc.createElement('div');
         tmp.innerHTML = html;
         var el = tmp.firstElementChild;
-        if (!el) { target.removeAttribute('data-tim-replace'); return; }
+        if (!el) { target.removeAttribute('data-tim-replace'); target.classList.remove('tim-media-replacing'); return; }
         checkpoint('media');
+        target.classList.remove('tim-media-replacing');
         if (target.className) { el.className = target.className; }
         if (target.style && target.style.cssText) { el.style.cssText = target.style.cssText; }
         target.parentNode.replaceChild(el, target);
