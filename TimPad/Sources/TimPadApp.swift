@@ -8,6 +8,35 @@ typealias Tab = TimKit.Tab
 /// Tim's yellow — the color of ownership, same grammar as the Mac.
 let timYellow = Color(red: 0.996, green: 0.929, blue: 0)
 
+extension Notification.Name {
+    static let padThumbsUpdated = Notification.Name("tim.pad.thumbs")
+}
+
+/// Page thumbnails, the Mac sidebar's best trick: captured quietly as
+/// you browse your own pages, shown beside their names.
+enum PadThumbs {
+    static let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("TimThumbnails")
+
+    static func path(for url: String) -> URL {
+        let key = Data(url.utf8).base64EncodedString()
+            .replacingOccurrences(of: "/", with: "_")
+            .prefix(180)
+        return directory.appendingPathComponent(String(key) + ".png")
+    }
+
+    static func save(_ image: UIImage, for url: String) {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        guard let png = image.pngData() else { return }
+        try? png.write(to: path(for: url))
+        NotificationCenter.default.post(name: .padThumbsUpdated, object: nil)
+    }
+
+    static func image(for url: String) -> UIImage? {
+        UIImage(contentsOfFile: path(for: url).path)
+    }
+}
+
 @main
 struct TimPadApp: App {
     @StateObject private var store = BrowserStore()
@@ -60,6 +89,19 @@ struct PadSidebar: View {
     @EnvironmentObject var siteStore: SiteStore
     @State private var showKeySheet = false
     @State private var editingSite: Site?
+    @State private var thumbsTick = 0
+
+    private var currentSite: Site? {
+        guard let tab = store.selectedTab else { return nil }
+        return siteStore.match(URL(string: tab.urlString))
+    }
+
+    /// Pages of the current site this iPad has visited, newest first —
+    /// the browsing trail IS the page list.
+    private var sitePages: [PageRecord] {
+        guard let site = currentSite else { return [] }
+        return PageRegistry.all().filter { siteStore.match(URL(string: $0.url))?.id == site.id }
+    }
 
     var body: some View {
         List {
@@ -117,6 +159,38 @@ struct PadSidebar: View {
                 }
             }
 
+            if !sitePages.isEmpty {
+                Section("Pages") {
+                    ForEach(sitePages) { page in
+                        Button {
+                            store.selectedTab?.navigate(to: page.url)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Group {
+                                    if let thumb = PadThumbs.image(for: page.url) {
+                                        Image(uiImage: thumb)
+                                            .resizable()
+                                            .aspectRatio(contentMode: .fill)
+                                    } else {
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .fill(Color.primary.opacity(0.06))
+                                            .overlay(Image(systemName: "doc").font(.system(size: 12)).foregroundStyle(.tertiary))
+                                    }
+                                }
+                                .frame(width: 62, height: 44)
+                                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Color.primary.opacity(0.12)))
+                                Text(page.title)
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(2)
+                            }
+                        }
+                    }
+                }
+                .id(thumbsTick)
+            }
+
             Section {
                 Button {
                     showKeySheet = true
@@ -130,6 +204,9 @@ struct PadSidebar: View {
             }
         }
         .listStyle(.sidebar)
+        .onReceive(NotificationCenter.default.publisher(for: .padThumbsUpdated)) { _ in
+            thumbsTick += 1
+        }
         .sheet(isPresented: $showKeySheet) { PadKeySheet() }
         .sheet(item: $editingSite) { site in PadSiteSheet(site: site) }
     }
@@ -315,6 +392,20 @@ struct PadBrowser: View {
         .onChange(of: tab.urlString) { _, value in
             if !addressFocused { addressText = value }
         }
+        .onChange(of: tab.isLoading) { _, loading in
+            // Thumbnails fall out of browsing, the Mac's way: owned pages
+            // snapshot quietly on load and appear in the sidebar.
+            guard !loading, let url = tab.webView.url, matchedSite != nil else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                guard tab.webView.url == url else { return }
+                PageRegistry.record(url: url.absoluteString, title: tab.title)
+                let config = WKSnapshotConfiguration()
+                config.snapshotWidth = 280
+                tab.webView.takeSnapshot(with: config) { image, _ in
+                    if let image { PadThumbs.save(image, for: url.absoluteString) }
+                }
+            }
+        }
         .onChange(of: tab.isEditing) { _, editing in
             showInspector = editing
         }
@@ -482,6 +573,11 @@ struct PadBrowser: View {
                         // The share card follows every publish: offscreen,
                         // mobile-bold, per page.
                         PadSocialCards.shared.capture(pageURL: url, site: site, pageHTML: finished)
+                        let config = WKSnapshotConfiguration()
+                        config.snapshotWidth = 280
+                        tab.webView.takeSnapshot(with: config) { image, _ in
+                            if let image { PadThumbs.save(image, for: url.absoluteString) }
+                        }
                     }
                 } catch {
                     await MainActor.run {
