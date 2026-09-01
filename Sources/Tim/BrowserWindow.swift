@@ -3775,9 +3775,15 @@ struct InspectorControls: View {
     private var styleCard: some View {
         card {
             if selectionCount > 1 {
-                Text("\(selectionCount) objects — edits apply to all")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.accentColor)
+                HStack(spacing: 8) {
+                    Text("\(selectionCount) objects — edits apply to all")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.accentColor)
+                    Spacer()
+                    Button("Group") { tab.groupSelection() }
+                        .controlSize(.mini)
+                        .help("One object from many: the group moves, resizes, fills, and rotates as a unit — and stays composed on phones.")
+                }
             }
             HStack(spacing: 6) {
                 rowLabel("Style")
@@ -4097,6 +4103,11 @@ struct InspectorControls: View {
                     tab.setMobileHidden(!on)
                 }
                 .help("Off: this object appears on desktop only. Use it for decorative pieces the phone layout doesn't need.")
+            if (info["label"] as? String) == "Group" {
+                Button("Ungroup") { tab.ungroupSelection() }
+                    .controlSize(.mini)
+                    .help("Dissolves the group — its objects return to the page, keeping their places.")
+            }
         }
     }
 

@@ -320,6 +320,16 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         )
     }
 
+    /// Groups the multi-selection into a container object (its own little
+    /// canvas — moves, fills, and rotates as one), and back.
+    public func groupSelection() {
+        webView.evaluateJavaScript("window.__timGroupSel && window.__timGroupSel();", completionHandler: nil)
+    }
+
+    public func ungroupSelection() {
+        webView.evaluateJavaScript("window.__timUngroupSel && window.__timUngroupSel();", completionHandler: nil)
+    }
+
     /// Keynote-style arrange: "front", "forward", "backward", or "back",
     /// reordering the selection among the objects it overlaps.
     public func arrange(_ action: String) {
@@ -750,6 +760,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         var canvas = doc.querySelector('[data-tim-canvas]');
         if (!canvas) { return; }
         var objs = Array.prototype.slice.call(canvas.querySelectorAll('.tim-object')).filter(function (el) {
+          // Top-level objects only: a group's children live in the
+          // group's own grid and travel with it.
+          if (canvasFor(el) !== canvas) { return false; }
           return el.getBoundingClientRect().height > 0 || !el.hasAttribute('data-tim-mobile-hidden');
         });
         if (!objs.length) { return; }
@@ -857,7 +870,13 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       // In the collapsed (mobile) layout, placement is automatic — objects
       // can be selected and their text edited, but not moved or resized.
       function collapsed() { return window.innerWidth <= 700; }
-      function canvasFor(el) { return el && el.closest ? el.closest('[data-tim-canvas]') : null; }
+      // A group container is both an object (in its parent's grid) and a
+      // canvas (for its children) — so an element's canvas is found from
+      // its PARENT, never itself.
+      function canvasFor(el) {
+        return el && el.parentElement && el.parentElement.closest
+          ? el.parentElement.closest('[data-tim-canvas]') : null;
+      }
       function stopTextEditing() {
         if (editingEl) { editingEl.removeAttribute('contenteditable'); editingEl = null; }
       }
@@ -1256,6 +1275,25 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           if (e.shiftKey) { window.__timRedo(); } else { window.__timUndo(); }
           return;
         }
+        // Select All: every top-level object — then Group, style, or move
+        // the lot as one.
+        if (active && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === 'a' || e.key === 'A') && !editingEl) {
+          var allCanvas = doc.querySelector('[data-tim-canvas]');
+          if (allCanvas) {
+            var everyObj = Array.prototype.slice.call(allCanvas.querySelectorAll('.tim-object')).filter(function (el) {
+              return canvasFor(el) === allCanvas && desktopPlacement(el);
+            });
+            if (everyObj.length) {
+              e.preventDefault(); e.stopPropagation();
+              stopTextEditing();
+              sel = everyObj[0];
+              selGroup = everyObj.slice(1);
+              layout();
+              notifySel(true);
+              return;
+            }
+          }
+        }
         if (e.key === 'Escape') {
           stopTextEditing();
           sel = null;
@@ -1470,6 +1508,77 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         restoreSnapshot(redoStack.pop());
       };
 
+      // Groups: a composition becomes one object. The container is itself
+      // a small canvas — same column rhythm as the cells it occupies, so
+      // children keep their exact size and position — and as an object it
+      // moves, resizes (children scale with it), fills, and ROTATES as a
+      // unit. The bounded way to tilt a whole composition.
+      window.__timGroupSel = function () {
+        var members = groupAll().filter(function (el) { return isObject(el) && desktopPlacement(el); });
+        if (members.length < 2) { return; }
+        var canvas = canvasFor(members[0]);
+        if (!canvas) { return; }
+        for (var gi = 0; gi < members.length; gi++) {
+          if (canvasFor(members[gi]) !== canvas) { return; }
+        }
+        checkpoint('group');
+        var rs = 1e9, cs = 1e9, re = 0, ce = 0;
+        members.forEach(function (el) {
+          var p = desktopPlacement(el);
+          rs = Math.min(rs, p.rs); cs = Math.min(cs, p.cs);
+          re = Math.max(re, p.re); ce = Math.max(ce, p.ce);
+        });
+        var container = doc.createElement('div');
+        container.className = 'tim-object tim-container';
+        container.setAttribute('data-tim-canvas', '');
+        container.style.cssText = 'display:grid;grid-template-columns:repeat(' + (ce - cs) + ', 1fr);grid-auto-rows:32px;gap:16px;min-width:0;';
+        setDesktopArea(container, rs, cs, re, ce);
+        canvas.insertBefore(container, members[0]);
+        members.forEach(function (el) {
+          var p = desktopPlacement(el);
+          setDesktopArea(el, p.rs - rs + 1, p.cs - cs + 1, p.re - rs + 1, p.ce - cs + 1);
+          container.appendChild(el);
+          var mid = el.getAttribute('data-tim-id');
+          if (mid && mobileLayout[mid]) { delete mobileLayout[mid]; }
+        });
+        if (Object.keys(mobileLayout).length) { writeMobileLayout(); }
+        clearGroup();
+        sel = container;
+        layout();
+        notifySel(true);
+      };
+      window.__timUngroupSel = function () {
+        if (!sel || !sel.classList || !sel.classList.contains('tim-container')) { return; }
+        checkpoint('ungroup');
+        var p0 = desktopPlacement(sel);
+        var parentCanvas = canvasFor(sel);
+        if (!p0 || !parentCanvas) { return; }
+        var hadMobile = Object.keys(mobileLayout).length > 0;
+        var mobileRow = 1;
+        if (hadMobile) {
+          for (var mk in mobileLayout) { mobileRow = Math.max(mobileRow, mobileLayout[mk][2]); }
+          delete mobileLayout[sel.getAttribute('data-tim-id')];
+        }
+        var kids = Array.prototype.slice.call(sel.children);
+        kids.forEach(function (el) {
+          var p = desktopPlacement(el);
+          if (p) {
+            setDesktopArea(el, p.rs + p0.rs - 1, p.cs + p0.cs - 1, p.re + p0.rs - 1, p.ce + p0.cs - 1);
+          }
+          parentCanvas.insertBefore(el, sel);
+          if (hadMobile && el.classList && el.classList.contains('tim-object')) {
+            var rows = p ? (p.re - p.rs) : 2;
+            mobileLayout[ensureObjectId(el)] = [mobileRow, 1, mobileRow + rows, MOBILE_COLS + 1];
+            mobileRow += rows;
+          }
+        });
+        sel.remove();
+        if (hadMobile) { writeMobileLayout(); }
+        sel = null;
+        hide();
+        notifySel(true);
+      };
+
       // Keynote-style arrange: reorder the selection among the objects it
       // actually overlaps, then write compact z-indexes for just that
       // group (0 stays implicit). Non-overlapping objects never matter
@@ -1568,6 +1677,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       // is named by its style (Title, Body, a custom name), media by what
       // it is, components by their name — and nothing is ever a "div".
       function labelFor(el) {
+        if (el.classList && el.classList.contains('tim-container')) { return 'Group'; }
         if (el.hasAttribute && el.hasAttribute('data-tim-canvas')) { return 'Canvas'; }
         function titleCase(text) {
           return text.replace(/-/g, ' ').replace(/(^|\\s)\\w/g, function (c) { return c.toUpperCase(); });

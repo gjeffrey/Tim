@@ -19,7 +19,9 @@ public enum MobileCSS {
         rules += inlineSizeRules(in: out)
         // A hand-tuned mobile layout (data-tim-mobile-layout) is the
         // author's word — synthesis stays out of layout entirely then.
-        if !out.contains("data-tim-mobile-layout") {
+        // Group containers nest their own grids, whose child coordinates
+        // would confuse the gap math — layout synthesis sits those out too.
+        if !out.contains("data-tim-mobile-layout"), !out.contains("tim-container") {
             rules += layoutRules(in: out)
         }
         let block = "<style data-tim-mobile>@media (max-width: 700px){\n"
