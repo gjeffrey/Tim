@@ -32,6 +32,11 @@ extension Notification.Name {
     static let timBounceVideo = Notification.Name("tim.bounceVideo")
 }
 
+/// Tim's yellow — the color of ownership. It marks what's yours (the
+/// frame around your page, the pill's pencil, your site's name) and
+/// nothing else; tools and selection stay blue so they read anywhere.
+let timYellow = Color(red: 0.996, green: 0.929, blue: 0)
+
 /// Parses "linear-gradient(140deg, <c1>, <c2>)" back into its parts —
 /// colors may be hex or rgb(), whatever Color(cssColor:) reads.
 func parseLinearGradient(_ value: String) -> (angle: Double, start: String, end: String)? {
@@ -322,10 +327,17 @@ struct SiteSection: View {
         if let site {
             VStack(alignment: .leading, spacing: 10) {
                 Divider().padding(.vertical, 6)
-                Text(site.name.isEmpty ? site.origin : site.name)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .id(thumbTick)
+                HStack(spacing: 6) {
+                    // The yellow again: this site is yours.
+                    Circle()
+                        .fill(timYellow)
+                        .frame(width: 8, height: 8)
+                        .shadow(color: timYellow.opacity(0.5), radius: 2)
+                    Text(site.name.isEmpty ? site.origin : site.name)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.primary)
+                }
+                .id(thumbTick)
 
                 ForEach(pages) { page in
                     VStack(alignment: .leading, spacing: 4) {
@@ -850,15 +862,6 @@ struct TabContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Tim's signature: the yellow. A hairline of it across the top
-            // whenever the page is yours — a touch brighter while editing.
-            // The window itself tells you you're home.
-            Rectangle()
-                .fill(Color(red: 0.996, green: 0.929, blue: 0))
-                .frame(height: isPageEditable ? (tab.isEditing ? 3 : 2) : 0)
-                .shadow(color: Color(red: 0.996, green: 0.929, blue: 0).opacity(tab.isEditing ? 0.55 : 0), radius: 4, y: 1)
-                .animation(.easeInOut(duration: 0.35), value: isPageEditable)
-                .animation(.easeInOut(duration: 0.35), value: tab.isEditing)
             if tab.isEditing {
                 EditingToolbar(
                     tab: tab,
@@ -891,6 +894,16 @@ struct TabContentView: View {
                     }
                 }
             }
+            // Tim's signature: a thin yellow frame around the page when
+            // it's yours — a touch stronger while you're editing it.
+            .overlay(
+                Rectangle()
+                    .strokeBorder(timYellow.opacity(tab.isEditing ? 1 : 0.85),
+                                  lineWidth: isPageEditable ? (tab.isEditing ? 2.5 : 1.5) : 0)
+                    .allowsHitTesting(false)
+                    .animation(.easeInOut(duration: 0.35), value: isPageEditable)
+                    .animation(.easeInOut(duration: 0.35), value: tab.isEditing)
+            )
             if previewSha != nil {
                 Divider()
                 VersionPreviewPane(
@@ -1029,8 +1042,12 @@ struct TabContentView: View {
     private var addressCapsule: some View {
         HStack(spacing: 7) {
             Image(systemName: isPageEditable ? "pencil.circle.fill" : "globe")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(isPageEditable ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
+                .font(.system(size: 13, weight: .medium))
+                .symbolRenderingMode(isPageEditable ? .palette : .monochrome)
+                .foregroundStyle(
+                    isPageEditable ? AnyShapeStyle(Color.black) : AnyShapeStyle(.tertiary),
+                    AnyShapeStyle(timYellow)
+                )
                 .contentTransition(.symbolEffect(.replace))
                 .help(isPageEditable ? "This page is yours — ⌘E edits it, Done publishes it." : "")
 
@@ -1093,11 +1110,11 @@ struct TabContentView: View {
         .overlay(
             Capsule(style: .continuous)
                 .stroke(
-                    isPageEditable ? Color.accentColor.opacity(0.55) : Color.primary.opacity(0.08),
-                    lineWidth: 1
+                    isPageEditable ? timYellow.opacity(0.95) : Color.primary.opacity(0.08),
+                    lineWidth: isPageEditable ? 1.5 : 1
                 )
         )
-        .shadow(color: isPageEditable ? Color.accentColor.opacity(0.28) : .clear, radius: 7, y: 1)
+        .shadow(color: isPageEditable ? timYellow.opacity(0.45) : .clear, radius: 6, y: 1)
         .animation(.easeOut(duration: 0.22), value: isPageEditable)
         .animation(.easeOut(duration: 0.15), value: addressFocused)
     }
