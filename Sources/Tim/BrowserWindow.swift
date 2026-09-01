@@ -1996,7 +1996,7 @@ struct EditingToolbar: View {
         case .image:
             return #"<img class="tim-object" src="\#(src)" alt="" />"#
         case .video:
-            return #"<video class="tim-object" controls src="\#(src)"></video>"#
+            return #"<video class="tim-object" controls playsinline src="\#(src)"></video>"#
         case .audio:
             return #"<audio class="tim-object" controls src="\#(src)"></audio>"#
         case .file:
@@ -3365,6 +3365,10 @@ struct InspectorControls: View {
     @State private var isStruck: Bool = false
     @State private var capsMode: String = "none"
     @State private var rotation: Double = 0
+    @State private var videoAutoplay: Bool = false
+    @State private var videoLoop: Bool = false
+    @State private var videoSound: Bool = true
+    @State private var videoControls: Bool = true
     @State private var textColor: Color
     @State private var fillColor: Color
     @State private var radius: Double
@@ -3404,6 +3408,11 @@ struct InspectorControls: View {
         _isStruck = State(initialValue: (info["strike"] as? Int) == 1)
         _capsMode = State(initialValue: info["caps"] as? String ?? "none")
         _rotation = State(initialValue: info["rotation"] as? Double ?? 0)
+        let video = info["video"] as? [String: Any] ?? [:]
+        _videoAutoplay = State(initialValue: (video["autoplay"] as? Int) == 1)
+        _videoLoop = State(initialValue: (video["loop"] as? Int) == 1)
+        _videoSound = State(initialValue: (video["muted"] as? Int) != 1)
+        _videoControls = State(initialValue: (video["controls"] as? Int) == 1)
     }
 
     private var isText: Bool {
@@ -3412,6 +3421,61 @@ struct InspectorControls: View {
     }
     private var isMedia: Bool {
         ["img", "video", "audio"].contains(info["tag"] as? String ?? "")
+    }
+
+    // MARK: Video
+
+    private var videoCard: some View {
+        card("Video") {
+            HStack(spacing: 8) {
+                rowLabel("Plays")
+                Picker("", selection: $videoAutoplay) {
+                    Text("On Click").tag(false)
+                    Text("Auto").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.mini)
+                .onChange(of: videoAutoplay) { _, auto in
+                    if auto {
+                        // The ambient preset: silent, looping, chromeless —
+                        // the only way browsers allow autoplay, and the way
+                        // it looks best.
+                        videoSound = false
+                        videoLoop = true
+                        videoControls = false
+                    } else {
+                        videoControls = true
+                    }
+                    applyVideo()
+                }
+            }
+            Toggle("Loop", isOn: $videoLoop)
+                .font(.system(size: 11))
+                .onChange(of: videoLoop) { _, _ in applyVideo() }
+            Toggle("Sound", isOn: $videoSound)
+                .font(.system(size: 11))
+                .disabled(videoAutoplay)
+                .onChange(of: videoSound) { _, _ in applyVideo() }
+            Toggle("Controls", isOn: $videoControls)
+                .font(.system(size: 11))
+                .onChange(of: videoControls) { _, _ in applyVideo() }
+            if videoAutoplay {
+                Text("Autoplaying video is always silent — every browser requires it. Visitors get sound from videos they start themselves.")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func applyVideo() {
+        tab.setVideoOptions(
+            autoplay: videoAutoplay,
+            loop: videoLoop,
+            muted: videoAutoplay || !videoSound,
+            controls: videoControls
+        )
     }
     private var mediaCard: some View {
         card {
@@ -3449,6 +3513,9 @@ struct InspectorControls: View {
                 Text((info["tag"] as? String ?? "object").capitalized)
                     .font(.system(size: 13, weight: .semibold))
                     .padding(.horizontal, 2)
+            }
+            if (info["tag"] as? String) == "video" {
+                videoCard
             }
             if isMedia {
                 mediaCard

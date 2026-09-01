@@ -325,6 +325,18 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
     }
 
+    /// Applies video behavior (autoplay, loop, sound, controls) to the
+    /// selected video as one coherent state.
+    public func setVideoOptions(autoplay: Bool, loop: Bool, muted: Bool, controls: Bool) {
+        let json = """
+        {"autoplay":\(autoplay ? 1 : 0),"loop":\(loop ? 1 : 0),"muted":\(muted ? 1 : 0),"controls":\(controls ? 1 : 0)}
+        """
+        webView.evaluateJavaScript(
+            "window.__timSetVideo && window.__timSetVideo(\(Self.jsLiteral(json)));",
+            completionHandler: nil
+        )
+    }
+
     /// Clears a replace mark (the upload failed or was abandoned).
     public func unmarkMedia(id: String) {
         webView.evaluateJavaScript(
@@ -1298,6 +1310,12 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
               caps: (cs.fontVariantCaps === 'small-caps' || cs.fontVariant === 'small-caps')
                 ? 'small' : (cs.textTransform === 'uppercase' ? 'upper'
                 : (cs.textTransform === 'capitalize' ? 'title' : 'none')),
+              video: (sel.tagName === 'VIDEO') ? {
+                autoplay: sel.hasAttribute('autoplay') ? 1 : 0,
+                loop: sel.hasAttribute('loop') ? 1 : 0,
+                muted: sel.hasAttribute('muted') ? 1 : 0,
+                controls: sel.hasAttribute('controls') ? 1 : 0
+              } : 0,
               rotation: (function () {
                 var m = /rotate\\((-?[0-9.]+)deg\\)/.exec(sel.style.transform || '');
                 return m ? parseFloat(m[1]) : 0;
@@ -1603,6 +1621,34 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         while (wrap.firstChild) { wrap.parentNode.insertBefore(wrap.firstChild, wrap); }
         wrap.remove();
         notifySel(true);
+      };
+
+      // Video behavior, applied as one coherent state: the saved page gets
+      // the attributes, and the live element previews the result.
+      window.__timSetVideo = function (json) {
+        if (!sel || sel.tagName !== 'VIDEO') { return; }
+        checkpoint('video');
+        var opts = {};
+        try { opts = JSON.parse(json) || {}; } catch (e) {}
+        function setBool(name, on) {
+          if (on) { sel.setAttribute(name, ''); } else { sel.removeAttribute(name); }
+        }
+        setBool('autoplay', !!opts.autoplay);
+        setBool('loop', !!opts.loop);
+        setBool('muted', !!opts.muted);
+        setBool('controls', !!opts.controls);
+        // Autoplay must play inline on phones or iOS goes fullscreen.
+        setBool('playsinline', !!opts.autoplay || sel.hasAttribute('playsinline'));
+        sel.muted = !!opts.muted;
+        sel.loop = !!opts.loop;
+        if (opts.autoplay) {
+          var p = sel.play();
+          if (p && p.catch) { p.catch(function () {}); }
+        } else {
+          sel.pause();
+          sel.currentTime = 0;
+        }
+        notifySel();
       };
 
       window.__timSelHTML = function () { return sel ? sel.outerHTML : ''; };
