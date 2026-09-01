@@ -10,7 +10,11 @@ import Foundation
 public enum MobileCSS {
     public static func regenerate(in html: String) -> String {
         var out = assignIDs(in: html)
-        var rules = ["[data-tim-mobile-hidden]{display:none !important}"]
+        var rules = [
+            "[data-tim-mobile-hidden]{display:none !important}",
+            // Multi-column text reads as one column on phones.
+            ".tim-canvas .tim-text{column-count:1 !important}"
+        ]
         rules += styleClassRules(in: out)
         rules += inlineSizeRules(in: out)
         let block = "<style data-tim-mobile>@media (max-width: 700px){\n"

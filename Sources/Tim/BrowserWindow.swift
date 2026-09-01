@@ -3497,6 +3497,7 @@ struct InspectorControls: View {
     @State private var isUnderlined: Bool = false
     @State private var isStruck: Bool = false
     @State private var capsMode: String = "none"
+    @State private var columnCount: Int = 1
     @State private var rotation: Double = 0
     @State private var showOnMobile: Bool = true
     @State private var videoAutoplay: Bool = false
@@ -3541,6 +3542,7 @@ struct InspectorControls: View {
         _isUnderlined = State(initialValue: (info["underline"] as? Int) == 1)
         _isStruck = State(initialValue: (info["strike"] as? Int) == 1)
         _capsMode = State(initialValue: info["caps"] as? String ?? "none")
+        _columnCount = State(initialValue: min(4, max(1, info["columns"] as? Int ?? 1)))
         _rotation = State(initialValue: info["rotation"] as? Double ?? 0)
         _showOnMobile = State(initialValue: (info["mobileHidden"] as? Int) != 1)
         let video = info["video"] as? [String: Any] ?? [:]
@@ -3919,6 +3921,25 @@ struct InspectorControls: View {
                     emphasisButton("strikethrough", on: $isStruck) { applyDecoration() }
                 }
                 Spacer()
+            }
+
+            HStack(spacing: 8) {
+                rowLabel("Columns")
+                Picker("", selection: $columnCount) {
+                    Text("1").tag(1)
+                    Text("2").tag(2)
+                    Text("3").tag(3)
+                    Text("4").tag(4)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.mini)
+                .onChange(of: columnCount) { _, n in
+                    // Real flowing text: fills one column, continues in the
+                    // next, balances. Phones always read a single column.
+                    tab.setSelectionStyle("columnCount", n <= 1 ? "" : "\(n)")
+                    tab.setSelectionStyle("columnGap", n <= 1 ? "" : "16px")
+                }
             }
 
             HStack(spacing: 8) {

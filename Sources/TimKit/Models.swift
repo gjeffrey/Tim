@@ -727,7 +727,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (!canvas || !p || collapsed()) { return; }
         var g = gridInfo(canvas);
         var unit = g.rowH + g.rowGap;
-        var needed = Math.max(1, Math.ceil((el.scrollHeight + g.rowGap) / unit));
+        // Grid stretch makes scrollHeight >= the box, so a stretched box
+        // can never measure smaller than itself. Collapse to max-content
+        // for one beat to learn the text's true height — the box can then
+        // shrink right down to its content, and no further.
+        var prevHeight = el.style.height;
+        el.style.height = 'max-content';
+        var content = el.scrollHeight;
+        el.style.height = prevHeight;
+        var needed = Math.max(1, Math.ceil((content + g.rowGap) / unit));
         if (p.re - p.rs < needed) {
           setArea(el, p.rs, p.cs, p.rs + needed, p.ce);
           layout();
@@ -1373,6 +1381,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
                 var m = /rotate\\((-?[0-9.]+)deg\\)/.exec(sel.style.transform || '');
                 return m ? parseFloat(m[1]) : 0;
               })(),
+              columns: parseInt(cs.columnCount, 10) || 1,
               lineHeight: (parseFloat(cs.lineHeight) || 1.4 * (parseFloat(cs.fontSize) || 16)) / (parseFloat(cs.fontSize) || 16),
               letterSpacing: cs.letterSpacing === 'normal' ? 0 : (parseFloat(cs.letterSpacing) || 0)
             });
@@ -1394,7 +1403,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       // rewrites the style's rule in a persistent <style> element (saved
       // with the page), so every block carrying the class follows.
       var TYPO_PROPS = ['fontFamily', 'fontSize', 'fontWeight', 'color', 'lineHeight', 'letterSpacing', 'textAlign',
-                        'fontStyle', 'textDecoration', 'textTransform', 'fontVariant'];
+                        'fontStyle', 'textDecoration', 'textTransform', 'fontVariant', 'columnCount', 'columnGap'];
       var styleRules = {};
       (function parseExistingOverrides() {
         var el = doc.querySelector('style[data-tim-style-overrides]');
