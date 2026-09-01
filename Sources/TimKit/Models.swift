@@ -222,6 +222,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           for (var q = 0; q < replacing.length; q++) { replacing[q].removeAttribute('data-tim-replace'); }
           var reviewing = clone.querySelectorAll('[data-tim-review]');
           for (var v = 0; v < reviewing.length; v++) { reviewing[v].removeAttribute('data-tim-review'); }
+          // The product page's try-the-editor chrome is runtime-only.
+          var demo = clone.querySelectorAll('[data-tim-demo]');
+          for (var dm = 0; dm < demo.length; dm++) { demo[dm].remove(); }
           // CDN-injected scripts (Cloudflare beacons, Rocket Loader) must
           // never be saved back — each publish would re-accumulate them.
           var injected = clone.querySelectorAll('script[src*="cloudflareinsights"], script[src*="cdn-cgi"], script[data-cf-settings], script[data-cf-beacon]');
