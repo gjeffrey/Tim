@@ -31,6 +31,71 @@ extension Notification.Name {
     static let timReplaceMedia = Notification.Name("tim.replaceMedia")
 }
 
+/// Everything Tim does behind your back — publishing, uploads, mirror
+/// downloads, share cards — registers here, and the toolbar shows a
+/// spinner you can click to see exactly what's in flight.
+final class ActivityCenter: ObservableObject {
+    static let shared = ActivityCenter()
+    struct Activity: Identifiable, Equatable {
+        let id = UUID()
+        let label: String
+    }
+    @Published var activities: [Activity] = []
+
+    @discardableResult
+    func begin(_ label: String) -> UUID {
+        let activity = Activity(label: label)
+        DispatchQueue.main.async { self.activities.append(activity) }
+        return activity.id
+    }
+
+    func end(_ id: UUID) {
+        DispatchQueue.main.async { self.activities.removeAll { $0.id == id } }
+    }
+}
+
+struct ActivityIndicator: View {
+    @ObservedObject var center = ActivityCenter.shared
+    @State private var showList = false
+
+    var body: some View {
+        if !center.activities.isEmpty {
+            Button {
+                showList.toggle()
+            } label: {
+                HStack(spacing: 3) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.65)
+                    if center.activities.count > 1 {
+                        Text("\(center.activities.count)")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .help("Working in the background — click for details")
+            .popover(isPresented: $showList, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("In Progress")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    ForEach(center.activities) { activity in
+                        HStack(spacing: 7) {
+                            ProgressView().controlSize(.mini)
+                            Text(activity.label)
+                                .font(.system(size: 11))
+                        }
+                    }
+                }
+                .padding(12)
+                .frame(minWidth: 220, alignment: .leading)
+            }
+        }
+    }
+}
+
 struct BrowserWindow: View {
     @EnvironmentObject var store: BrowserStore
     @AppStorage("tim.siteSidebar") private var showSidebar = true
@@ -819,12 +884,17 @@ struct TabContentView: View {
             return
         }
 
-        // Plain site page: Done publishes this page.
-        tab.setEditing(false)
-        ensureAutoSocialCard {
-        tab.currentHTML { html in
-            guard let html, stillOn(url) else { return }
+        // Plain site page: Done captures the page this instant, then
+        // publishes in the background — navigate anywhere, the save is
+        // already in hand. The toolbar spinner shows it landing.
+        tab.currentHTML { captured in
+            tab.setEditing(false)
+            // The 3-second draft is the fallback if capture raced a navigation.
+            guard let raw = captured ?? DraftStore.html(for: url.absoluteString) else { return }
             let rel = site.relativePagePath(for: url)
+            let html = Self.ensuringAutoSocialMeta(in: raw, rel: rel, site: site)
+            let publishing = ActivityCenter.shared.begin("Publishing \((rel as NSString).lastPathComponent)…")
+            refreshAutoSocialCard(for: url, site: site, pageHTML: html)
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     try PageWriter.write(html: html, folder: site.localProjectPath, relativePath: rel)
@@ -879,15 +949,81 @@ struct TabContentView: View {
                     }
                     SiteWorkspace.snapshot(site.localProjectPath, message: "Edit \(rel)")
                     DispatchQueue.main.async {
+                        ActivityCenter.shared.end(publishing)
                         DraftStore.clear(for: url.absoluteString)
                         PageRegistry.record(url: url.absoluteString, title: tab.title)
-                        captureThumbnailSoon()
+                        captureThumbnailSoon(expecting: url)
                     }
                 } catch {
-                    DispatchQueue.main.async { publishAlert(error) }
+                    DispatchQueue.main.async {
+                        ActivityCenter.shared.end(publishing)
+                        publishAlert(error)
+                    }
                 }
             }
         }
+    }
+
+    /// The auto share card's meta tags, ensured in the captured HTML — the
+    /// card's filename is deterministic (social-<page>.png), so the tags
+    /// can be written before the image itself lands. A custom image (any
+    /// other filename) is theirs and stays untouched.
+    static func ensuringAutoSocialMeta(in html: String, rel: String, site: Site) -> String {
+        if metaContent(in: html, property: "og:image") != nil { return html }
+        let slug = ((rel as NSString).lastPathComponent as NSString).deletingPathExtension
+        let value = site.origin.hasPrefix("http")
+            ? site.origin + "/media/social-\(slug).png"
+            : "media/social-\(slug).png"
+        guard let head = html.range(of: "</head>") else { return html }
+        var out = html
+        out.insert(contentsOf: "<meta property=\"og:image\" content=\"\(value)\">\n"
+            + "<meta name=\"twitter:image\" content=\"\(value)\">\n"
+            + "<meta name=\"twitter:card\" content=\"summary_large_image\">\n", at: head.lowerBound)
+        return out
+    }
+
+    static func metaContent(in html: String, property: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: "property=\"\(property)\" content=\"([^\"]*)\""),
+              let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+              match.numberOfRanges > 1,
+              let range = Range(match.range(at: 1), in: html)
+        else { return nil }
+        return String(html[range])
+    }
+
+    /// Regenerates the automatic share card if the tab is still showing
+    /// the page — best-effort: navigate away and the card stays as it was
+    /// until the next Done from the page.
+    private func refreshAutoSocialCard(for url: URL, site: Site, pageHTML: String) {
+        if let current = Self.metaContent(in: pageHTML, property: "og:image"),
+           !(current as NSString).lastPathComponent.hasPrefix("social-") {
+            return  // custom image — theirs, never touched
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            guard tab.webView.url == url else { return }
+            let config = WKSnapshotConfiguration()
+            config.snapshotWidth = 1200
+            tab.webView.takeSnapshot(with: config) { image, _ in
+                guard let image, image.size.width > 0 else { return }
+                let card = NSImage(size: NSSize(width: 1200, height: 630))
+                card.lockFocus()
+                let scaledHeight = image.size.height * (1200 / image.size.width)
+                image.draw(in: NSRect(x: 0, y: 630 - scaledHeight, width: 1200, height: scaledHeight))
+                card.unlockFocus()
+                guard let tiff = card.tiffRepresentation,
+                      let rep = NSBitmapImageRep(data: tiff),
+                      let png = rep.representation(using: .png, properties: [:])
+                else { return }
+                let rel = site.relativePagePath(for: url)
+                let slug = ((rel as NSString).lastPathComponent as NSString).deletingPathExtension
+                let temp = FileManager.default.temporaryDirectory.appendingPathComponent("social-\(slug).png")
+                try? png.write(to: temp)
+                let activity = ActivityCenter.shared.begin("Updating share card…")
+                DispatchQueue.global(qos: .utility).async {
+                    _ = try? EditingToolbar.stage(fileURL: temp, site: site, pageURL: url)
+                    DispatchQueue.main.async { ActivityCenter.shared.end(activity) }
+                }
+            }
         }
     }
 
@@ -900,7 +1036,9 @@ struct TabContentView: View {
         guard !AstroProject.isAstroProject(site.localProjectPath) else { return }
         let rel = site.relativePagePath(for: url)
         let relPath = String(rel.dropFirst())
+        let activity = ActivityCenter.shared.begin("Restoring \((rel as NSString).lastPathComponent)…")
         DispatchQueue.global(qos: .userInitiated).async {
+            defer { ActivityCenter.shared.end(activity) }
             do {
                 try SiteWorkspace.restore(relPath, to: sha, in: site.localProjectPath)
                 let html = try String(
@@ -1002,10 +1140,12 @@ struct TabContentView: View {
         }
     }
 
-    /// The sidebar thumbnail should show what you just saved.
-    private func captureThumbnailSoon() {
+    /// The sidebar thumbnail should show what you just saved. When a save
+    /// finishes after the tab moved on, `expecting` keeps a snapshot of
+    /// the wrong page from being filed under the right one.
+    private func captureThumbnailSoon(expecting: URL? = nil) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-            guard let url = tab.webView.url else { return }
+            guard let url = tab.webView.url, expecting == nil || url == expecting else { return }
             let config = WKSnapshotConfiguration()
             config.snapshotWidth = 280
             tab.webView.takeSnapshot(with: config) { image, _ in
@@ -1140,6 +1280,7 @@ struct TabContentView: View {
 
     private func mirrorQuietly(_ site: Site) {
         guard site.target == .sftp, !site.remoteRoot.isEmpty else { return }
+        let activity = ActivityCenter.shared.begin("Downloading \(site.name.isEmpty ? site.origin : site.name)…")
         DispatchQueue.global(qos: .utility).async {
             _ = try? SFTP.downloadDirectory(
                 remoteRoot: site.remoteRoot, to: site.localProjectPath,
@@ -1147,6 +1288,7 @@ struct TabContentView: View {
             )
             SiteWorkspace.snapshot(site.localProjectPath, message: "Connected \(site.name)")
             DispatchQueue.main.async {
+                ActivityCenter.shared.end(activity)
                 NotificationCenter.default.post(name: .timThumbsUpdated, object: nil)
             }
         }
@@ -1407,6 +1549,8 @@ struct TabContentView: View {
             .labelsHidden()
             .fixedSize()
             .help("Preview as Mac or iPhone — same content, both must be excellent")
+
+            ActivityIndicator()
 
             if tab.isEditing {
                 Button {
@@ -1673,6 +1817,7 @@ struct EditingToolbar: View {
         isWorking = true
         statusMessage = "Adding \(name)…"
 
+        let activity = ActivityCenter.shared.begin("Uploading \(name)…")
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 // Two beats: the file lands in the mirror (fast) and a
@@ -1696,12 +1841,14 @@ struct EditingToolbar: View {
                 }
                 try Self.uploadStagedMedia(site: resolvedSite, name: name)
                 DispatchQueue.main.async {
+                    ActivityCenter.shared.end(activity)
                     isWorking = false
                     statusMessage = nil
                     tab.resolvePlaceholder(id: placeholderID, html: Self.mediaHTML(kind: kind, src: src, name: name))
                 }
             } catch {
                 DispatchQueue.main.async {
+                    ActivityCenter.shared.end(activity)
                     isWorking = false
                     statusMessage = "Couldn’t add \(name): \(error.localizedDescription)"
                     tab.failPlaceholder(id: placeholderID, message: "Upload failed — \(name)")
@@ -1734,6 +1881,7 @@ struct EditingToolbar: View {
             let pageURL = tab.webView.url
             isWorking = true
             statusMessage = "Uploading \(name)…"
+            let activity = ActivityCenter.shared.begin("Uploading \(name)…")
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     var src = try Self.stage(fileURL: fileURL, site: resolvedSite, pageURL: pageURL, upload: false)
@@ -1744,12 +1892,14 @@ struct EditingToolbar: View {
                     }
                     try Self.uploadStagedMedia(site: resolvedSite, name: name)
                     DispatchQueue.main.async {
+                        ActivityCenter.shared.end(activity)
                         isWorking = false
                         statusMessage = nil
                         tab.replaceMedia(id: replaceID, html: Self.mediaHTML(kind: kind, src: src, name: name))
                     }
                 } catch {
                     DispatchQueue.main.async {
+                        ActivityCenter.shared.end(activity)
                         isWorking = false
                         statusMessage = "Couldn’t replace with \(name): \(error.localizedDescription)"
                     }
