@@ -678,6 +678,27 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
         return id;
       }
+      // Every top-level object must hold a place in an explicit mobile
+      // layout — anything that slipped through (a group made after the
+      // freeze, an object added by other means) joins at the bottom,
+      // full width. Heals existing pages on entry.
+      function ensureMobileCoverage() {
+        var canvas = doc.querySelector('[data-tim-canvas]');
+        if (!canvas || !Object.keys(mobileLayout).length) { return; }
+        var bottom = 1;
+        for (var k in mobileLayout) { bottom = Math.max(bottom, mobileLayout[k][2]); }
+        var objs = canvas.querySelectorAll('.tim-object');
+        for (var i = 0; i < objs.length; i++) {
+          var el = objs[i];
+          if (canvasFor(el) !== canvas) { continue; }
+          var id = el.getAttribute('data-tim-id');
+          if (id && mobileLayout[id]) { continue; }
+          var p = desktopPlacement(el);
+          var rows = p ? Math.max(2, p.re - p.rs) : 3;
+          mobileLayout[ensureObjectId(el)] = [bottom, 1, bottom + rows, MOBILE_COLS + 1];
+          bottom += rows;
+        }
+      }
       function writeMobileLayout() {
         var styleEl = doc.querySelector('style[data-tim-mobile-layout]');
         if (!styleEl) {
@@ -688,6 +709,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         for (var stale in mobileLayout) {
           if (!doc.querySelector('[data-tim-id="' + stale + '"]')) { delete mobileLayout[stale]; }
         }
+        ensureMobileCoverage();
         var css = '@media (max-width: 700px){\\n'
           + '.tim-canvas{grid-template-columns:repeat(8, 1fr) !important;grid-auto-rows:32px !important}\\n';
         for (var id2 in mobileLayout) {
@@ -755,6 +777,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       window.__timEnsureMobileLayout = function () {
         if (!collapsed()) { return; }
         if (Object.keys(mobileLayout).length) {
+          // Heal any objects that slipped in without a mobile place.
+          writeMobileLayout();
           scanMobileOverflow();
           window.__timBeginReview('mobile');
           layout();
@@ -1620,14 +1644,25 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         var ref = members[0];
         while (ref.parentElement && ref.parentElement !== canvas) { ref = ref.parentElement; }
         canvas.insertBefore(container, ref);
+        // The group takes over its members' place in the mobile stack.
+        var mobileUnion = null;
         members.forEach(function (el) {
           var p = desktopPlacement(el);
           setDesktopArea(el, p.rs - rs + 1, p.cs - cs + 1, p.re - rs + 1, p.ce - cs + 1);
           container.appendChild(el);
           var mid = el.getAttribute('data-tim-id');
-          if (mid && mobileLayout[mid]) { delete mobileLayout[mid]; }
+          if (mid && mobileLayout[mid]) {
+            var area = mobileLayout[mid];
+            mobileUnion = mobileUnion
+              ? [Math.min(mobileUnion[0], area[0]), 1, Math.max(mobileUnion[2], area[2]), MOBILE_COLS + 1]
+              : [area[0], 1, area[2], MOBILE_COLS + 1];
+            delete mobileLayout[mid];
+          }
         });
-        if (Object.keys(mobileLayout).length) { writeMobileLayout(); }
+        if (Object.keys(mobileLayout).length || mobileUnion) {
+          if (mobileUnion) { mobileLayout[ensureObjectId(container)] = mobileUnion; }
+          writeMobileLayout();
+        }
         clearGroup();
         sel = container;
         layout();
