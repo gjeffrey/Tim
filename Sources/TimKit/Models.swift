@@ -865,7 +865,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           var gel = selGroup[gi];
           if (!doc.contains(gel)) { continue; }
           var gr = rectOf(gel);
-          var gAngle = angleOf(gel);
+          var gAngle = effectiveAngle(gel);
           var gw = gAngle ? gel.offsetWidth : gr.w;
           var gh = gAngle ? gel.offsetHeight : gr.h;
           var gb = doc.createElement('div');
@@ -984,6 +984,18 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         var m = /rotate\\((-?[0-9.]+)deg\\)/.exec((el && el.style && el.style.transform) || '');
         return m ? parseFloat(m[1]) : 0;
       }
+      // What the eye sees: an object inside a rotated parent renders
+      // rotated by inheritance — boxes, handles, and resize math follow
+      // the summed rotation of the whole ancestor chain.
+      function effectiveAngle(el) {
+        var total = 0;
+        var node = el;
+        while (node && node !== doc.body && node.style) {
+          total += angleOf(node);
+          node = node.parentElement;
+        }
+        return total;
+      }
       function layout() {
         if (!sel || !doc.contains(sel)) { hide(); return; }
         var r = rectOf(sel);
@@ -991,7 +1003,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         // object gets a rotated box, Keynote-style, not the upright
         // bounding rectangle CSS reports. Rotation preserves the center,
         // and offsetWidth/Height are the untransformed layout size.
-        var angle = angleOf(sel);
+        var ownAngle = angleOf(sel);
+        var angle = effectiveAngle(sel);
         var cx = r.x + r.w / 2, cy = r.y + r.h / 2;
         var w0 = angle ? sel.offsetWidth : r.w;
         var h0 = angle ? sel.offsetHeight : r.h;
@@ -1006,7 +1019,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           var p = placement(sel);
           badge.textContent = (p ? '✥ ' : '') + labelFor(sel) +
             (p ? ' · ' + (p.ce - p.cs) + '×' + (p.re - p.rs) + ' cells' : '') +
-            (angle ? ' · ' + angle + '°' : '');
+            (ownAngle ? ' · ' + ownAngle + '°' : '');
         }
         var resizable = isObject(sel) && canvasFor(sel) && placement(sel) && (!collapsed() || mobileActive());
         for (var k in handles) { handles[k].style.display = resizable ? 'block' : 'none'; }
@@ -1050,7 +1063,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           var p0 = placement(sel);
           if (!canvas || !p0) { return; }
           checkpoint('drag');
-          drag = { mode: k, canvas: canvas, sx: e.pageX, sy: e.pageY, p0: p0, angle: angleOf(sel), moved: false };
+          drag = { mode: k, canvas: canvas, sx: e.pageX, sy: e.pageY, p0: p0, angle: effectiveAngle(sel), moved: false };
           showGrid(canvas);
           e.preventDefault(); e.stopPropagation();
           return;
@@ -1075,7 +1088,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
               return { el: member, p: placement(member) };
             }).filter(function (item) { return !!item.p; });
             checkpoint('drag');
-            drag = { mode: 'move', canvas: canvas2, sx: e.pageX, sy: e.pageY, p0: p1, items: items, moved: false };
+            drag = { mode: 'move', canvas: canvas2, sx: e.pageX, sy: e.pageY, p0: p1, items: items,
+                     angle: effectiveAngle(obj), ownAngle: angleOf(obj), moved: false };
             showGrid(canvas2);
             layout();
             e.preventDefault(); e.stopPropagation();
@@ -1103,12 +1117,17 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         var g = gridInfo(drag.canvas);
         var rawX = e.pageX - drag.sx;
         var rawY = e.pageY - drag.sy;
-        // Resizing a rotated object: the pointer's travel maps onto the
-        // object's own (rotated) axes, so dragging an angled edge widens
-        // or heightens along that edge, the natural way. Moving stays in
-        // screen space — a dragged object follows the mouse.
-        if (drag.mode !== 'move' && drag.angle) {
-          var lrad = -drag.angle * Math.PI / 180;
+        // The pointer's travel maps onto the frame the gesture lives in.
+        // Resizing uses the object's full rotated frame (its own angle
+        // plus inherited), so dragging an angled edge grows along that
+        // edge. Moving uses only the PARENT's frame: a top-level rotated
+        // object follows the mouse in screen space, but a child inside a
+        // rotated parent moves along the parent's rotated grid.
+        var frameAngle = drag.mode === 'move'
+          ? ((drag.angle || 0) - (drag.ownAngle || 0))
+          : (drag.angle || 0);
+        if (frameAngle) {
+          var lrad = -frameAngle * Math.PI / 180;
           var localX = rawX * Math.cos(lrad) - rawY * Math.sin(lrad);
           var localY = rawX * Math.sin(lrad) + rawY * Math.cos(lrad);
           rawX = localX;
@@ -1280,7 +1299,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         var obj = e.target && e.target.closest ? e.target.closest('.tim-object') : null;
         if (obj && obj !== sel && obj !== editingEl) {
           var r = rectOf(obj);
-          var hAngle = angleOf(obj);
+          var hAngle = effectiveAngle(obj);
           var hw = hAngle ? obj.offsetWidth : r.w;
           var hh = hAngle ? obj.offsetHeight : r.h;
           hoverBox.style.display = 'block';
