@@ -922,23 +922,6 @@ struct TabContentView: View {
                     .animation(.easeInOut(duration: 0.35), value: isPageEditable)
                     .animation(.easeInOut(duration: 0.35), value: tab.isEditing)
             )
-            if previewSha != nil {
-                Divider()
-                VersionPreviewPane(
-                    dateLabel: previewLabel,
-                    onRestore: { restorePreviewedVersion() },
-                    onRestoreAsNew: { restorePreviewAsNewPage() },
-                    onCancel: { exitVersionPreview() }
-                )
-            } else if tab.isEditing {
-                Divider()
-                InspectorView(
-                    tab: tab,
-                    site: matchedSite,
-                    allowsTemplates: matchedSite != nil
-                        && !(matchedSite.map { AstroProject.isAstroProject($0.localProjectPath) } ?? false)
-                )
-            }
             }
         }
         .background(.background)
@@ -958,6 +941,31 @@ struct TabContentView: View {
         .onChange(of: tab.urlString) { _, newValue in
             if !addressFocused { addressText = newValue }
             previewSha = nil
+        }
+        // The inspector is a system inspector column: glass, resizable,
+        // width managed by the OS — no homemade pane, no reflow jumps.
+        .inspector(isPresented: Binding(
+            get: { tab.isEditing || previewSha != nil },
+            set: { _ in }
+        )) {
+            Group {
+                if previewSha != nil {
+                    VersionPreviewPane(
+                        dateLabel: previewLabel,
+                        onRestore: { restorePreviewedVersion() },
+                        onRestoreAsNew: { restorePreviewAsNewPage() },
+                        onCancel: { exitVersionPreview() }
+                    )
+                } else {
+                    InspectorView(
+                        tab: tab,
+                        site: matchedSite,
+                        allowsTemplates: matchedSite != nil
+                            && !(matchedSite.map { AstroProject.isAstroProject($0.localProjectPath) } ?? false)
+                    )
+                }
+            }
+            .inspectorColumnWidth(min: 244, ideal: 264, max: 340)
         }
         .onChange(of: tab.isLoading) { _, loading in
             // Thumbnails fall out of browsing: snapshot owned pages on
@@ -3682,8 +3690,6 @@ struct VersionPreviewPane: View {
             Spacer()
         }
         .padding(14)
-        .frame(width: 248)
-        .background(Color.accentColor.opacity(0.04))
     }
 }
 
@@ -3771,8 +3777,6 @@ struct InspectorView: View {
                 }
             }
         }
-        .frame(width: 248)
-        .timPanel()
     }
 
     /// The trail starts at Page — always one click back to page settings —
@@ -5596,11 +5600,20 @@ struct IconMakerSheet: View {
                     .stroke(Color.primary.opacity(0.12), lineWidth: 1)
             )
 
-            TextField("1–3 letters, or an emoji", text: $text)
-                .textFieldStyle(.roundedBorder)
-                .multilineTextAlignment(.center)
-                .frame(width: 190)
-                .onChange(of: text) { _, value in
+            HStack(spacing: 6) {
+                TextField("1–3 letters, or an emoji", text: $text)
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.center)
+                    .frame(width: 160)
+                Button {
+                    // The system emoji picker — it types into the field.
+                    NSApp.orderFrontCharacterPalette(nil)
+                } label: {
+                    Text("😀")
+                }
+                .help("Pick an emoji")
+            }
+            .onChange(of: text) { _, value in
                     if value.count > 3 { text = String(value.prefix(3)) }
                     if !value.isEmpty { picked = nil }
                 }
@@ -5703,7 +5716,7 @@ struct IconMakerSheet: View {
     }
 
     private var previewFont: Font {
-        let size: CGFloat = text.count > 2 ? 28 : (text.count == 2 ? 38 : 50)
+        let size: CGFloat = text.count > 2 ? 34 : (text.count == 2 ? 46 : 66)
         if fontFamily.isEmpty || !fontReady { return .system(size: size, weight: .bold) }
         return .custom(fontFamily, size: size)
     }
@@ -5753,7 +5766,8 @@ func renderTimIcon(recipe: IconRecipe, image: NSImage?) -> URL? {
             full.fill()
         }
         let display = recipe.text.isEmpty ? "T" : recipe.text
-        let fontSize: CGFloat = display.count == 1 ? 96 : (display.count == 2 ? 68 : 48)
+        // A single character (or emoji) should own the icon.
+        let fontSize: CGFloat = display.count == 1 ? 128 : (display.count == 2 ? 82 : 58)
         var font = NSFont.systemFont(ofSize: fontSize, weight: .bold)
         if !recipe.fontFamily.isEmpty {
             font = NSFont(name: recipe.fontFamily, size: fontSize)
