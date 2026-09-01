@@ -865,10 +865,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           var gel = selGroup[gi];
           if (!doc.contains(gel)) { continue; }
           var gr = rectOf(gel);
+          var gAngle = angleOf(gel);
+          var gw = gAngle ? gel.offsetWidth : gr.w;
+          var gh = gAngle ? gel.offsetHeight : gr.h;
           var gb = doc.createElement('div');
           gb.style.cssText = 'position:absolute;border:1.5px dashed #0a84ff;box-sizing:border-box;border-radius:3px;';
-          gb.style.left = gr.x + 'px'; gb.style.top = gr.y + 'px';
-          gb.style.width = gr.w + 'px'; gb.style.height = gr.h + 'px';
+          gb.style.left = (gr.x + gr.w / 2 - gw / 2) + 'px';
+          gb.style.top = (gr.y + gr.h / 2 - gh / 2) + 'px';
+          gb.style.width = gw + 'px'; gb.style.height = gh + 'px';
+          if (gAngle) { gb.style.transform = 'rotate(' + gAngle + 'deg)'; }
           groupBox.appendChild(gb);
         }
       }
@@ -1045,7 +1050,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           var p0 = placement(sel);
           if (!canvas || !p0) { return; }
           checkpoint('drag');
-          drag = { mode: k, canvas: canvas, sx: e.pageX, sy: e.pageY, p0: p0, moved: false };
+          drag = { mode: k, canvas: canvas, sx: e.pageX, sy: e.pageY, p0: p0, angle: angleOf(sel), moved: false };
           showGrid(canvas);
           e.preventDefault(); e.stopPropagation();
           return;
@@ -1096,8 +1101,21 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           return;
         }
         var g = gridInfo(drag.canvas);
-        var dc = Math.round((e.pageX - drag.sx) / (g.colW + g.gap));
-        var dr = Math.round((e.pageY - drag.sy) / (g.rowH + g.rowGap));
+        var rawX = e.pageX - drag.sx;
+        var rawY = e.pageY - drag.sy;
+        // Resizing a rotated object: the pointer's travel maps onto the
+        // object's own (rotated) axes, so dragging an angled edge widens
+        // or heightens along that edge, the natural way. Moving stays in
+        // screen space — a dragged object follows the mouse.
+        if (drag.mode !== 'move' && drag.angle) {
+          var lrad = -drag.angle * Math.PI / 180;
+          var localX = rawX * Math.cos(lrad) - rawY * Math.sin(lrad);
+          var localY = rawX * Math.sin(lrad) + rawY * Math.cos(lrad);
+          rawX = localX;
+          rawY = localY;
+        }
+        var dc = Math.round(rawX / (g.colW + g.gap));
+        var dr = Math.round(rawY / (g.rowH + g.rowGap));
         var p = drag.p0;
         if (dc !== 0 || dr !== 0) { drag.moved = true; }
 
@@ -1262,9 +1280,14 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         var obj = e.target && e.target.closest ? e.target.closest('.tim-object') : null;
         if (obj && obj !== sel && obj !== editingEl) {
           var r = rectOf(obj);
+          var hAngle = angleOf(obj);
+          var hw = hAngle ? obj.offsetWidth : r.w;
+          var hh = hAngle ? obj.offsetHeight : r.h;
           hoverBox.style.display = 'block';
-          hoverBox.style.left = r.x + 'px'; hoverBox.style.top = r.y + 'px';
-          hoverBox.style.width = r.w + 'px'; hoverBox.style.height = r.h + 'px';
+          hoverBox.style.left = (r.x + r.w / 2 - hw / 2) + 'px';
+          hoverBox.style.top = (r.y + r.h / 2 - hh / 2) + 'px';
+          hoverBox.style.width = hw + 'px'; hoverBox.style.height = hh + 'px';
+          hoverBox.style.transform = hAngle ? 'rotate(' + hAngle + 'deg)' : '';
         } else {
           hoverBox.style.display = 'none';
         }
