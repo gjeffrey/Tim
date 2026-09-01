@@ -216,9 +216,13 @@
       badge.style.cssText = 'position:absolute;background:#0a84ff;color:#fff;font:11px -apple-system,sans-serif;padding:3px 8px;border-radius:5px;display:none;white-space:nowrap;pointer-events:auto;cursor:grab;';
       var hoverBox = doc.createElement('div');
       hoverBox.style.cssText = 'position:absolute;border:1px dashed rgba(10,132,255,0.55);pointer-events:none;display:none;box-sizing:border-box;';
+      // A group sized smaller than its contents: the dotted line shows
+      // where the contents actually reach.
+      var extentBox = doc.createElement('div');
+      extentBox.style.cssText = 'position:absolute;border:1.5px dotted rgba(10,132,255,0.5);border-radius:4px;pointer-events:none;display:none;box-sizing:border-box;';
       var groupBox = doc.createElement('div');
       groupBox.style.cssText = 'position:absolute;pointer-events:none;';
-      overlay.appendChild(gridBox); overlay.appendChild(hoverBox); overlay.appendChild(box); overlay.appendChild(badge); overlay.appendChild(groupBox);
+      overlay.appendChild(gridBox); overlay.appendChild(hoverBox); overlay.appendChild(extentBox); overlay.appendChild(box); overlay.appendChild(badge); overlay.appendChild(groupBox);
       var handles = {};
       ['w', 'e', 'n', 's', 'nw', 'ne', 'sw', 'se'].forEach(function (k) {
         var h = doc.createElement('div');
@@ -233,6 +237,21 @@
 
       var sel = null, drag = null, active = false, editingEl = null;
       var selGroup = [];
+      // Keynote's group model: clicking a grouped object selects the
+      // GROUP; double-clicking enters it, and clicks then reach the
+      // children until you click outside again.
+      var enteredGroup = null;
+      function selectionTarget(raw) {
+        if (!raw) { return raw; }
+        if (enteredGroup && enteredGroup !== raw && enteredGroup.contains(raw)) { return raw; }
+        var target = raw;
+        var node = raw;
+        while (node && node !== doc.body) {
+          if (node.classList && node.classList.contains('tim-container')) { target = node; }
+          node = node.parentElement;
+        }
+        return target;
+      }
 
       function rectOf(el) {
         var r = el.getBoundingClientRect();
@@ -371,6 +390,7 @@
 
       function hide() {
         box.style.display = badge.style.display = 'none';
+        extentBox.style.display = 'none';
         groupBox.innerHTML = '';
         hideGrid();
         for (var k in handles) { handles[k].style.display = 'none'; }
@@ -434,6 +454,26 @@
           place(handles.sw, -w0 / 2, h0 / 2);
           place(handles.se, w0 / 2, h0 / 2);
         }
+        // A selected group whose contents reach beyond its box gets the
+        // dotted truth: the actual extent of what's inside.
+        extentBox.style.display = 'none';
+        if (sel.classList && sel.classList.contains('tim-container')) {
+          var exL = Infinity, exT = Infinity, exR = -Infinity, exB = -Infinity;
+          var kids = sel.querySelectorAll(':scope > .tim-object');
+          for (var ki = 0; ki < kids.length; ki++) {
+            var kr = rectOf(kids[ki]);
+            exL = Math.min(exL, kr.x); exT = Math.min(exT, kr.y);
+            exR = Math.max(exR, kr.x + kr.w); exB = Math.max(exB, kr.y + kr.h);
+          }
+          if (exR > exL && (exR - exL > r.w + 6 || exB - exT > r.h + 6
+              || exL < r.x - 6 || exT < r.y - 6)) {
+            extentBox.style.left = (exL - 3) + 'px';
+            extentBox.style.top = (exT - 3) + 'px';
+            extentBox.style.width = (exR - exL + 6) + 'px';
+            extentBox.style.height = (exB - exT + 6) + 'px';
+            extentBox.style.display = 'block';
+          }
+        }
         layoutGroup();
       }
 
@@ -465,6 +505,7 @@
         }
         if (!active) { return; }
         var obj = e.target && e.target.closest ? e.target.closest('.tim-object') : null;
+        obj = selectionTarget(obj);
         // Shift-click toggles group membership — handled on click. Starting
         // a drag here would clear the group before the click ever fires.
         if (obj && e.shiftKey) { return; }
@@ -592,6 +633,7 @@
         }
         e.preventDefault(); e.stopPropagation();
         var obj = e.target && e.target.closest ? e.target.closest('.tim-object') : null;
+        obj = selectionTarget(obj);
         if (e.shiftKey && obj && sel && obj !== sel && isObject(sel)
             && canvasFor(obj) && canvasFor(obj) === canvasFor(sel)) {
           stopTextEditing();
@@ -611,6 +653,10 @@
           }
         }
         sel = (!el || el === doc.body) ? null : el;
+        // Clicking outside an entered group leaves it.
+        if (enteredGroup && (!sel || !(enteredGroup === sel || enteredGroup.contains(sel)))) {
+          enteredGroup = null;
+        }
         if (sel) { clearReview(sel); layout(); } else { hide(); }
         notifySel(true);
       }
@@ -618,6 +664,20 @@
       function onDblClick(e) {
         if (!active) { return; }
         var obj = e.target && e.target.closest ? e.target.closest('.tim-object') : null;
+        // Double-clicking a group enters it: the child under the cursor
+        // becomes selectable and editable until you click outside.
+        var resolved = selectionTarget(obj);
+        if (resolved && resolved.classList && resolved.classList.contains('tim-container')
+            && obj && obj !== resolved && sel === resolved) {
+          e.preventDefault(); e.stopPropagation();
+          enteredGroup = resolved;
+          stopTextEditing();
+          clearGroup();
+          sel = obj;
+          layout();
+          notifySel(true);
+          return;
+        }
         var target = null;
         if (obj && obj.classList.contains('tim-text')) {
           target = obj;
