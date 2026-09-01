@@ -1560,11 +1560,22 @@ struct TabContentView: View {
     /// can be written before the image itself lands. A custom image (any
     /// other filename) is theirs and stays untouched.
     static func ensuringAutoSocialMeta(in html: String, rel: String, site: Site) -> String {
-        if metaContent(in: html, property: "og:image") != nil { return html }
         let slug = ((rel as NSString).lastPathComponent as NSString).deletingPathExtension
         let value = site.origin.hasPrefix("http")
             ? site.origin + "/media/social-\(slug).png"
             : "media/social-\(slug).png"
+        if let existing = metaContent(in: html, property: "og:image") {
+            let name = (existing as NSString).lastPathComponent
+            // A custom image is theirs. An auto card pointing anywhere but
+            // this page's own filename is a leftover of the one-per-site
+            // era — migrate it, or every page keeps sharing one card.
+            guard name.hasPrefix("social-"), name != "social-\(slug).png" else { return html }
+            return html
+                .replacingOccurrences(of: "property=\"og:image\" content=\"\(existing)\"",
+                                      with: "property=\"og:image\" content=\"\(value)\"")
+                .replacingOccurrences(of: "name=\"twitter:image\" content=\"\(existing)\"",
+                                      with: "name=\"twitter:image\" content=\"\(value)\"")
+        }
         guard let head = html.range(of: "</head>") else { return html }
         var out = html
         out.insert(contentsOf: "<meta property=\"og:image\" content=\"\(value)\">\n"
@@ -4757,23 +4768,30 @@ struct InspectorControls: View {
         // The slider covers the sensible range; the field quietly accepts
         // any valid value for people who know exactly what they want.
         let typedRange = typed ?? range
+        // Pixelmator's register: full-size slider, a legible value field,
+        // and a stepper — every numeric control nudges the same way.
         return HStack(spacing: 8) {
             rowLabel(name)
             Slider(value: Binding(
                 get: { min(range.upperBound, max(range.lowerBound, value.wrappedValue)) },
                 set: { value.wrappedValue = min(range.upperBound, max(range.lowerBound, snap?($0) ?? $0)) }
             ), in: range, step: step)
-                .controlSize(.small)
             // Typed values are exact — snapping applies to the slider only.
             TextField("", value: Binding(
                 get: { value.wrappedValue },
                 set: { value.wrappedValue = min(typedRange.upperBound, max(typedRange.lowerBound, $0)) }
             ), format: .number.precision(.fractionLength(0...2)))
-                .font(.system(size: 10, design: .monospaced))
+                .font(.system(size: 11).monospacedDigit())
                 .multilineTextAlignment(.trailing)
                 .textFieldStyle(.plain)
                 .foregroundStyle(.secondary)
-                .frame(width: 34, alignment: .trailing)
+                .frame(width: 38, alignment: .trailing)
+            Stepper("", value: Binding(
+                get: { value.wrappedValue },
+                set: { value.wrappedValue = min(typedRange.upperBound, max(typedRange.lowerBound, $0)) }
+            ), step: step)
+                .labelsHidden()
+                .controlSize(.small)
         }
     }
 }
@@ -5020,26 +5038,12 @@ struct PageOptionsControls: View {
                     .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(0.06)))
                     .onChange(of: descriptionText) { _, value in tab.setPageMeta("description", value) }
 
-                // Social image — previewed as the share card it becomes.
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 8) {
-                        rowLabel("Social Image")
-                        Button("Thumbnail") { useThumbnailAsSocial() }
-                            .controlSize(.small)
-                            .help("Snapshot this page as its share card (1200×630).")
-                        Button("Choose…") { chooseMetaImage(kind: "ogImage") }
-                            .controlSize(.small)
-                        if !ogImage.isEmpty {
-                            Button("Clear") { tab.setPageMeta("ogImage", ""); ogImage = "" }
-                                .controlSize(.small)
-                        }
-                        Spacer()
-                    }
-                    if ogImage.isEmpty {
-                        Text("Auto-generates from the page on each save — Choose… to use your own.")
-                            .font(.system(size: 9.5))
-                            .foregroundStyle(.tertiary)
-                    } else {
+                // Social image — previewed as the unfurl it becomes. Auto
+                // cards (social-<page>.png) preview too; only a filename
+                // of the user's own means custom.
+                VStack(alignment: .leading, spacing: 8) {
+                    rowLabel("Social Image")
+                    if !ogImage.isEmpty {
                         VStack(alignment: .leading, spacing: 0) {
                             imagePreview(ogImage)
                                 .frame(maxWidth: .infinity)
@@ -5065,16 +5069,29 @@ struct PageOptionsControls: View {
                         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.05)))
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Color.primary.opacity(0.12), lineWidth: 1))
-                        Text("How links to this page unfurl in Messages and social apps.")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.tertiary)
                     }
+                    HStack(spacing: 6) {
+                        Button { chooseMetaImage(kind: "ogImage") } label: {
+                            Text("Choose…").frame(maxWidth: .infinity)
+                        }
+                        Button { tab.setPageMeta("ogImage", ""); ogImage = "" } label: {
+                            Text("Automatic").frame(maxWidth: .infinity)
+                        }
+                        .disabled(socialIsAuto)
+                        .help("Remake the card from the page itself on every save.")
+                    }
+                    Text(socialIsAuto
+                         ? "Automatic — this page becomes its own share card on every save. How links unfurl in Messages and social apps."
+                         : "Your image — Automatic returns to page snapshots.")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
-                // App icon and favicon — shown as they'll appear.
-                HStack(alignment: .top, spacing: 14) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        rowLabel("App Icon")
+                // App icon and favicon — shown as they'll appear, with a
+                // full row of room for each one's controls.
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 12) {
                         Group {
                             if touchIcon.isEmpty {
                                 RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -5091,17 +5108,29 @@ struct PageOptionsControls: View {
                         .frame(width: 52, height: 52)
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.primary.opacity(0.12), lineWidth: 1))
-                        HStack(spacing: 4) {
-                            Button("Make…") { prepareIconMaker() }.controlSize(.small)
-                            Button("Choose…") { chooseMetaImage(kind: "touchIcon") }.controlSize(.small)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("App Icon")
+                                .font(.system(size: 12, weight: .medium))
+                            Text("Dock and Home Screen")
+                                .font(.system(size: 9.5))
+                                .foregroundStyle(.tertiary)
                         }
-                        if !touchIcon.isEmpty {
-                            Button("Clear") { tab.setPageMeta("touchIcon", ""); touchIcon = "" }
-                                .controlSize(.small)
-                        }
+                        Spacer(minLength: 0)
                     }
-                    VStack(alignment: .leading, spacing: 6) {
-                        rowLabel("Favicon")
+                    HStack(spacing: 6) {
+                        Button { prepareIconMaker() } label: {
+                            Text("Make…").frame(maxWidth: .infinity)
+                        }
+                        Button { chooseMetaImage(kind: "touchIcon") } label: {
+                            Text("Choose…").frame(maxWidth: .infinity)
+                        }
+                        Button { tab.setPageMeta("touchIcon", ""); touchIcon = "" } label: {
+                            Text("Clear").frame(maxWidth: .infinity)
+                        }
+                        .disabled(touchIcon.isEmpty)
+                    }
+
+                    HStack(spacing: 12) {
                         HStack(spacing: 5) {
                             Group {
                                 if favicon.isEmpty {
@@ -5120,17 +5149,27 @@ struct PageOptionsControls: View {
                                 .lineLimit(1)
                         }
                         .padding(.vertical, 4)
-                        .padding(.horizontal, 7)
+                        .padding(.horizontal, 8)
                         .background(Capsule().fill(Color.primary.opacity(0.06)))
-                        HStack(spacing: 4) {
-                            Button("Choose…") { chooseMetaImage(kind: "favicon") }.controlSize(.small)
-                            if !favicon.isEmpty {
-                                Button("Clear") { tab.setPageMeta("favicon", ""); favicon = "" }
-                                    .controlSize(.small)
-                            }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Favicon")
+                                .font(.system(size: 12, weight: .medium))
+                            Text("Tabs and bookmarks")
+                                .font(.system(size: 9.5))
+                                .foregroundStyle(.tertiary)
                         }
+                        Spacer(minLength: 0)
                     }
-                    Spacer()
+                    .padding(.top, 4)
+                    HStack(spacing: 6) {
+                        Button { chooseMetaImage(kind: "favicon") } label: {
+                            Text("Choose…").frame(maxWidth: .infinity)
+                        }
+                        Button { tab.setPageMeta("favicon", ""); favicon = "" } label: {
+                            Text("Clear").frame(maxWidth: .infinity)
+                        }
+                        .disabled(favicon.isEmpty)
+                    }
                 }
                 Text(iconPageOnly
                      ? "Dock and Home Screen use the app icon; tabs and bookmarks use the favicon. These apply to this page alone."
@@ -5322,6 +5361,12 @@ struct PageOptionsControls: View {
         return currentSite.flatMap { URL(string: $0.origin)?.host() } ?? "your site"
     }
 
+    /// Auto cards carry the deterministic social- filename; anything
+    /// else is an image the user chose.
+    private var socialIsAuto: Bool {
+        ogImage.isEmpty || (ogImage as NSString).lastPathComponent.hasPrefix("social-")
+    }
+
     /// Resolves a metadata image to something viewable: the mirror copy
     /// first (fast, offline), then the live URL.
     private func localPreviewImage(for value: String) -> NSImage? {
@@ -5453,25 +5498,6 @@ struct PageOptionsControls: View {
     }
 
     /// The automated share card: this page, snapshotted at 1200×630.
-    private func useThumbnailAsSocial() {
-        let config = WKSnapshotConfiguration()
-        config.snapshotWidth = 1200
-        tab.webView.takeSnapshot(with: config) { image, _ in
-            guard let image, image.size.width > 0 else { return }
-            let card = NSImage(size: NSSize(width: 1200, height: 630))
-            card.lockFocus()
-            let scaledHeight = image.size.height * (1200 / image.size.width)
-            image.draw(in: NSRect(x: 0, y: 630 - scaledHeight, width: 1200, height: scaledHeight))
-            card.unlockFocus()
-            guard let tiff = card.tiffRepresentation,
-                  let rep = NSBitmapImageRep(data: tiff),
-                  let png = rep.representation(using: .png, properties: [:]) else { return }
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent("social-card.png")
-            try? png.write(to: url)
-            stageAndSet(fileURL: url, kinds: ["ogImage"])
-        }
-    }
-
     private func card(_ title: String? = nil, @ViewBuilder content: () -> some View) -> some View {
         Section {
             content()
@@ -5491,11 +5517,13 @@ struct PageOptionsControls: View {
         HStack(spacing: 8) {
             rowLabel(name)
             Slider(value: value, in: range, step: step)
-                .controlSize(.small)
             Text(display)
-                .font(.system(size: 10, design: .monospaced))
+                .font(.system(size: 11).monospacedDigit())
                 .foregroundStyle(.secondary)
-                .frame(width: 34, alignment: .trailing)
+                .frame(width: 38, alignment: .trailing)
+            Stepper("", value: value, in: range, step: step)
+                .labelsHidden()
+                .controlSize(.small)
         }
     }
 }
