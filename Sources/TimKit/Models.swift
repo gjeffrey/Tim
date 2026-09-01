@@ -1069,11 +1069,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         var padL = parseFloat(cs2.paddingLeft) || 0;
         var padR = parseFloat(cs2.paddingRight) || 0;
         var gap = parseFloat(cs2.columnGap) || 16;
-        var inner = canvas.clientWidth - padL - padR;
+        // Mobile editing happens in a widened view: the PAGE stays a true
+        // 390 pinned to the left; everything beside it is pasteboard.
+        var inner = (mobile ? 390 : canvas.clientWidth) - padL - padR;
         var colW = Math.max(8, (inner - gap * (cols - 1)) / cols).toFixed(2);
         var css = 'html.tim-editing .tim-canvas:not(.tim-container){'
           + 'grid-template-columns:repeat(' + cols + ', ' + colW + 'px) !important;'
-          + 'grid-auto-columns:' + colW + 'px !important}';
+          + 'grid-auto-columns:' + colW + 'px !important'
+          + (mobile ? ';width:390px !important;margin-left:0 !important;margin-right:0 !important' : '')
+          + '}';
         if (css !== lastPin) { lastPin = css; pinCols.textContent = css; }
       }
 

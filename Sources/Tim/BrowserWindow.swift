@@ -45,6 +45,21 @@ extension View {
     func timPanel() -> some View {
         self.background(.ultraThinMaterial)
     }
+
+    /// The app's one side-panel treatment, shared with the page card:
+    /// a rounded material card with a hairline edge, soft shadow, and
+    /// thin even margins — Lightbox's PanelCard, adopted so every pane
+    /// in every app of the house looks like the same idea.
+    func timPanelCard(width: CGFloat = 280) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        return self
+            .frame(width: width)
+            .clipShape(shape)
+            .background(.regularMaterial, in: shape)
+            .overlay(shape.strokeBorder(.white.opacity(0.08)))
+            .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+            .padding(8)
+    }
 }
 
 /// Tim's yellow — the color of ownership. It marks what's yours (the
@@ -1134,6 +1149,27 @@ struct TabContentView: View {
     }
     private var isPageEditable: Bool { siteStore.isEditable(pageURL, timAuthored: tab.isTimPage) }
 
+    /// The page as a card — same family as the panel card, with Tim's
+    /// signature riding the card's own edge: the yellow frame when the
+    /// page is yours, a quiet hairline when it isn't.
+    private func pageCard(_ content: some View, radius: CGFloat = 10) -> some View {
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        return content
+            .background(Color(nsColor: .textBackgroundColor))
+            .clipShape(shape)
+            .overlay(
+                shape.strokeBorder(
+                    isPageEditable ? AnyShapeStyle(timYellow.opacity(tab.isEditing ? 1 : 0.85)) : AnyShapeStyle(Color.primary.opacity(0.12)),
+                    lineWidth: isPageEditable ? (tab.isEditing ? 2.5 : 1.5) : 1
+                )
+                .allowsHitTesting(false)
+            )
+            .shadow(color: .black.opacity(0.14), radius: 5, y: 2)
+            .padding(8)
+            .animation(.easeInOut(duration: 0.35), value: isPageEditable)
+            .animation(.easeInOut(duration: 0.35), value: tab.isEditing)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if tab.isEditing {
@@ -1145,42 +1181,55 @@ struct TabContentView: View {
                 )
                 Divider()
             }
-            HStack(spacing: 0) {
+            // Lightbox's cohesion recipe, adopted whole: the page and every
+        // side panel are the SAME rounded material-card treatment, sitting
+        // on one shared gutter surface — so chrome, panes, and content
+        // read as a single window instead of a port.
+        HStack(spacing: 0) {
             Group {
                 if tab.isMobilePreview {
-                    ZStack {
-                        Rectangle().fill(.ultraThinMaterial)
-                        WebViewContainer(webView: tab.webView)
-                            .frame(width: 390)
-                            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                    .stroke(Color.primary.opacity(0.2), lineWidth: 1)
-                            )
-                            .shadow(color: .black.opacity(0.18), radius: 22, y: 8)
-                            .padding(.vertical, 20)
+                    HStack {
+                        Spacer(minLength: 0)
+                        // Editing widens the card onto the pasteboard —
+                        // the page stays true 390; the extra is where
+                        // off-page objects live in plain sight.
+                        pageCard(WebViewContainer(webView: tab.webView)
+                            .frame(width: tab.isEditing ? 680 : 390), radius: 16)
+                        Spacer(minLength: 0)
                     }
+                } else if viewMode == 1 {
+                    pageCard(WebViewContainer(webView: tab.webView))
+                    MobilePreviewPane(tab: tab, pageURL: pageURL)
                 } else {
-                    WebViewContainer(webView: tab.webView)
-                    if viewMode == 1 {
-                        Divider()
-                        MobilePreviewPane(tab: tab, pageURL: pageURL)
-                    }
+                    pageCard(WebViewContainer(webView: tab.webView))
                 }
             }
-            // Tim's signature: a thin yellow frame around the page when
-            // it's yours — a touch stronger while you're editing it.
-            .overlay(
-                Rectangle()
-                    .strokeBorder(timYellow.opacity(tab.isEditing ? 1 : 0.85),
-                                  lineWidth: isPageEditable ? (tab.isEditing ? 2.5 : 1.5) : 0)
-                    .allowsHitTesting(false)
-                    .animation(.easeInOut(duration: 0.35), value: isPageEditable)
-                    .animation(.easeInOut(duration: 0.35), value: tab.isEditing)
-            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if tab.isEditing || previewSha != nil {
+                Group {
+                    if previewSha != nil {
+                        VersionPreviewPane(
+                            dateLabel: previewLabel,
+                            onRestore: { restorePreviewedVersion() },
+                            onRestoreAsNew: { restorePreviewAsNewPage() },
+                            onCancel: { exitVersionPreview() }
+                        )
+                    } else {
+                        InspectorView(
+                            tab: tab,
+                            site: matchedSite,
+                            allowsTemplates: matchedSite != nil
+                                && !(matchedSite.map { AstroProject.isAstroProject($0.localProjectPath) } ?? false)
+                        )
+                    }
+                }
+                .timPanelCard()
+                .transaction { $0.animation = nil }
             }
         }
-        .background(.background)
+        }
+        .background(Color(nsColor: .controlBackgroundColor))
         .navigationTitle("")
         .toolbar { toolbarContent }
         .onAppear {
@@ -1202,35 +1251,18 @@ struct TabContentView: View {
         }
         // The inspector is a system inspector column: glass, resizable,
         // width managed by the OS — no homemade pane, no reflow jumps.
-        .inspector(isPresented: Binding(
-            get: { tab.isEditing || previewSha != nil },
-            set: { _ in }
-        )) {
-            Group {
-                if previewSha != nil {
-                    VersionPreviewPane(
-                        dateLabel: previewLabel,
-                        onRestore: { restorePreviewedVersion() },
-                        onRestoreAsNew: { restorePreviewAsNewPage() },
-                        onCancel: { exitVersionPreview() }
-                    )
-                } else {
-                    InspectorView(
-                        tab: tab,
-                        site: matchedSite,
-                        allowsTemplates: matchedSite != nil
-                            && !(matchedSite.map { AstroProject.isAstroProject($0.localProjectPath) } ?? false)
-                    )
+        .onDisappear {
+            // Switching tabs closes the edit session: the draft is
+            // stashed silently, the page keeps showing your changes, and
+            // Edit picks up exactly where you left off. One page in edit
+            // mode at a time — the multi-tab edit tangle wasn't worth it.
+            if tab.isEditing {
+                let url = tab.webView.url
+                tab.currentHTML { html in
+                    if let html, let url { DraftStore.save(html, for: url.absoluteString) }
+                    tab.setEditing(false)
                 }
             }
-            // A fixed width: the flexible column re-resolved itself on
-            // every selection update, so dragging a slider made the whole
-            // panel jitter between widths. Predictable beats resizable.
-            // And no implicit animations — selection changes swap the
-            // panel's contents in one clean frame instead of snapping
-            // pieces into place.
-            .transaction { $0.animation = nil }
-            .inspectorColumnWidth(280)
         }
         .sheet(isPresented: $showImportSheet) {
             ImportSheet(tab: tab)
@@ -1422,8 +1454,14 @@ struct TabContentView: View {
         }
         .padding(.horizontal, 11)
         .frame(height: 30)
-        .timGlass(in: Capsule(style: .continuous), interactive: true)
-        .background(Capsule(style: .continuous).fill(Color.primary.opacity(addressFocused ? 0.06 : 0)))
+        // ONE shape, one edge: the glass capsule is the whole chrome.
+        // Ownership rides the glass itself as a yellow tint — no second
+        // stroke, no glow, no pills inside pills.
+        .clipShape(Capsule(style: .continuous))
+        .glassEffect(
+            (isPageEditable ? Glass.regular.tint(timYellow.opacity(0.5)) : Glass.regular).interactive(),
+            in: Capsule(style: .continuous)
+        )
         .overlay(alignment: .bottomLeading) {
             // Loading is a hairline of light along the capsule's floor.
             if tab.isLoading {
@@ -1436,17 +1474,7 @@ struct TabContentView: View {
                     .allowsHitTesting(false)
             }
         }
-        .clipShape(Capsule(style: .continuous))
-        .overlay(
-            Capsule(style: .continuous)
-                .stroke(
-                    isPageEditable ? timYellow.opacity(0.95) : Color.primary.opacity(0.08),
-                    lineWidth: isPageEditable ? 1.5 : 1
-                )
-        )
-        .shadow(color: isPageEditable ? timYellow.opacity(0.45) : .clear, radius: 6, y: 1)
         .animation(.easeOut(duration: 0.22), value: isPageEditable)
-        .animation(.easeOut(duration: 0.15), value: addressFocused)
     }
 
     /// Entering edit mode materializes a derived site (a Tim page on a
@@ -4314,6 +4342,7 @@ struct InspectorControls: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .onAppear {
             // Warm the pinned list so the font picker opens populated.
             tab.pageFonts { fonts in
@@ -5264,6 +5293,7 @@ struct PageOptionsControls: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .formStyle(.grouped)
+                .scrollContentBackground(.hidden)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: 9, style: .continuous)

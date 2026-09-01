@@ -285,7 +285,7 @@ struct PadBrowser: View {
                 HStack {
                     Spacer(minLength: 0)
                     PadWebView(webView: tab.webView)
-                        .frame(width: 390)
+                        .frame(width: tab.isEditing ? 680 : 390)
                         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: 22, style: .continuous)
