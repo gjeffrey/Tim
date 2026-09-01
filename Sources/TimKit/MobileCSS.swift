@@ -17,7 +17,11 @@ public enum MobileCSS {
         ]
         rules += styleClassRules(in: out)
         rules += inlineSizeRules(in: out)
-        rules += layoutRules(in: out)
+        // A hand-tuned mobile layout (data-tim-mobile-layout) is the
+        // author's word — synthesis stays out of layout entirely then.
+        if !out.contains("data-tim-mobile-layout") {
+            rules += layoutRules(in: out)
+        }
         let block = "<style data-tim-mobile>@media (max-width: 700px){\n"
             + rules.joined(separator: "\n")
             + "\n}</style>"

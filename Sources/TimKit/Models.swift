@@ -135,9 +135,19 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     public func setMobilePreview(_ mobile: Bool) {
         isMobilePreview = mobile
         // While editing, only the viewport changes — media queries respond
-        // instantly and the edit session survives. The UA swap and reload
-        // happen only while browsing.
-        guard !isEditing else { return }
+        // instantly and the edit session survives. Entering phone width
+        // mid-edit switches the canvas to the mobile layout (creating it
+        // from the automatic stack the first time). The UA swap and
+        // reload happen only while browsing.
+        guard !isEditing else {
+            if mobile {
+                webView.evaluateJavaScript(
+                    "setTimeout(function () { window.__timEnsureMobileLayout && window.__timEnsureMobileLayout(); }, 300);",
+                    completionHandler: nil
+                )
+            }
+            return
+        }
         webView.customUserAgent = mobile
             ? "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1"
             : nil
@@ -617,6 +627,101 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       }
 
       var COLS = 24;
+      var MOBILE_COLS = 8;
+
+      // The mobile layout: explicit 8-column placements per object id,
+      // living in <style data-tim-mobile-layout>. Editing at phone width
+      // reads and writes THIS map — the desktop page never changes when
+      // you design for the phone.
+      var mobileLayout = {};
+      (function parseMobileLayout() {
+        var el = doc.querySelector('style[data-tim-mobile-layout]');
+        if (!el) { return; }
+        try { mobileLayout = JSON.parse(el.getAttribute('data-props') || '{}') || {}; } catch (e) {}
+      })();
+      function mobileActive() { return collapsed() && Object.keys(mobileLayout).length > 0; }
+      function colCount() { return mobileActive() ? MOBILE_COLS : COLS; }
+      function ensureObjectId(el) {
+        var id = el.getAttribute('data-tim-id');
+        if (!id) {
+          id = 't' + Math.random().toString(16).slice(2, 8);
+          el.setAttribute('data-tim-id', id);
+        }
+        return id;
+      }
+      function writeMobileLayout() {
+        var styleEl = doc.querySelector('style[data-tim-mobile-layout]');
+        if (!styleEl) {
+          styleEl = doc.createElement('style');
+          styleEl.setAttribute('data-tim-mobile-layout', '');
+          doc.head.appendChild(styleEl);
+        }
+        for (var stale in mobileLayout) {
+          if (!doc.querySelector('[data-tim-id="' + stale + '"]')) { delete mobileLayout[stale]; }
+        }
+        var css = '@media (max-width: 700px){\\n'
+          + '.tim-canvas{grid-template-columns:repeat(8, 1fr) !important;grid-auto-rows:32px !important}\\n';
+        for (var id2 in mobileLayout) {
+          var a = mobileLayout[id2];
+          css += '.tim-canvas .tim-object[data-tim-id="' + id2 + '"]{grid-area:'
+            + a[0] + ' / ' + a[1] + ' / ' + a[2] + ' / ' + a[3] + ' !important;margin-top:0 !important}\\n';
+        }
+        css += '}';
+        styleEl.textContent = css;
+        styleEl.setAttribute('data-props', JSON.stringify(mobileLayout));
+      }
+      // First entry into phone-width editing: freeze the automatic stack,
+      // as rendered right now, into explicit placements — bands of
+      // side-by-side objects stay side by side, gaps stay gaps.
+      window.__timEnsureMobileLayout = function () {
+        if (!collapsed()) { return; }
+        if (Object.keys(mobileLayout).length) { layout(); return; }
+        var canvas = doc.querySelector('[data-tim-canvas]');
+        if (!canvas) { return; }
+        var objs = Array.prototype.slice.call(canvas.querySelectorAll('.tim-object')).filter(function (el) {
+          return el.getBoundingClientRect().height > 0 || !el.hasAttribute('data-tim-mobile-hidden');
+        });
+        if (!objs.length) { return; }
+        var cs2 = getComputedStyle(canvas);
+        var padL = parseFloat(cs2.paddingLeft) || 0;
+        var padR = parseFloat(cs2.paddingRight) || 0;
+        var cr = canvas.getBoundingClientRect();
+        var innerLeft = cr.left + padL;
+        var innerWidth = canvas.clientWidth - padL - padR;
+        var unit = 48; // 32px rows + 16px gap
+        var measured = objs.map(function (el) {
+          return { el: el, r: el.getBoundingClientRect() };
+        }).sort(function (a, b) { return (a.r.top - b.r.top) || (a.r.left - b.r.left); });
+        var row = 1;
+        var i = 0;
+        var prevBottom = null;
+        while (i < measured.length) {
+          // A band: everything starting within 10px vertically.
+          var band = [measured[i]];
+          while (i + 1 < measured.length && Math.abs(measured[i + 1].r.top - band[0].r.top) < 10) {
+            i += 1;
+            band.push(measured[i]);
+          }
+          i += 1;
+          if (prevBottom !== null) {
+            var gapRows = Math.round((band[0].r.top - prevBottom - 16) / unit);
+            if (gapRows > 0) { row += Math.min(gapRows, 4); }
+          }
+          var bandRows = 1;
+          band.forEach(function (item) {
+            var colStart = Math.max(1, Math.min(MOBILE_COLS, Math.round((item.r.left - innerLeft) / innerWidth * MOBILE_COLS) + 1));
+            var colEnd = Math.max(colStart + 1, Math.min(MOBILE_COLS + 1, Math.round((item.r.right - innerLeft) / innerWidth * MOBILE_COLS) + 1));
+            var rows = Math.max(1, Math.round((item.r.height + 16) / unit));
+            bandRows = Math.max(bandRows, rows);
+            mobileLayout[ensureObjectId(item.el)] = [row, colStart, row + rows, colEnd];
+          });
+          prevBottom = band.reduce(function (m, item) { return Math.max(m, item.r.bottom); }, 0);
+          row += bandRows;
+        }
+        writeMobileLayout();
+        layout();
+        notifySel(true);
+      };
 
       // Editor chrome styles: ALWAYS (re)injected so every page gets the
       // current rules, and stripped from saves like the overlay itself.
@@ -710,21 +815,40 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         var r = rectOf(canvas);
         return {
           gap: gap, rowGap: rowGap, rowH: rowH,
-          colW: (inner - gap * (COLS - 1)) / COLS,
+          colW: (inner - gap * (colCount() - 1)) / colCount(),
           originX: r.x + padL, originY: r.y + padT,
           inner: inner, height: Math.max(canvas.clientHeight, 240)
         };
       }
-      function placement(el) {
+      function desktopPlacement(el) {
         var m = String(el.style.gridArea || '').match(/(\\d+)\\s*\\/\\s*(\\d+)\\s*\\/\\s*(\\d+)\\s*\\/\\s*(\\d+)/);
         if (m) { return { rs: +m[1], cs: +m[2], re: +m[3], ce: +m[4] }; }
         return null;
       }
-      function setArea(el, rs, cs, re, ce) {
+      function placement(el) {
+        if (mobileActive()) {
+          var a = el.getAttribute ? mobileLayout[el.getAttribute('data-tim-id')] : null;
+          return a ? { rs: a[0], cs: a[1], re: a[2], ce: a[3] } : null;
+        }
+        return desktopPlacement(el);
+      }
+      function setDesktopArea(el, rs, cs, re, ce) {
         var rh = Math.max(1, re - rs), cw = Math.max(1, ce - cs);
         cs = Math.max(1, Math.min(COLS + 1 - cw, cs));
         rs = Math.max(1, rs);
         el.style.gridArea = rs + ' / ' + cs + ' / ' + (rs + rh) + ' / ' + (cs + cw);
+      }
+      function setArea(el, rs, cs, re, ce) {
+        if (mobileActive()) {
+          var cols = colCount();
+          var rh = Math.max(1, re - rs), cw = Math.max(1, Math.min(cols, ce - cs));
+          var ncs = Math.max(1, Math.min(cols + 1 - cw, cs));
+          var nrs = Math.max(1, rs);
+          mobileLayout[ensureObjectId(el)] = [nrs, ncs, nrs + rh, ncs + cw];
+          writeMobileLayout();
+          return;
+        }
+        setDesktopArea(el, rs, cs, re, ce);
       }
       // Rows are fixed height, so text boxes grow by extending their row
       // span to fit content — geometry stays deterministic while dragging.
@@ -732,7 +856,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (!el || !el.classList || !el.classList.contains('tim-text')) { return; }
         var canvas = canvasFor(el);
         var p = placement(el);
-        if (!canvas || !p || collapsed()) { return; }
+        if (!canvas || !p || (collapsed() && !mobileActive())) { return; }
         var g = gridInfo(canvas);
         var unit = g.rowH + g.rowGap;
         // Grid stretch makes scrollHeight >= the box, so a stretched box
@@ -808,7 +932,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
             (p ? ' · ' + (p.ce - p.cs) + '×' + (p.re - p.rs) + ' cells' : '') +
             (angle ? ' · ' + angle + '°' : '');
         }
-        var resizable = isObject(sel) && canvasFor(sel) && placement(sel) && !collapsed();
+        var resizable = isObject(sel) && canvasFor(sel) && placement(sel) && (!collapsed() || mobileActive());
         for (var k in handles) { handles[k].style.display = resizable ? 'block' : 'none'; }
         if (resizable) {
           var rad = angle * Math.PI / 180;
@@ -826,7 +950,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       }
 
       function onDown(e) {
-        if (collapsed()) { return; }
+        if (collapsed() && !mobileActive()) { return; }
         var k = e.target && e.target.getAttribute ? e.target.getAttribute('data-tim-handle') : null;
         if (k && sel && isObject(sel)) {
           // Option-drag a handle rotates instead of resizing.
@@ -909,14 +1033,14 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
             setArea(member.el, member.p.rs + dr, member.p.cs + dc, member.p.re + dr, member.p.ce + dc);
           }
         } else if (drag.mode === 'e') {
-          setArea(sel, p.rs, p.cs, p.re, Math.max(p.cs + 1, Math.min(COLS + 1, p.ce + dc)));
+          setArea(sel, p.rs, p.cs, p.re, Math.max(p.cs + 1, Math.min(colCount() + 1, p.ce + dc)));
         } else if (drag.mode === 'w') {
           var ncs = Math.max(1, Math.min(p.ce - 1, p.cs + dc));
           setArea(sel, p.rs, ncs, p.re, p.ce);
         } else if (drag.mode === 's') {
           setArea(sel, p.rs, p.cs, Math.max(p.rs + 1, p.re + dr), p.ce);
         } else if (drag.mode === 'se') {
-          setArea(sel, p.rs, p.cs, Math.max(p.rs + 1, p.re + dr), Math.max(p.cs + 1, Math.min(COLS + 1, p.ce + dc)));
+          setArea(sel, p.rs, p.cs, Math.max(p.rs + 1, p.re + dr), Math.max(p.cs + 1, Math.min(colCount() + 1, p.ce + dc)));
         }
         var np = placement(sel);
         badge.textContent = drag.mode === 'move'
@@ -933,7 +1057,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         drag = null;
         hideGrid();
         if (sel && !wasRotate) { fitSpan(sel); }
-        if (moved && canvas) { resort(canvas); }
+        // DOM order belongs to the desktop layout — mobile placements are
+        // explicit, so a mobile rearrangement must never reorder the DOM.
+        if (moved && canvas && !mobileActive()) { resort(canvas); }
         layout();
         // Reseed the inspector so its Rotate control shows the new angle.
         if (wasRotate) { notifySel(true); }
@@ -1042,6 +1168,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
             clearGroup();
             sel = null;
             hide();
+            if (mobileActive()) { writeMobileLayout(); }
             notifySel();
           }
         }
@@ -1109,13 +1236,22 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           else { doc.body.removeAttribute('data-tim-omit'); }
           if (el.firstElementChild) { placed = el.firstElementChild; }
         }
+        // New objects always get a desktop position (end of the page);
+        // in mobile editing they also join the bottom of the mobile stack.
         var maxRe = 1;
         Array.prototype.forEach.call(canvas.children, function (c) {
-          var p = placement(c);
+          var p = desktopPlacement(c);
           if (p && p.re > maxRe) { maxRe = p.re; }
         });
         checkpoint('insert');
-        setArea(placed, maxRe, 1, maxRe + rowSpan, 1 + colSpan);
+        setDesktopArea(placed, maxRe, 1, maxRe + rowSpan, 1 + colSpan);
+        if (mobileActive()) {
+          var mMax = 1;
+          for (var mid in mobileLayout) { mMax = Math.max(mMax, mobileLayout[mid][2]); }
+          var span = Math.min(MOBILE_COLS, colSpan);
+          mobileLayout[ensureObjectId(placed)] = [mMax, 1, mMax + rowSpan, 1 + Math.max(2, span)];
+          writeMobileLayout();
+        }
         canvas.appendChild(el);
         el = placed;
         var media = (el.matches && el.matches('img,video,audio'))
@@ -1151,9 +1287,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       function takeSnapshot() {
         var c = canvasEl();
         if (!c) { return null; }
-        return { c: c.innerHTML, p: JSON.stringify(templateProps) };
+        return { c: c.innerHTML, p: JSON.stringify(templateProps), m: JSON.stringify(mobileLayout) };
       }
-      function sameSnapshot(a, b) { return !!a && !!b && a.c === b.c && a.p === b.p; }
+      function sameSnapshot(a, b) { return !!a && !!b && a.c === b.c && a.p === b.p && a.m === b.m; }
       function checkpoint(tag) {
         var snap = takeSnapshot();
         if (!snap) { return; }
@@ -1176,7 +1312,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         lastCkptTag = '';
         c.innerHTML = snap.c;
         try { templateProps = JSON.parse(snap.p) || {}; } catch (e) { templateProps = {}; }
+        try { mobileLayout = JSON.parse(snap.m || '{}') || {}; } catch (e2) { mobileLayout = {}; }
         writeTemplates();
+        if (Object.keys(mobileLayout).length) { writeMobileLayout(); }
         layout();
         notifySel(true);
       }
@@ -1859,6 +1997,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         active = true;
         overlay.style.display = 'block';
         doc.documentElement.classList.add('tim-editing');
+        // Editing at phone width edits the mobile layout.
+        if (collapsed()) { window.__timEnsureMobileLayout(); }
       };
       window.__timCanvasOff = function () {
         active = false;
