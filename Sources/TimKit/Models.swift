@@ -1047,18 +1047,24 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       var lastPin = '';
       function pinPageColumns() {
         var canvas = doc.querySelector('[data-tim-canvas]');
-        if (!canvas || !active || collapsed()) {
+        var mobile = mobileActive();
+        if (!canvas || !active || (collapsed() && !mobile)) {
           if (lastPin) { lastPin = ''; pinCols.textContent = ''; }
           return;
         }
+        // Both layouts get the pasteboard: 24 pinned columns at desktop,
+        // 8 at phone width — off-page objects extend past the edge in
+        // either mode. Higher specificity than the layout styles, so it
+        // wins regardless of document order.
+        var cols = mobile ? MOBILE_COLS : COLS;
         var cs2 = getComputedStyle(canvas);
         var padL = parseFloat(cs2.paddingLeft) || 0;
         var padR = parseFloat(cs2.paddingRight) || 0;
         var gap = parseFloat(cs2.columnGap) || 16;
         var inner = canvas.clientWidth - padL - padR;
-        var colW = Math.max(8, (inner - gap * 23) / 24).toFixed(2);
+        var colW = Math.max(8, (inner - gap * (cols - 1)) / cols).toFixed(2);
         var css = 'html.tim-editing .tim-canvas:not(.tim-container){'
-          + 'grid-template-columns:repeat(24, ' + colW + 'px) !important;'
+          + 'grid-template-columns:repeat(' + cols + ', ' + colW + 'px) !important;'
           + 'grid-auto-columns:' + colW + 'px !important}';
         if (css !== lastPin) { lastPin = css; pinCols.textContent = css; }
       }
@@ -1250,7 +1256,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (!canvas) { return; }
         var cr = canvas.getBoundingClientRect();
         var cols = colCount();
-        if (active && !collapsed()) {
+        if (active && (!collapsed() || mobileActive())) {
           var pr = rectOf(canvas);
           pageEdge.style.display = 'block';
           pageEdge.style.left = (pr.x + canvas.clientWidth) + 'px';

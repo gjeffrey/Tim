@@ -1104,6 +1104,7 @@ struct TabContentView: View {
     @State private var previewLabel = ""
     @State private var previewHTML = ""
     @State private var viewMode: Int = 0  // 0 desktop · 1 both · 2 iPhone
+    @State private var showImportSheet = false
     @FocusState private var addressFocused: Bool
     @State private var addressEditingText = false
     @AppStorage("tim.cleanAddresses") private var cleanAddresses = true
@@ -1206,7 +1207,13 @@ struct TabContentView: View {
                     )
                 }
             }
-            .inspectorColumnWidth(min: 244, ideal: 264, max: 340)
+            // A fixed width: the flexible column re-resolved itself on
+            // every selection update, so dragging a slider made the whole
+            // panel jitter between widths. Predictable beats resizable.
+            .inspectorColumnWidth(280)
+        }
+        .sheet(isPresented: $showImportSheet) {
+            ImportSheet(tab: tab)
         }
         .onChange(of: tab.isLoading) { _, loading in
             // Thumbnails fall out of browsing: snapshot owned pages on
@@ -2067,6 +2074,27 @@ struct TabContentView: View {
 
                 addressCapsule
                     .frame(minWidth: 280, idealWidth: 470, maxWidth: 560)
+
+                // A page that ISN'T yours: one click starts making it so.
+                if matchedSite == nil, !siteStore.sites.isEmpty,
+                   let pageURL = tab.webView.url, pageURL.scheme?.hasPrefix("http") == true {
+                    Button {
+                        showImportSheet = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "square.and.arrow.down")
+                                .font(.system(size: 9, weight: .semibold))
+                            Text("Make It Mine…")
+                                .font(.caption)
+                        }
+                        .padding(.vertical, 5)
+                        .padding(.horizontal, 9)
+                        .background(Capsule().fill(timYellow))
+                        .foregroundStyle(Color.black)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy this page — with all its images, styles, and fonts — onto your own site, ready to edit and publish.")
+                }
 
                 if matchedSite != nil, tab.lastHTTPStatus == 404, !tab.isEditing {
                     Button {
@@ -4081,10 +4109,6 @@ struct InspectorControls: View {
     @State private var radius: Double
     @State private var padding: Double
     @State private var opacity: Double
-    @State private var areaRow: Int = 0
-    @State private var areaCol: Int = 0
-    @State private var areaW: Int = 0
-    @State private var areaH: Int = 0
     @State private var hasShadow: Bool
     @State private var shadowColor: Color = .black
     @State private var textShadowOn: Bool
@@ -4117,11 +4141,6 @@ struct InspectorControls: View {
         _radius = State(initialValue: info["radius"] as? Double ?? 0)
         _padding = State(initialValue: info["padding"] as? Double ?? 0)
         _opacity = State(initialValue: info["opacity"] as? Double ?? 1)
-        let area = info["area"] as? [Int] ?? []
-        _areaRow = State(initialValue: area.count == 4 ? area[0] : 0)
-        _areaCol = State(initialValue: area.count == 4 ? area[1] : 0)
-        _areaH = State(initialValue: area.count == 4 ? area[2] - area[0] : 0)
-        _areaW = State(initialValue: area.count == 4 ? area[3] - area[1] : 0)
         _hasShadow = State(initialValue: (info["hasShadow"] as? Int) == 1)
         _textShadowOn = State(initialValue: (info["hasTextShadow"] as? Int) == 1)
         _isItalic = State(initialValue: (info["italic"] as? Int) == 1)
@@ -4668,21 +4687,6 @@ struct InspectorControls: View {
                 .onChange(of: rotation) { _, value in
                     tab.setSelectionStyle("transform", value == 0 ? "" : "rotate(\(String(format: "%g", value))deg)")
                 }
-            // Position and size, typed — in the page's own unit (grid
-            // cells), so what you enter is exactly what publishes. Also
-            // the rescue lane: values clamp onto the page.
-            if areaW > 0 {
-                HStack(spacing: 8) {
-                    cellField("Col", $areaCol)
-                    cellField("Row", $areaRow)
-                    cellField("W", $areaW)
-                    cellField("H", $areaH)
-                }
-                Text("Position and size in grid cells — the page is \(info["maxCols"] as? Int ?? 24) across.")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
             Toggle("Show on iPhone", isOn: $showOnMobile)
                 .font(.system(size: 11))
                 .onChange(of: showOnMobile) { _, on in
@@ -4690,26 +4694,6 @@ struct InspectorControls: View {
                 }
                 .help("Off: this object appears on desktop only. Use it for decorative pieces the phone layout doesn't need.")
         }
-    }
-
-    private func cellField(_ label: String, _ value: Binding<Int>) -> some View {
-        VStack(spacing: 2) {
-            Text(label)
-                .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
-            TextField("", value: value, format: .number)
-                .textFieldStyle(.roundedBorder)
-                .controlSize(.small)
-                .font(.system(size: 11).monospacedDigit())
-                .multilineTextAlignment(.center)
-                .onSubmit { applyTypedArea() }
-        }
-        .onChange(of: value.wrappedValue) { _, _ in applyTypedArea() }
-    }
-
-    private func applyTypedArea() {
-        guard areaRow > 0, areaCol > 0, areaW > 0, areaH > 0 else { return }
-        tab.setSelectionArea(rs: areaRow, cs: areaCol, re: areaRow + areaH, ce: areaCol + areaW)
     }
 
     private func alignButton(_ help: String, _ symbol: String, _ edge: String) -> some View {
@@ -6251,4 +6235,158 @@ struct WebViewContainer: NSViewRepresentable {
 
     func makeNSView(context: Context) -> WKWebView { webView }
     func updateNSView(_ nsView: WKWebView, context: Context) {}
+}
+
+// MARK: - "Make It Mine": the page in the tab becomes a page on your
+// site — assets localized, copy published, pencil lit.
+
+struct ImportSheet: View {
+    @ObservedObject var tab: Tab
+    @EnvironmentObject var siteStore: SiteStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var siteID: UUID?
+    @State private var path = ""
+    @State private var working = false
+    @State private var status: String?
+
+    private var site: Site? {
+        siteStore.sites.first(where: { $0.id == siteID }) ?? siteStore.sites.first
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Form {
+                Section {
+                    Text("Tim copies this page — its images, styles, fonts, and icons — onto your site. The copy is yours: edit its text and media, set its title and icons, publish changes like any page. The layout stays exactly as its author built it.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("Make It Mine")
+                }
+                Section("Destination") {
+                    Picker("Site", selection: Binding(get: { site?.id }, set: { siteID = $0 })) {
+                        ForEach(siteStore.sites) { s in
+                            Text(s.name.isEmpty ? s.origin : s.name).tag(Optional(s.id))
+                        }
+                    }
+                    TextField("Path", text: $path)
+                        .font(.system(size: 11, design: .monospaced))
+                }
+                Section {
+                    Text("Honest limits: the copy is a snapshot. Scripts and forms keep pointing at the original site, and linked pages aren't imported — their links lead back to the original.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                }
+                if let status {
+                    Section {
+                        Text(status)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            Divider()
+            HStack {
+                Button("Cancel") { dismiss() }
+                Spacer()
+                Button {
+                    runImport()
+                } label: {
+                    if working {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text("Make It Mine")
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(working || site == nil || path.isEmpty)
+            }
+            .padding(12)
+        }
+        .frame(width: 470, height: 440)
+        .onAppear {
+            if let url = tab.webView.url { path = PageImporter.defaultPath(for: url) }
+        }
+    }
+
+    private func runImport() {
+        guard let chosen = site, let pageURL = tab.webView.url else { return }
+        working = true
+        status = "Reading the page…"
+        tab.webView.evaluateJavaScript(PageImporter.gatherJS) { result, _ in
+            guard let json = result as? String,
+                  let data = json.data(using: .utf8),
+                  let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let html = dict["html"] as? String
+            else {
+                working = false
+                status = "Couldn’t read the page."
+                return
+            }
+            let resources = dict["resources"] as? [String] ?? []
+            var rel = path
+            while rel.hasPrefix("/") { rel.removeFirst() }
+            var resolved = chosen
+            if resolved.localProjectPath.isEmpty {
+                resolved.localProjectPath = SiteWorkspace.defaultFolder(for: resolved.name.isEmpty ? resolved.origin : resolved.name)
+                siteStore.upsert(resolved)
+            }
+            SiteWorkspace.ensure(resolved.localProjectPath)
+            let siteCopy = resolved
+            status = resources.isEmpty ? "Copying the page…" : "Fetching \(resources.count) assets…"
+            Task {
+                let page = await PageImporter.localize(html: html, resources: resources, pageURL: pageURL)
+                do {
+                    // Mirror first, then the server.
+                    try PageWriter.write(html: page.html, folder: siteCopy.localProjectPath, relativePath: rel)
+                    let relDir = (rel as NSString).deletingLastPathComponent
+                    let assetsDirLocal = URL(fileURLWithPath: siteCopy.localProjectPath)
+                        .appendingPathComponent(relDir.isEmpty ? "assets" : relDir + "/assets")
+                    try FileManager.default.createDirectory(at: assetsDirLocal, withIntermediateDirectories: true)
+                    for asset in page.assets {
+                        try asset.data.write(to: assetsDirLocal.appendingPathComponent(asset.name))
+                    }
+                    await MainActor.run { status = "Publishing…" }
+                    switch siteCopy.target {
+                    case .sftp:
+                        let root = siteCopy.remoteRoot.hasSuffix("/") ? String(siteCopy.remoteRoot.dropLast()) : siteCopy.remoteRoot
+                        var batch = ""
+                        var dir = root
+                        for seg in relDir.split(separator: "/") {
+                            dir += "/" + seg
+                            batch += "-mkdir \"\(dir)\"\n"
+                        }
+                        let pageLocal = URL(fileURLWithPath: siteCopy.localProjectPath).appendingPathComponent(rel).path
+                        batch += "put \"\(pageLocal)\" \"\(root)/\(rel)\"\n"
+                        if !page.assets.isEmpty {
+                            let remoteAssets = relDir.isEmpty ? "\(root)/assets" : "\(root)/\(relDir)/assets"
+                            batch += "-mkdir \"\(remoteAssets)\"\n"
+                            for asset in page.assets {
+                                batch += "put \"\(assetsDirLocal.appendingPathComponent(asset.name).path)\" \"\(remoteAssets)/\(asset.name)\"\n"
+                            }
+                        }
+                        _ = try SFTP.run(batch: batch, host: siteCopy.host, username: siteCopy.username, port: siteCopy.port)
+                    case .cloudflare:
+                        _ = try CloudflarePublisher.publish(site: siteCopy)
+                    case .githubPages:
+                        _ = try GitHubPagesPublisher.publish(repo: siteCopy.localProjectPath, message: "Imported \(pageURL.host() ?? "page") with Tim")
+                    }
+                    await MainActor.run {
+                        working = false
+                        let origin = siteCopy.origin.hasSuffix("/") ? String(siteCopy.origin.dropLast()) : siteCopy.origin
+                        let newURL = origin + "/" + rel
+                        PageRegistry.record(url: newURL, title: (rel as NSString).lastPathComponent)
+                        dismiss()
+                        tab.navigate(to: newURL)
+                    }
+                } catch {
+                    await MainActor.run {
+                        working = false
+                        status = "Couldn’t publish: \(error.localizedDescription)"
+                    }
+                }
+            }
+        }
+    }
 }
