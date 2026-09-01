@@ -68,6 +68,89 @@ func parseLinearGradient(_ value: String) -> (angle: Double, start: String, end:
     return (angle, String(value[s]), String(value[e]))
 }
 
+/// The social card, by default and hands-off: after every publish, the
+/// page is re-rendered offscreen at the card's own aspect (600×315 —
+/// under the phone breakpoint, so the bold mobile styles compose it)
+/// and shipped as social-<page>.png. A page with a custom image is
+/// never touched. Never depends on where the user's tab wandered.
+final class SocialCards: NSObject, WKNavigationDelegate {
+    static let shared = SocialCards()
+
+    private struct Job { let url: URL; let site: Site; let slug: String }
+    private var queue: [Job] = []
+    private var busy = false
+    private var current: Job?
+    private var activity: UUID?
+    private lazy var webView: WKWebView = {
+        let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 600, height: 315))
+        view.navigationDelegate = self
+        return view
+    }()
+
+    func capture(pageURL: URL, site: Site, pageHTML: String) {
+        if let existing = TabContentView.metaContent(in: pageHTML, property: "og:image"),
+           !(existing as NSString).lastPathComponent.hasPrefix("social-") {
+            return  // custom image — theirs, never touched
+        }
+        let rel = site.relativePagePath(for: pageURL)
+        let slug = ((rel as NSString).lastPathComponent as NSString).deletingPathExtension
+        DispatchQueue.main.async {
+            guard !self.queue.contains(where: { $0.slug == slug }) else { return }
+            self.queue.append(Job(url: pageURL, site: site, slug: slug))
+            self.pump()
+        }
+    }
+
+    private func pump() {
+        guard !busy, !queue.isEmpty else { return }
+        busy = true
+        current = queue.removeFirst()
+        activity = ActivityCenter.shared.begin("Updating share card…")
+        // A cache-buster keeps CDN copies from serving the previous save.
+        var parts = URLComponents(url: current!.url, resolvingAgainstBaseURL: false)!
+        parts.queryItems = (parts.queryItems ?? []) + [URLQueryItem(name: "timcard", value: String(Int(Date().timeIntervalSince1970)))]
+        webView.load(URLRequest(url: parts.url!, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20))
+        let started = current?.slug
+        DispatchQueue.main.asyncAfter(deadline: .now() + 25) { [weak self] in
+            guard let self, self.busy, self.current?.slug == started else { return }
+            self.finish()
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self, let job = self.current else { return }
+            let config = WKSnapshotConfiguration()
+            config.snapshotWidth = 1200
+            self.webView.takeSnapshot(with: config) { image, _ in
+                guard let image,
+                      let tiff = image.tiffRepresentation,
+                      let rep = NSBitmapImageRep(data: tiff),
+                      let png = rep.representation(using: .png, properties: [:])
+                else { self.finish(); return }
+                let temp = FileManager.default.temporaryDirectory.appendingPathComponent("social-\(job.slug).png")
+                try? png.write(to: temp)
+                DispatchQueue.global(qos: .utility).async {
+                    _ = try? EditingToolbar.stage(fileURL: temp, site: job.site, pageURL: job.url)
+                    DispatchQueue.main.async { self.finish() }
+                }
+            }
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { finish() }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { finish() }
+
+    private func finish() {
+        guard busy else { return }
+        if let activity { ActivityCenter.shared.end(activity) }
+        activity = nil
+        busy = false
+        current = nil
+        pump()
+    }
+}
+
 /// Mobile thumbnails, made offscreen: a hidden iPhone-sized web view
 /// loads pages one at a time and snapshots them, so the sidebar can
 /// show every page's phone rendition without ever touching your tab.
@@ -1244,7 +1327,6 @@ struct TabContentView: View {
             let rel = site.relativePagePath(for: url)
             let html = MobileCSS.regenerate(in: Self.ensuringAutoSocialMeta(in: raw, rel: rel, site: site))
             let publishing = ActivityCenter.shared.begin("Publishing \((rel as NSString).lastPathComponent)…")
-            refreshAutoSocialCard(for: url, site: site, pageHTML: html)
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     try PageWriter.write(html: html, folder: site.localProjectPath, relativePath: rel)
@@ -1303,6 +1385,9 @@ struct TabContentView: View {
                         DraftStore.clear(for: url.absoluteString)
                         PageRegistry.record(url: url.absoluteString, title: tab.title)
                         captureThumbnailSoon(expecting: url)
+                        // The share card, from the page just published —
+                        // offscreen, mobile-bold, and never skipped.
+                        SocialCards.shared.capture(pageURL: url, site: site, pageHTML: html)
                     }
                 } catch {
                     DispatchQueue.main.async {
@@ -1341,41 +1426,7 @@ struct TabContentView: View {
         return String(html[range])
     }
 
-    /// Regenerates the automatic share card if the tab is still showing
-    /// the page — best-effort: navigate away and the card stays as it was
-    /// until the next Done from the page.
-    private func refreshAutoSocialCard(for url: URL, site: Site, pageHTML: String) {
-        if let current = Self.metaContent(in: pageHTML, property: "og:image"),
-           !(current as NSString).lastPathComponent.hasPrefix("social-") {
-            return  // custom image — theirs, never touched
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            guard tab.webView.url == url else { return }
-            let config = WKSnapshotConfiguration()
-            config.snapshotWidth = 1200
-            tab.webView.takeSnapshot(with: config) { image, _ in
-                guard let image, image.size.width > 0 else { return }
-                let card = NSImage(size: NSSize(width: 1200, height: 630))
-                card.lockFocus()
-                let scaledHeight = image.size.height * (1200 / image.size.width)
-                image.draw(in: NSRect(x: 0, y: 630 - scaledHeight, width: 1200, height: scaledHeight))
-                card.unlockFocus()
-                guard let tiff = card.tiffRepresentation,
-                      let rep = NSBitmapImageRep(data: tiff),
-                      let png = rep.representation(using: .png, properties: [:])
-                else { return }
-                let rel = site.relativePagePath(for: url)
-                let slug = ((rel as NSString).lastPathComponent as NSString).deletingPathExtension
-                let temp = FileManager.default.temporaryDirectory.appendingPathComponent("social-\(slug).png")
-                try? png.write(to: temp)
-                let activity = ActivityCenter.shared.begin("Updating share card…")
-                DispatchQueue.global(qos: .utility).async {
-                    _ = try? EditingToolbar.stage(fileURL: temp, site: site, pageURL: url)
-                    DispatchQueue.main.async { ActivityCenter.shared.end(activity) }
-                }
-            }
-        }
-    }
+
 
     /// History is just history: pick a version, the page returns to it —
     /// restored in the mirror, republished, reloaded, and recorded as a
@@ -3768,10 +3819,8 @@ struct InspectorView: View {
             Divider()
             Group {
                 if let info = tab.selectionInfo {
-                    ScrollView {
-                        InspectorControls(tab: tab, site: site, info: info, allowsTemplates: allowsTemplates)
-                            .id(info["seq"] as? Int ?? 0)
-                    }
+                    InspectorControls(tab: tab, site: site, info: info, allowsTemplates: allowsTemplates)
+                        .id(info["seq"] as? Int ?? 0)
                 } else {
                     PageOptionsPane(tab: tab)
                 }
@@ -4017,14 +4066,13 @@ struct InspectorControls: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        Form {
             if isText {
                 styleCard
                 typographyCard
             } else {
                 Text(info["label"] as? String ?? "Object")
                     .font(.system(size: 13, weight: .semibold))
-                    .padding(.horizontal, 2)
             }
             if selectionCount > 1 {
                 card {
@@ -4053,7 +4101,7 @@ struct InspectorControls: View {
                 templateCard
             }
         }
-        .padding(10)
+        .formStyle(.grouped)
         .onAppear {
             // Warm the pinned list so the font picker opens populated.
             tab.pageFonts { fonts in
@@ -4448,7 +4496,7 @@ struct InspectorControls: View {
                 .font(.system(size: 10))
                 .frame(width: 22, height: 16)
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(.accessoryBar)
         .controlSize(.small)
         .help(help)
     }
@@ -4461,7 +4509,7 @@ struct InspectorControls: View {
                 .font(.system(size: 10))
                 .frame(width: 26, height: 16)
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(.accessoryBar)
         .controlSize(.small)
         .help(help)
     }
@@ -4531,19 +4579,11 @@ struct InspectorControls: View {
     // MARK: pieces
 
     private func card(_ title: String? = nil, @ViewBuilder content: () -> some View) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            if let title {
-                Text(title.uppercased())
-                    .font(.system(size: 10, weight: .semibold))
-                    .kerning(0.8)
-                    .foregroundStyle(.secondary)
-            }
+        Section {
             content()
+        } header: {
+            if let title { Text(title) }
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.07), lineWidth: 1))
     }
 
     private func rowLabel(_ text: String) -> some View {
@@ -4587,13 +4627,14 @@ struct PageOptionsPane: View {
     @State private var loadCount = 0
 
     var body: some View {
-        ScrollView {
+        Group {
             if let info {
                 PageOptionsControls(tab: tab, info: info, reload: reload)
                     .id(loadCount)
             } else {
                 ProgressView()
                     .controlSize(.small)
+                    .frame(maxWidth: .infinity)
                     .padding(.top, 48)
             }
         }
@@ -4673,7 +4714,7 @@ struct PageOptionsControls: View {
     private var currentSite: Site? { siteStore.match(tab.webView.url) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        Form {
             card {
                 HStack(spacing: 8) {
                     rowLabel("Template")
@@ -4981,7 +5022,7 @@ struct PageOptionsControls: View {
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                .padding(10)
+                .formStyle(.grouped)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
@@ -5272,19 +5313,11 @@ struct PageOptionsControls: View {
     }
 
     private func card(_ title: String? = nil, @ViewBuilder content: () -> some View) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            if let title {
-                Text(title.uppercased())
-                    .font(.system(size: 10, weight: .semibold))
-                    .kerning(0.8)
-                    .foregroundStyle(.secondary)
-            }
+        Section {
             content()
+        } header: {
+            if let title { Text(title) }
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.07), lineWidth: 1))
     }
 
     private func rowLabel(_ text: String) -> some View {
