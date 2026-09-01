@@ -743,6 +743,81 @@ struct SiteSection: View {
     }
 }
 
+/// The Both view's phone: a live second rendering beside the desktop
+/// one. While editing it mirrors the canvas (the serialized DOM, drafts
+/// and all, refreshed as it changes); while browsing it simply loads the
+/// page as an iPhone would.
+final class MobilePreviewModel: ObservableObject {
+    let webView: WKWebView
+    var lastHash: Int = 0
+    var lastURL: String = ""
+
+    init() {
+        webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 390, height: 844))
+        webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1"
+    }
+}
+
+struct MobilePreviewPane: View {
+    @ObservedObject var tab: Tab
+    let pageURL: URL?
+    @StateObject private var model = MobilePreviewModel()
+
+    var body: some View {
+        ZStack {
+            Color.primary.opacity(0.045)
+            VStack(spacing: 10) {
+                HStack(spacing: 5) {
+                    Image(systemName: "iphone")
+                        .font(.system(size: 10))
+                    Text("iPhone")
+                        .font(.system(size: 10.5, weight: .medium))
+                }
+                .foregroundStyle(.secondary)
+                .padding(.top, 12)
+                WebViewContainer(webView: model.webView)
+                    .frame(width: 375)
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .stroke(Color.primary.opacity(0.2), lineWidth: 1)
+                    )
+                    .shadow(color: .black.opacity(0.18), radius: 18, y: 6)
+                    .padding(.bottom, 16)
+            }
+        }
+        .frame(width: 420)
+        .onAppear { sync() }
+        .onChange(of: tab.urlString) { _, _ in
+            model.lastURL = ""
+            model.lastHash = 0
+            sync()
+        }
+        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
+            sync()
+        }
+    }
+
+    private func sync() {
+        guard let url = pageURL else { return }
+        if tab.isEditing {
+            tab.currentHTML { html in
+                guard let html else { return }
+                let hash = html.hashValue
+                if hash != model.lastHash {
+                    model.lastHash = hash
+                    model.lastURL = ""
+                    model.webView.loadHTMLString(html, baseURL: url)
+                }
+            }
+        } else if model.lastURL != url.absoluteString {
+            model.lastURL = url.absoluteString
+            model.lastHash = 0
+            model.webView.load(URLRequest(url: url))
+        }
+    }
+}
+
 // MARK: - Tab content: native toolbar + (editing bar) + web view
 
 struct TabContentView: View {
@@ -758,6 +833,7 @@ struct TabContentView: View {
     @State private var previewSha: String?
     @State private var previewLabel = ""
     @State private var previewHTML = ""
+    @State private var viewMode: Int = 0  // 0 desktop · 1 both · 2 iPhone
     @AppStorage("tim.siteSidebar") private var showSiteSidebar = true
     @FocusState private var addressFocused: Bool
 
@@ -774,6 +850,15 @@ struct TabContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Tim's signature: the yellow. A hairline of it across the top
+            // whenever the page is yours — a touch brighter while editing.
+            // The window itself tells you you're home.
+            Rectangle()
+                .fill(Color(red: 0.996, green: 0.929, blue: 0))
+                .frame(height: isPageEditable ? (tab.isEditing ? 3 : 2) : 0)
+                .shadow(color: Color(red: 0.996, green: 0.929, blue: 0).opacity(tab.isEditing ? 0.55 : 0), radius: 4, y: 1)
+                .animation(.easeInOut(duration: 0.35), value: isPageEditable)
+                .animation(.easeInOut(duration: 0.35), value: tab.isEditing)
             if tab.isEditing {
                 EditingToolbar(
                     tab: tab,
@@ -800,6 +885,10 @@ struct TabContentView: View {
                     }
                 } else {
                     WebViewContainer(webView: tab.webView)
+                    if viewMode == 1 {
+                        Divider()
+                        MobilePreviewPane(tab: tab, pageURL: pageURL)
+                    }
                 }
             }
             if previewSha != nil {
@@ -1673,13 +1762,15 @@ struct TabContentView: View {
         }
 
         ToolbarItem(placement: .principal) {
-            HStack(spacing: 8) {
+            HStack(spacing: 12) {
                 // Back/forward live beside the address they act on.
-                HStack(spacing: 2) {
+                HStack(spacing: 6) {
                     Button {
                         tab.webView.goBack()
                     } label: {
                         Image(systemName: "chevron.left")
+                            .frame(width: 24, height: 22)
+                            .contentShape(Rectangle())
                     }
                     .disabled(!tab.canGoBack)
                     .help("Back (⌘[)")
@@ -1688,6 +1779,8 @@ struct TabContentView: View {
                         tab.webView.goForward()
                     } label: {
                         Image(systemName: "chevron.right")
+                            .frame(width: 24, height: 22)
+                            .contentShape(Rectangle())
                     }
                     .disabled(!tab.canGoForward)
                     .help("Forward (⌘])")
@@ -1718,17 +1811,22 @@ struct TabContentView: View {
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
-            Picker("", selection: Binding(
-                get: { tab.isMobilePreview },
-                set: { tab.setMobilePreview($0) }
-            )) {
-                Image(systemName: "desktopcomputer").tag(false)
-                Image(systemName: "iphone").tag(true)
+            Picker("", selection: $viewMode) {
+                Image(systemName: "desktopcomputer").tag(0)
+                Image(systemName: "square.split.2x1").tag(1)
+                Image(systemName: "iphone").tag(2)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
             .fixedSize()
-            .help("Preview as Mac or iPhone — same content, both must be excellent")
+            .onChange(of: viewMode) { _, mode in
+                let wantsMobile = mode == 2
+                if tab.isMobilePreview != wantsMobile { tab.setMobilePreview(wantsMobile) }
+            }
+            .onChange(of: tab.isMobilePreview) { _, mobile in
+                if mobile { viewMode = 2 } else if viewMode == 2 { viewMode = 0 }
+            }
+            .help("Desktop, both side by side, or iPhone — same content, all of it must be excellent")
             .overlay(alignment: tab.isMobilePreview ? .topLeading : .topTrailing) {
                 // The other layout has objects whose placement was guessed —
                 // the dot sits on the side that wants a look.
@@ -1748,26 +1846,35 @@ struct TabContentView: View {
             ActivityIndicator()
 
             if tab.isEditing {
-                Button {
-                    tab.undoEdit()
-                } label: {
-                    Image(systemName: "arrow.uturn.backward")
+                HStack(spacing: 6) {
+                    Button {
+                        tab.undoEdit()
+                    } label: {
+                        Image(systemName: "arrow.uturn.backward")
+                            .frame(width: 24, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .help("Undo (⌘Z)")
+                    Button {
+                        tab.redoEdit()
+                    } label: {
+                        Image(systemName: "arrow.uturn.forward")
+                            .frame(width: 24, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .help("Redo (⇧⌘Z)")
+                    Button("Done") { finishEditing() }
+                        .buttonStyle(.borderedProminent)
+                        .help("Done (⌘E) — your changes are saved")
+                        .padding(.leading, 4)
                 }
-                .help("Undo")
-                Button {
-                    tab.redoEdit()
-                } label: {
-                    Image(systemName: "arrow.uturn.forward")
-                }
-                .help("Redo")
-                Button("Done") { finishEditing() }
-                    .buttonStyle(.borderedProminent)
-                    .help("Done (⌘E) — your changes are saved")
+                .padding(.horizontal, 4)
             } else if isPageEditable, previewSha == nil {
                 Button("Edit") { beginEditing() }
                     .buttonStyle(.bordered)
                     .tint(.accentColor)
                     .help("Edit This Page (⌘E)")
+                    .padding(.horizontal, 4)
             }
 
             Menu {
