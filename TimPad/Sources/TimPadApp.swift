@@ -438,6 +438,20 @@ struct PadInspector: View {
                 }
                 if isText {
                     Section("Text") {
+                        // The Mac's curated catalog, applied the same way:
+                        // the font's stylesheet joins the page, the family
+                        // lands on the selection.
+                        Menu {
+                            ForEach(FontCatalog.options) { option in
+                                Button(option.name) { applyFont(option) }
+                            }
+                        } label: {
+                            HStack {
+                                Text("Font").foregroundStyle(.primary)
+                                Spacer()
+                                Text("Choose…").foregroundStyle(.secondary)
+                            }
+                        }
                         Picker("Style", selection: Binding(
                             get: { info?["timStyle"] as? String ?? "" },
                             set: { tab.applyTextStyle($0) }
@@ -521,6 +535,14 @@ struct PadInspector: View {
             fontSize = info?["fontSize"] as? Double ?? 16
             rotation = 0
         }
+    }
+
+    private func applyFont(_ option: FontOption) {
+        if let query = option.googleQuery {
+            let name = option.family.trimmingCharacters(in: CharacterSet(charactersIn: "'"))
+            tab.ensurePageFont(family: name, cssURL: "https://fonts.googleapis.com/css2?family=\(query)&display=swap")
+        }
+        tab.setSelectionStyle("fontFamily", "\(option.family), \(option.fallback)")
     }
 
     private func alignButton(_ symbol: String, _ edge: String) -> some View {
