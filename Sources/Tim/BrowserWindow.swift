@@ -1575,38 +1575,13 @@ struct TabContentView: View {
     /// card's filename is deterministic (social-<page>.png), so the tags
     /// can be written before the image itself lands. A custom image (any
     /// other filename) is theirs and stays untouched.
+    // Shared with the iPad now — see TimKit/PageMeta.swift.
     static func ensuringAutoSocialMeta(in html: String, rel: String, site: Site) -> String {
-        let slug = ((rel as NSString).lastPathComponent as NSString).deletingPathExtension
-        let value = site.origin.hasPrefix("http")
-            ? site.origin + "/media/social-\(slug).png"
-            : "media/social-\(slug).png"
-        if let existing = metaContent(in: html, property: "og:image") {
-            let name = (existing as NSString).lastPathComponent
-            // A custom image is theirs. An auto card pointing anywhere but
-            // this page's own filename is a leftover of the one-per-site
-            // era — migrate it, or every page keeps sharing one card.
-            guard name.hasPrefix("social-"), name != "social-\(slug).png" else { return html }
-            return html
-                .replacingOccurrences(of: "property=\"og:image\" content=\"\(existing)\"",
-                                      with: "property=\"og:image\" content=\"\(value)\"")
-                .replacingOccurrences(of: "name=\"twitter:image\" content=\"\(existing)\"",
-                                      with: "name=\"twitter:image\" content=\"\(value)\"")
-        }
-        guard let head = html.range(of: "</head>") else { return html }
-        var out = html
-        out.insert(contentsOf: "<meta property=\"og:image\" content=\"\(value)\">\n"
-            + "<meta name=\"twitter:image\" content=\"\(value)\">\n"
-            + "<meta name=\"twitter:card\" content=\"summary_large_image\">\n", at: head.lowerBound)
-        return out
+        PageMeta.ensureAutoSocial(in: html, rel: rel, site: site)
     }
 
     static func metaContent(in html: String, property: String) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: "property=\"\(property)\" content=\"([^\"]*)\""),
-              let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
-              match.numberOfRanges > 1,
-              let range = Range(match.range(at: 1), in: html)
-        else { return nil }
-        return String(html[range])
+        PageMeta.content(in: html, property: property)
     }
 
 
@@ -3655,7 +3630,24 @@ struct SiteEditorSheet: View {
                     if !cfConnected {
                         GridRow {
                             Text("")
-                            Text("One token, once — Tim handles the rest. Create it at dash.cloudflare.com → My Profile → API Tokens with Workers Scripts: Edit, Workers Routes: Edit, Account Settings: Read, and Zone: Read. It lives in your Keychain and syncs via iCloud Keychain.")
+                            HStack(spacing: 8) {
+                                // Cloudflare's token-template deep link:
+                                // lands on Create Token with Tim's scopes
+                                // pre-filled — Continue, Create, copy, paste.
+                                Button("Create Token in Cloudflare…") {
+                                    let scopes = """
+                                    [{"key":"account_settings","type":"read"},{"key":"workers_scripts","type":"edit"},{"key":"zone","type":"read"},{"key":"workers_routes","type":"edit"}]
+                                    """.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+                                    let link = "https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=\(scopes)&name=Tim%20Publishing&accountId=all&zoneId=all"
+                                    if let url = URL(string: link) { NSWorkspace.shared.open(url) }
+                                }
+                                .controlSize(.small)
+                                Spacer()
+                            }
+                        }
+                        GridRow {
+                            Text("")
+                            Text("One token, once — Tim handles the rest. The button opens Cloudflare with the scopes pre-filled (Workers Scripts: Edit, Workers Routes: Edit, Account Settings: Read, Zone: Read); create it, copy, paste here. It lives in your Keychain and syncs via iCloud Keychain.")
                                 .font(.system(size: 9.5))
                                 .foregroundStyle(.tertiary)
                                 .fixedSize(horizontal: false, vertical: true)

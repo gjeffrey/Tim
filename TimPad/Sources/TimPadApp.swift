@@ -460,13 +460,17 @@ struct PadBrowser: View {
                 publishError = "The page didn’t hand back its contents — nothing was published."
                 return
             }
-            let finished = MobileCSS.regenerate(in: html)
+            let rel = site.relativePagePath(for: url)
+            let finished = MobileCSS.regenerate(in: PageMeta.ensureAutoSocial(in: html, rel: rel, site: site))
             Task {
                 do {
                     try await PadPublisher.publish(html: finished, site: site, pageURL: url)
                     await MainActor.run {
                         publishing = false
                         publishNote = "Your page is live."
+                        // The share card follows every publish, same as
+                        // the Mac: offscreen, mobile-bold, per page.
+                        PadSocialCards.shared.capture(pageURL: url, site: site, pageHTML: finished)
                     }
                 } catch {
                     await MainActor.run {
