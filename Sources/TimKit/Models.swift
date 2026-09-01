@@ -816,8 +816,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         doc.head.appendChild(editorCSS);
       }
       editorCSS.textContent =
-        'html.tim-editing .tim-object{cursor:grab}' +
+        'html.tim-editing .tim-object{cursor:grab;touch-action:none}' +
         'html.tim-editing .tim-object:active{cursor:grabbing}' +
+        'html.tim-editing [data-tim-handle]{touch-action:none}' +
         '.tim-object.tim-loading{background:rgba(10,132,255,0.07);outline:1.5px dashed rgba(10,132,255,0.45);outline-offset:-1px;border-radius:6px;min-height:48px}' +
         '.tim-media-loading{position:relative;min-height:64px;border-radius:8px;display:flex;align-items:center;justify-content:center;' +
           'outline:1.5px dashed rgba(127,127,127,0.5);outline-offset:-1px;' +
@@ -1355,7 +1356,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       }
 
       // The badge is a move grip: dragging it moves the selected object.
-      badge.addEventListener('mousedown', function (e) {
+      badge.addEventListener('pointerdown', function (e) {
         if (!sel || !isObject(sel)) { return; }
         var canvas = canvasFor(sel);
         var p = placement(sel);
@@ -1365,12 +1366,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         e.preventDefault(); e.stopPropagation();
       });
 
+      // Pointer events cover mouse, trackpad, finger, and Pencil alike —
+      // the same canvas engine on a Mac or an iPad.
       doc.addEventListener('click', onClick, true);
       doc.addEventListener('dblclick', onDblClick, true);
-      doc.addEventListener('mousedown', onDown, true);
-      doc.addEventListener('mousemove', onMove, true);
-      doc.addEventListener('mouseup', onUp, true);
-      doc.addEventListener('mouseover', onOver, true);
+      doc.addEventListener('pointerdown', onDown, true);
+      doc.addEventListener('pointermove', onMove, true);
+      doc.addEventListener('pointerup', onUp, true);
+      doc.addEventListener('pointercancel', onUp, true);
+      doc.addEventListener('pointerover', onOver, true);
       doc.addEventListener('keydown', onKey, true);
       doc.addEventListener('input', function () {
         if (editingEl) { fitSpan(editingEl); }

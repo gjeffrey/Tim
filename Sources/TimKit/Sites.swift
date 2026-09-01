@@ -238,11 +238,35 @@ public final class SiteStore: ObservableObject {
     }
 
     private static let defaultsKey = "tim.sites.v1"
+    private static let stampKey = "tim.sites.updated"
+    private var observer: NSObjectProtocol?
 
     public init() {
-        if let data = UserDefaults.standard.data(forKey: Self.defaultsKey),
-           let decoded = try? JSONDecoder().decode([Site].self, from: data) {
+        // iCloud carries the site list between Macs (and one day iPads):
+        // the newer copy wins, and everything degrades gracefully to
+        // UserDefaults when the app isn't signed for iCloud. Connection
+        // details are addresses, not secrets — SSH keys stay in ~/.ssh
+        // and never ride along.
+        let cloud = NSUbiquitousKeyValueStore.default
+        cloud.synchronize()
+        let localStamp = UserDefaults.standard.double(forKey: Self.stampKey)
+        let cloudStamp = cloud.double(forKey: Self.stampKey)
+        let data = (cloudStamp > localStamp ? cloud.data(forKey: Self.defaultsKey) : nil)
+            ?? UserDefaults.standard.data(forKey: Self.defaultsKey)
+        if let data, let decoded = try? JSONDecoder().decode([Site].self, from: data) {
             sites = decoded
+        }
+        observer = NotificationCenter.default.addObserver(
+            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: cloud, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            let remoteStamp = cloud.double(forKey: Self.stampKey)
+            guard remoteStamp > UserDefaults.standard.double(forKey: Self.stampKey),
+                  let remote = cloud.data(forKey: Self.defaultsKey),
+                  let decoded = try? JSONDecoder().decode([Site].self, from: remote)
+            else { return }
+            self.sites = decoded
         }
     }
 
@@ -313,8 +337,13 @@ public final class SiteStore: ObservableObject {
     }
 
     private func persist() {
-        if let data = try? JSONEncoder().encode(sites) {
-            UserDefaults.standard.set(data, forKey: Self.defaultsKey)
-        }
+        guard let data = try? JSONEncoder().encode(sites) else { return }
+        let stamp = Date().timeIntervalSince1970
+        UserDefaults.standard.set(data, forKey: Self.defaultsKey)
+        UserDefaults.standard.set(stamp, forKey: Self.stampKey)
+        let cloud = NSUbiquitousKeyValueStore.default
+        cloud.set(data, forKey: Self.defaultsKey)
+        cloud.set(stamp, forKey: Self.stampKey)
+        cloud.synchronize()
     }
 }
