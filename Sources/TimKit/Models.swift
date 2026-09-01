@@ -329,6 +329,14 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
     }
 
+    /// Sets (or clears, with "") the page's full-bleed background video.
+    public func setPageBackgroundVideo(_ src: String) {
+        webView.evaluateJavaScript(
+            "window.__timSetPageBackgroundVideo && window.__timSetPageBackgroundVideo(\(Self.jsLiteral(src)));",
+            completionHandler: nil
+        )
+    }
+
     /// Marks the selection (or group) desktop-only: hidden on phones by
     /// the generated mobile stylesheet.
     public func setMobileHidden(_ hidden: Bool) {
@@ -1602,6 +1610,27 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
         writeTemplates();
       };
+      // A full-bleed silent video behind everything on the page. Fixed,
+      // inert to clicks, and part of the saved page like any element.
+      window.__timSetPageBackgroundVideo = function (src) {
+        var bgv = doc.querySelector('video.tim-page-background');
+        if (!src) { if (bgv) { bgv.remove(); } return; }
+        if (!bgv) {
+          bgv = doc.createElement('video');
+          bgv.className = 'tim-page-background';
+          bgv.setAttribute('autoplay', '');
+          bgv.setAttribute('muted', '');
+          bgv.setAttribute('loop', '');
+          bgv.setAttribute('playsinline', '');
+          bgv.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;object-fit:cover;z-index:-1;pointer-events:none;';
+          doc.body.insertBefore(bgv, doc.body.firstChild);
+        }
+        bgv.setAttribute('src', src);
+        bgv.muted = true;
+        var p = bgv.play();
+        if (p && p.catch) { p.catch(function () {}); }
+      };
+
       window.__timPageInfo = function () {
         var name = doc.body.getAttribute('data-tim-template') || 'default';
         var p = templateProps[name] || {};
@@ -1610,6 +1639,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           template: name,
           title: doc.title || '',
           bg: p.bg || cs.backgroundColor,
+          bgVideo: (function () {
+            var v = doc.querySelector('video.tim-page-background');
+            return v ? (v.getAttribute('src') || '') : '';
+          })(),
           fg: p.fg || cs.color,
           link: p.link || '',
           contentW: p.contentW != null ? p.contentW : 1320,

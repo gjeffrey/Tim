@@ -32,6 +32,22 @@ extension Notification.Name {
     static let timBounceVideo = Notification.Name("tim.bounceVideo")
 }
 
+/// Parses "linear-gradient(140deg, <c1>, <c2>)" back into its parts —
+/// colors may be hex or rgb(), whatever Color(cssColor:) reads.
+func parseLinearGradient(_ value: String) -> (angle: Double, start: String, end: String)? {
+    guard value.contains("linear-gradient"),
+          let regex = try? NSRegularExpression(
+            pattern: "linear-gradient\\(\\s*([0-9.]+)deg\\s*,\\s*(#[0-9a-fA-F]+|rgba?\\([^)]*\\))\\s*,\\s*(#[0-9a-fA-F]+|rgba?\\([^)]*\\))"
+          ),
+          let match = regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)),
+          let a = Range(match.range(at: 1), in: value),
+          let s = Range(match.range(at: 2), in: value),
+          let e = Range(match.range(at: 3), in: value),
+          let angle = Double(value[a])
+    else { return nil }
+    return (angle, String(value[s]), String(value[e]))
+}
+
 /// Everything Tim does behind your back — publishing, uploads, mirror
 /// downloads, share cards — registers here, and the toolbar shows a
 /// spinner you can click to see exactly what's in flight.
@@ -3500,6 +3516,9 @@ struct InspectorControls: View {
     @State private var columnCount: Int = 1
     @State private var rotation: Double = 0
     @State private var showOnMobile: Bool = true
+    @State private var fillIsGradient: Bool = false
+    @State private var fillEndColor: Color = .blue
+    @State private var fillAngle: Double = 180
     @State private var videoAutoplay: Bool = false
     @State private var videoRepeat: String = "none"
     @State private var videoSound: Bool = true
@@ -3532,7 +3551,12 @@ struct InspectorControls: View {
         _lineHeight = State(initialValue: min(2.2, max(0.8, info["lineHeight"] as? Double ?? 1.4)))
         _letterSpacing = State(initialValue: min(8, max(-2, info["letterSpacing"] as? Double ?? 0)))
         _textColor = State(initialValue: Color(cssColor: info["color"] as? String ?? "", fallback: .primary))
-        _fillColor = State(initialValue: Color(cssColor: info["fill"] as? String ?? "", fallback: .clear))
+        let fillRaw = info["fill"] as? String ?? ""
+        let fillGradient = parseLinearGradient(fillRaw)
+        _fillIsGradient = State(initialValue: fillGradient != nil)
+        _fillColor = State(initialValue: Color(cssColor: fillGradient?.start ?? fillRaw, fallback: .clear))
+        _fillEndColor = State(initialValue: Color(cssColor: fillGradient?.end ?? "", fallback: .blue))
+        _fillAngle = State(initialValue: fillGradient?.angle ?? 180)
         _radius = State(initialValue: info["radius"] as? Double ?? 0)
         _padding = State(initialValue: info["padding"] as? Double ?? 0)
         _opacity = State(initialValue: info["opacity"] as? Double ?? 1)
@@ -4019,6 +4043,12 @@ struct InspectorControls: View {
         )
     }
 
+    private func applyFill() {
+        tab.setSelectionStyle("background", fillIsGradient
+            ? "linear-gradient(\(Int(fillAngle))deg, \(fillColor.hexString), \(fillEndColor.hexString))"
+            : fillColor.hexString)
+    }
+
     private func applyBoxShadow() {
         tab.setSelectionStyle(
             "boxShadow",
@@ -4075,10 +4105,36 @@ struct InspectorControls: View {
                 rowLabel("Fill")
                 ColorPicker("", selection: $fillColor)
                     .labelsHidden()
-                    .onChange(of: fillColor) { _, c in tab.setSelectionStyle("background", c.hexString) }
-                Button("None") { tab.setSelectionStyle("background", "") }
-                    .controlSize(.mini)
+                    .onChange(of: fillColor) { _, _ in applyFill() }
+                if fillIsGradient {
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 8))
+                        .foregroundStyle(.tertiary)
+                    ColorPicker("", selection: $fillEndColor)
+                        .labelsHidden()
+                        .onChange(of: fillEndColor) { _, _ in applyFill() }
+                }
+                Button {
+                    fillIsGradient.toggle()
+                    applyFill()
+                } label: {
+                    Image(systemName: "circle.bottomrighthalf.pattern.checkered")
+                        .font(.system(size: 10))
+                }
+                .buttonStyle(.bordered)
+                .tint(fillIsGradient ? Color.accentColor : nil)
+                .controlSize(.mini)
+                .help("Gradient fill")
+                Button("None") {
+                    fillIsGradient = false
+                    tab.setSelectionStyle("background", "")
+                }
+                .controlSize(.mini)
                 Spacer()
+            }
+            if fillIsGradient {
+                sliderRow("Angle", $fillAngle, 0...360, 5, "\(Int(fillAngle))°")
+                    .onChange(of: fillAngle) { _, _ in applyFill() }
             }
             sliderRow("Corner", $radius, 0...40, 1, "\(Int(radius))")
                 .onChange(of: radius) { _, v in tab.setSelectionStyle("borderRadius", "\(Int(v))px") }
@@ -4208,6 +4264,9 @@ struct PageOptionsControls: View {
     @State private var makerImage: NSImage?
     @State private var editingSiteSettings: Site?
     @State private var pinnedFonts: [String] = []
+    @State private var bgMode: String
+    @State private var bgEnd: Color
+    @State private var bgAngle: Double
 
     init(tab: Tab, info: [String: Any], reload: @escaping () -> Void) {
         self.tab = tab
@@ -4215,7 +4274,17 @@ struct PageOptionsControls: View {
         self.reload = reload
         _template = State(initialValue: info["template"] as? String ?? "default")
         _title = State(initialValue: info["title"] as? String ?? "")
-        _bg = State(initialValue: Color(cssColor: info["bg"] as? String ?? "", fallback: .white))
+        let bgRaw = info["bg"] as? String ?? ""
+        let gradient = parseLinearGradient(bgRaw)
+        let mode: String
+        if !(info["bgVideo"] as? String ?? "").isEmpty { mode = "video" }
+        else if gradient != nil { mode = "gradient" }
+        else if bgRaw.contains("url(") { mode = "image" }
+        else { mode = "color" }
+        _bgMode = State(initialValue: mode)
+        _bg = State(initialValue: Color(cssColor: gradient?.start ?? bgRaw, fallback: .white))
+        _bgEnd = State(initialValue: Color(cssColor: gradient?.end ?? "", fallback: .blue))
+        _bgAngle = State(initialValue: gradient?.angle ?? 180)
         _fg = State(initialValue: Color(cssColor: info["fg"] as? String ?? "", fallback: .black))
         _link = State(initialValue: Color(cssColor: info["link"] as? String ?? "", fallback: .blue))
         _contentW = State(initialValue: min(1680, max(560, info["contentW"] as? Double ?? 1320)))
@@ -4263,14 +4332,69 @@ struct PageOptionsControls: View {
                 }
             }
 
-            card("Colors") {
-                HStack(spacing: 8) {
-                    rowLabel("Background")
-                    ColorPicker("", selection: $bg, supportsOpacity: false)
-                        .labelsHidden()
-                        .onChange(of: bg) { _, c in tab.setPageOption("bg", c.hexString) }
-                    Spacer()
+            card("Background") {
+                Picker("", selection: $bgMode) {
+                    Text("Color").tag("color")
+                    Text("Gradient").tag("gradient")
+                    Text("Image").tag("image")
+                    Text("Video").tag("video")
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.mini)
+                .onChange(of: bgMode) { old, mode in
+                    if old == "video", mode != "video" { tab.setPageBackgroundVideo("") }
+                    switch mode {
+                    case "color": tab.setPageOption("bg", bg.hexString)
+                    case "gradient": applyPageGradient()
+                    default: break  // image and video apply when a file is picked
+                    }
+                }
+                switch bgMode {
+                case "gradient":
+                    HStack(spacing: 8) {
+                        rowLabel("Colors")
+                        ColorPicker("", selection: $bg, supportsOpacity: false)
+                            .labelsHidden()
+                            .onChange(of: bg) { _, _ in applyPageGradient() }
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 8))
+                            .foregroundStyle(.tertiary)
+                        ColorPicker("", selection: $bgEnd, supportsOpacity: false)
+                            .labelsHidden()
+                            .onChange(of: bgEnd) { _, _ in applyPageGradient() }
+                        Spacer()
+                    }
+                    sliderRow("Angle", $bgAngle, 0...360, 5, "\(Int(bgAngle))°")
+                        .onChange(of: bgAngle) { _, _ in applyPageGradient() }
+                case "image":
+                    Button("Choose Image…") { choosePageBackground(video: false) }
+                        .controlSize(.mini)
+                    Text("Fills the page edge to edge, behind everything, on every page with this template.")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                case "video":
+                    Button("Choose Video…") { choosePageBackground(video: true) }
+                        .controlSize(.mini)
+                    Text("Plays silently behind the whole page, on this page. Optimized for the web automatically.")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                default:
+                    HStack(spacing: 8) {
+                        rowLabel("Color")
+                        ColorPicker("", selection: $bg, supportsOpacity: false)
+                            .labelsHidden()
+                            .onChange(of: bg) { _, c in
+                                if bgMode == "color" { tab.setPageOption("bg", c.hexString) }
+                            }
+                        Spacer()
+                    }
+                }
+            }
+
+            card("Colors") {
                 HStack(spacing: 8) {
                     rowLabel("Text")
                     ColorPicker("", selection: $fg, supportsOpacity: false)
@@ -4289,6 +4413,8 @@ struct PageOptionsControls: View {
                     tab.setPageOption("bg", "")
                     tab.setPageOption("fg", "")
                     tab.setPageOption("link", "")
+                    tab.setPageBackgroundVideo("")
+                    bgMode = "color"
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { reload() }
                 }
                 .controlSize(.mini)
@@ -4497,6 +4623,61 @@ struct PageOptionsControls: View {
                 .padding(.horizontal, 2)
         }
         .padding(10)
+    }
+
+    private func applyPageGradient() {
+        tab.setPageOption("bg", "linear-gradient(\(Int(bgAngle))deg, \(bg.hexString), \(bgEnd.hexString))")
+    }
+
+    /// A background image or video: picked, optimized for the web, staged
+    /// into media/, uploaded, and applied — images as template background
+    /// CSS, video as the page's full-bleed silent layer.
+    private func choosePageBackground(video: Bool) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let fileURL = panel.url else { return }
+        let kind = MediaKind.of(fileExtension: fileURL.pathExtension)
+        guard kind == (video ? .video : .image) else {
+            let alert = NSAlert()
+            alert.messageText = video ? "That's not a video file." : "That's not an image file."
+            alert.runModal()
+            return
+        }
+        let resolvedSite = currentSite
+        let pageURL = tab.webView.url
+        var activity = ActivityCenter.shared.begin("Adding background…")
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                var publishURL = fileURL
+                if case .transcode = MediaOptimizer.plan(fileURL: fileURL, kind: kind) {
+                    ActivityCenter.shared.end(activity)
+                    activity = ActivityCenter.shared.begin("Optimizing \(fileURL.lastPathComponent) for the web…")
+                    publishURL = try MediaOptimizer.transcode(fileURL: fileURL, kind: kind)
+                    if let s = resolvedSite { MediaOptimizer.stashOriginal(fileURL, mirror: s.localProjectPath) }
+                }
+                let staged = try EditingToolbar.stage(fileURL: publishURL, site: resolvedSite, pageURL: pageURL)
+                let full = (resolvedSite?.origin.hasPrefix("http") == true)
+                    ? resolvedSite!.origin + "/" + staged
+                    : staged
+                DispatchQueue.main.async {
+                    ActivityCenter.shared.end(activity)
+                    if video {
+                        tab.setPageBackgroundVideo(full)
+                    } else {
+                        tab.setPageOption("bg", "url(\"\(full)\") center / cover no-repeat")
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    ActivityCenter.shared.end(activity)
+                    let alert = NSAlert()
+                    alert.messageText = "Background"
+                    alert.informativeText = error.localizedDescription
+                    alert.runModal()
+                }
+            }
+        }
     }
 
     /// Editing an icon means reopening its recipe, not starting over —
