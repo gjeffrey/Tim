@@ -462,7 +462,6 @@ struct UnifiedSidebar: View {
 /// badge speaks the ownership grammar — a black pencil on Tim yellow
 /// when the page is yours, a quiet globe when it isn't.
 struct TabCard: View {
-    @AppStorage("tim.experimental.makeItMine") private var makeItMineEnabled = false
     @ObservedObject var tab: Tab
     let isSelected: Bool
     let isDragging: Bool
@@ -481,19 +480,6 @@ struct TabCard: View {
         siteStore.isEditable(URL(string: tab.urlString), timAuthored: tab.isTimPage)
     }
 
-    private var matchedSite: Site? {
-        let url = URL(string: tab.urlString)
-        if let site = siteStore.match(url) { return site }
-        guard tab.isTimPage || tab.lastHTTPStatus == 404, let url else { return nil }
-        return siteStore.derivedSite(for: url)
-    }
-    /// A missing page on your own site can be created; a page that isn't
-    /// yours can be claimed. Both actions live in the field, Safari's way.
-    private var canCreate: Bool { matchedSite != nil && tab.lastHTTPStatus == 404 && !tab.isEditing }
-    private var canClaim: Bool {
-        makeItMineEnabled && matchedSite == nil && !siteStore.sites.isEmpty && !tab.isEditing
-            && (URL(string: tab.urlString)?.scheme?.hasPrefix("http") ?? false)
-    }
 
     private var subtitle: String {
         guard let host = URL(string: tab.urlString)?.host, !host.isEmpty else { return "Start Page" }
