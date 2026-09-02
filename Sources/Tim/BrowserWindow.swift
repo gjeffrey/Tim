@@ -1135,13 +1135,6 @@ struct TabContentView: View {
     @State private var viewMode: Int = 0  // 0 desktop · 1 both · 2 iPhone
     @State private var showImportSheet = false
     @FocusState private var addressFocused: Bool
-    @State private var addressEditingText = false
-    /// What you are typing lives HERE, in a plain reference SwiftUI does
-    /// not observe. Binding the field to @State meant every character
-    /// invalidated the view, which rebuilt the toolbar item and dropped
-    /// the keyboard — you could type exactly one letter. Nothing watches
-    /// this box, so typing disturbs nothing.
-    @State private var addressBuffer = AddressBuffer()
     @AppStorage("tim.cleanAddresses") private var cleanAddresses = true
 
     private var pageURL: URL? { URL(string: tab.urlString) }
@@ -1164,44 +1157,6 @@ struct TabContentView: View {
             .allowsHitTesting(false)
             .animation(.easeInOut(duration: 0.3), value: isPageEditable)
             .animation(.easeInOut(duration: 0.3), value: tab.isEditing)
-    }
-
-    /// Back, forward, and the address, in the CONTENT — not the toolbar.
-    /// A macOS toolbar item rebuilds and reparents its hosted views on
-    /// every state change (a load tick, a title arriving, page status
-    /// resolving), and reparenting a focused field resigns it: you could
-    /// type exactly one character before the keyboard vanished. In the
-    /// content view the field is stable, so typing simply works.
-    private var navigationRow: some View {
-        HStack(spacing: 12) {
-            HStack(spacing: 6) {
-                Button { tab.webView.goBack() } label: {
-                    Image(systemName: "chevron.left")
-                        .frame(width: 24, height: 22)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.borderless)
-                .disabled(!tab.canGoBack)
-                .help("Back (⌘[)")
-
-                Button { tab.webView.goForward() } label: {
-                    Image(systemName: "chevron.right")
-                        .frame(width: 24, height: 22)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.borderless)
-                .disabled(!tab.canGoForward)
-                .help("Forward (⌘])")
-            }
-            .foregroundStyle(.secondary)
-
-            addressCapsule
-                .frame(maxWidth: 620)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 7)
-        .frame(maxWidth: .infinity)
-        .background(.bar)
     }
 
     /// The page fills its pane, Safari-style — no gutter, no drawn card.
@@ -1249,7 +1204,6 @@ struct TabContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            navigationRow
             if tab.isEditing {
                 // Preview's markup bar: the format row belongs to the
                 // editing mode, and arrives as one coordinated motion
@@ -1294,11 +1248,6 @@ struct TabContentView: View {
         }
         .navigationTitle("")
         .toolbar { toolbarContent }
-        // The toolbar wears the sidebar's material, so the top strip and
-        // the left strip read as one piece of window chrome with the page
-        // as content inside it — Safari's cohesion, not a white bar
-        // stapled above a gray pane.
-        .toolbarBackground(.regularMaterial, for: .windowToolbar)
         .onAppear {
             // Your own pages always load fresh — never a stale cached copy
             // of something you just published.
@@ -1313,7 +1262,7 @@ struct TabContentView: View {
             }
         }
         .onChange(of: tab.urlString) { _, newValue in
-            if !addressEditingText { addressText = newValue }
+            if !addressFocused { addressText = newValue }
             previewSha = nil
         }
         // The inspector is a system inspector column: glass, resizable,
@@ -1428,7 +1377,7 @@ struct TabContentView: View {
     private var prettyAddress: (host: String, path: String)? {
         // Safari's manner: the address reads as a name at rest — scheme
         // and www only appear when the field is focused for editing.
-        guard cleanAddresses, !addressEditingText,
+        guard cleanAddresses, !addressFocused,
               let url = URL(string: tab.urlString),
               let host = url.host()
         else { return nil }
@@ -1439,115 +1388,7 @@ struct TabContentView: View {
     }
 
     private var addressCapsule: some View {
-        HStack(spacing: 7) {
-            Image(systemName: isPageEditable ? "pencil.circle.fill" : "globe")
-                .font(.system(size: 13, weight: .medium))
-                .symbolRenderingMode(isPageEditable ? .palette : .monochrome)
-                .foregroundStyle(
-                    isPageEditable ? AnyShapeStyle(Color.black) : AnyShapeStyle(.tertiary),
-                    AnyShapeStyle(timYellow)
-                )
-                .contentTransition(.symbolEffect(.replace))
-                .help(isPageEditable ? "This page is yours — ⌘E edits it, Done publishes it." : "")
-
-            // Contextual page actions sit on the LEFT with the identity
-            // badge, where Safari keeps its reader and extension buttons.
-            // The right side stays uncluttered: reload, and nothing else.
-            let canCreate = matchedSite != nil && tab.lastHTTPStatus == 404 && !tab.isEditing
-            let canClaim = matchedSite == nil && !siteStore.sites.isEmpty && !tab.isEditing
-                && (tab.webView.url?.scheme?.hasPrefix("http") ?? false)
-            Button {
-                if canCreate { createMissingPage() } else if canClaim { showImportSheet = true }
-            } label: {
-                Image(systemName: canCreate ? "plus.circle.fill" : "arrow.down.circle.fill")
-                    .font(.system(size: 13, weight: .medium))
-                    .symbolRenderingMode(.palette)
-                    .foregroundStyle(Color.black, AnyShapeStyle(timYellow))
-                    .frame(width: 18, height: 18)
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .opacity(canCreate || canClaim ? 1 : 0)
-            .allowsHitTesting(canCreate || canClaim)
-            .help(canCreate
-                  ? "This page doesn't exist on your site yet — create and publish it at this address."
-                  : "Make It Mine — copy this page, with its images, styles, and fonts, onto your own site, ready to edit.")
-
-            ZStack {
-                TextField("Search or enter address", text: $addressText, onEditingChanged: { editing in
-                    if editing { addressText = tab.urlString }
-                    addressEditingText = editing
-                })
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .multilineTextAlignment(addressEditingText ? .leading : .center)
-                    .foregroundStyle(prettyAddress == nil ? AnyShapeStyle(.primary) : AnyShapeStyle(.clear))
-                    .focused($addressFocused)
-                    .onSubmit { tab.navigate(to: addressText) }
-                // At rest the address reads like a name: host strong, path
-                // quiet. Always present, hidden by opacity — a conditional
-                // here would restructure the item and drop the keyboard.
-                HStack(spacing: 0) {
-                    Text(prettyAddress?.host ?? "")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.primary)
-                    Text(prettyAddress?.path ?? "")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.tertiary)
-                }
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .opacity(prettyAddress == nil ? 0 : 1)
-                .allowsHitTesting(false)
-            }
-            .frame(maxWidth: .infinity)
-
-            Button {
-                if tab.isLoading { tab.webView.stopLoading() } else { tab.webView.reload() }
-            } label: {
-                Image(systemName: tab.isLoading ? "xmark" : "arrow.clockwise")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 18, height: 18)
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .help(tab.isLoading ? "Stop" : "Reload (⌘R)")
-        }
-        .padding(.horizontal, 11)
-        .frame(height: 30)
-        // ONE shape, one edge: the glass capsule is the whole chrome.
-        // Ownership rides the glass itself as a yellow tint — no second
-        // stroke, no glow, no pills inside pills.
-        .clipShape(Capsule(style: .continuous))
-        // A whisper of yellow, not a highlighter: ownership is carried by
-        // the pencil badge; the glass only leans warm.
-        .glassEffect(
-            (isPageEditable ? Glass.regular.tint(timYellow.opacity(0.14)) : Glass.regular).interactive(),
-            in: Capsule(style: .continuous)
-        )
-        .overlay {
-            // Focused, the capsule takes a key-colored ring so there is
-            // never a doubt where typing goes. Always in the tree, shown
-            // by opacity — structure never changes while you type.
-            Capsule(style: .continuous)
-                .strokeBorder(Color.accentColor, lineWidth: 2.5)
-                .opacity(addressEditingText ? 1 : 0)
-                .allowsHitTesting(false)
-        }
-        .overlay(alignment: .bottomLeading) {
-            // Loading is a hairline of light along the capsule's floor.
-            if tab.isLoading {
-                Capsule()
-                    .fill(Color.accentColor)
-                    .frame(width: max(26, 500 * tab.loadingProgress), height: 2)
-                    .padding(.leading, 14)
-                    .padding(.bottom, 1.5)
-                    .animation(.easeOut(duration: 0.3), value: tab.loadingProgress)
-                    .allowsHitTesting(false)
-            }
-        }
-        .animation(.easeOut(duration: 0.22), value: isPageEditable)
+        AddressBar(tab: tab)
     }
 
     /// Entering edit mode materializes a derived site (a Tim page on a
@@ -2178,6 +2019,28 @@ struct TabContentView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            HStack(spacing: 12) {
+                HStack(spacing: 6) {
+                    Button { tab.webView.goBack() } label: {
+                        Image(systemName: "chevron.left")
+                            .frame(width: 24, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .disabled(!tab.canGoBack)
+                    .help("Back (⌘[)")
+                    Button { tab.webView.goForward() } label: {
+                        Image(systemName: "chevron.right")
+                            .frame(width: 24, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .disabled(!tab.canGoForward)
+                    .help("Forward (⌘])")
+                }
+                addressCapsule
+                    .frame(minWidth: 280, idealWidth: 470, maxWidth: 560)
+            }
+        }
 
         ToolbarItemGroup(placement: .primaryAction) {
             Picker("", selection: $viewMode) {
@@ -6475,154 +6338,104 @@ struct ImportSheet: View {
     }
 }
 
-// MARK: - The address field, the way Safari builds one: a real AppKit
-// text field. A SwiftUI TextField inside a macOS toolbar item is torn
-// down and rebuilt whenever the toolbar re-evaluates — and it takes
-// first responder with it, which is why typing kept dying mid-URL. An
-// NSTextField owns its own editing session; nothing SwiftUI does above
-// it can interrupt the keyboard.
 
-final class TimAddressTextField: NSTextField {
-    /// The real address, kept current by the representable so focus can
-    /// reveal it without asking SwiftUI for anything.
-    var fullValue: String = ""
 
-    override func becomeFirstResponder() -> Bool {
-        let ok = super.becomeFirstResponder()
-        if ok {
-            // Reveal the editable address through the FIELD EDITOR, once
-            // it exists. Assigning stringValue instead — or doing this in
-            // controlTextDidBeginEditing, which fires after the first
-            // character — tore the editor down and swallowed keystroke one.
-            DispatchQueue.main.async { [weak self] in
-                guard let self, let editor = self.currentEditor() else { return }
-                self.alignment = .natural
-                self.textColor = .labelColor
-                editor.string = self.fullValue
-                editor.selectAll(nil)
+// MARK: - The address bar, done the way a Mac browser does it: one field,
+// in the toolbar, self-contained. Every input here is the tab reference
+// or the environment — never the window's @State — so a keystroke
+// re-evaluates THIS view and nothing above it. A toolbar item whose
+// content is rebuilt loses first responder; this one's content never
+// changes shape or identity, so it is never rebuilt.
+struct AddressBar: View {
+    @ObservedObject var tab: Tab
+    @EnvironmentObject var siteStore: SiteStore
+    @AppStorage("tim.cleanAddresses") private var cleanAddresses = true
+    @State private var text = ""
+    @FocusState private var focused: Bool
+
+    private var isEditable: Bool {
+        siteStore.isEditable(URL(string: tab.urlString), timAuthored: tab.isTimPage)
+    }
+
+    /// Safari's manner: at rest the address reads as a name — scheme and
+    /// www gone — and the full URL appears the moment you click in. Done
+    /// by changing what the ONE field shows, not by stacking a label over
+    /// a transparent field.
+    private var restText: String {
+        guard cleanAddresses, let url = URL(string: tab.urlString), let host = url.host() else {
+            return tab.urlString
+        }
+        let clean = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        let path = (url.path == "/" || url.path.isEmpty) ? "" : url.path
+        return clean + path
+    }
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: isEditable ? "pencil.circle.fill" : "globe")
+                .font(.system(size: 13, weight: .medium))
+                .symbolRenderingMode(isEditable ? .palette : .monochrome)
+                .foregroundStyle(
+                    isEditable ? AnyShapeStyle(Color.black) : AnyShapeStyle(.tertiary),
+                    AnyShapeStyle(timYellow)
+                )
+                .help(isEditable ? "This page is yours — ⌘E edits it, Done publishes it." : "")
+
+            TextField("Search or enter address", text: $text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13, weight: focused ? .regular : .medium))
+                .multilineTextAlignment(focused ? .leading : .center)
+                .focused($focused)
+                .onSubmit {
+                    tab.navigate(to: text)
+                    focused = false
+                }
+                .frame(maxWidth: .infinity)
+
+            Button {
+                if tab.isLoading { tab.webView.stopLoading() } else { tab.webView.reload() }
+            } label: {
+                Image(systemName: tab.isLoading ? "xmark" : "arrow.clockwise")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                    .contentShape(Circle())
             }
+            .buttonStyle(.plain)
+            .help(tab.isLoading ? "Stop" : "Reload (⌘R)")
         }
-        return ok
-    }
-}
-
-/// The field lives HERE, not in the view tree. A macOS toolbar item is
-/// rebuilt constantly — every load tick, title change, and background
-/// activity — and a rebuilt NSViewRepresentable would hand back a brand
-/// new text field, dropping first responder mid-keystroke. Owning one
-/// instance for the tab's lifetime means every rebuild reattaches the
-/// SAME field, and the editing session simply continues.
-final class AddressFieldHolder: ObservableObject {
-    let field = TimAddressTextField()
-}
-
-/// A box for in-progress typing that SwiftUI does not observe.
-final class AddressBuffer {
-    var text: String = ""
-}
-
-struct AddressField: NSViewRepresentable {
-    let field: TimAddressTextField
-    /// The full URL, revealed while editing.
-    let fullValue: String
-    /// Host + path, shown at rest with the host emphasized.
-    let pretty: (host: String, path: String)?
-    let onSubmit: (String) -> Void
-
-    func makeNSView(context: Context) -> TimAddressTextField {
-        field.isBordered = false
-        field.drawsBackground = false
-        field.isEditable = true
-        field.isSelectable = true
-        // AppKit draws the focus ring itself. Reporting focus up to
-        // SwiftUI re-evaluated the toolbar, which reattached the hosting
-        // view and dropped first responder on the spot — the field would
-        // light up and then refuse every keystroke.
-        field.focusRingType = .default
-        field.font = .systemFont(ofSize: 13)
-        field.lineBreakMode = .byTruncatingMiddle
-        field.cell?.usesSingleLineMode = true
-        field.cell?.wraps = false
-        field.cell?.isScrollable = true
-        field.placeholderString = "Search or enter address"
-        field.delegate = context.coordinator
-        field.target = context.coordinator
-        field.action = #selector(Coordinator.submit(_:))
-        return field
-    }
-
-    func updateNSView(_ field: TimAddressTextField, context: Context) {
-        context.coordinator.parent = self
-        field.fullValue = fullValue
-        // While the user is typing, the field is theirs alone: no
-        // restyling, no restring, nothing that could end the session.
-        guard !context.coordinator.editing else { return }
-        restRendering(on: field)
-    }
-
-    /// At rest the address reads like a name: host strong, path quiet.
-    func restRendering(on field: TimAddressTextField) {
-        field.alignment = .center
-        if let pretty {
-            let attributed = NSMutableAttributedString(
-                string: pretty.host,
-                attributes: [
-                    .font: NSFont.systemFont(ofSize: 13, weight: .medium),
-                    .foregroundColor: NSColor.labelColor
-                ]
-            )
-            attributed.append(NSAttributedString(
-                string: pretty.path,
-                attributes: [
-                    .font: NSFont.systemFont(ofSize: 13),
-                    .foregroundColor: NSColor.tertiaryLabelColor
-                ]
-            ))
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.alignment = .center
-            paragraph.lineBreakMode = .byTruncatingMiddle
-            attributed.addAttribute(.paragraphStyle, value: paragraph,
-                                    range: NSRange(location: 0, length: attributed.length))
-            field.attributedStringValue = attributed
-        } else {
-            field.stringValue = fullValue
-            field.textColor = .labelColor
+        .padding(.horizontal, 11)
+        .frame(height: 30)
+        .clipShape(Capsule(style: .continuous))
+        .glassEffect(
+            (isEditable ? Glass.regular.tint(timYellow.opacity(0.14)) : Glass.regular).interactive(),
+            in: Capsule(style: .continuous)
+        )
+        .overlay {
+            Capsule(style: .continuous)
+                .strokeBorder(Color.accentColor, lineWidth: 2.5)
+                .opacity(focused ? 1 : 0)
+                .allowsHitTesting(false)
         }
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
-
-    final class Coordinator: NSObject, NSTextFieldDelegate {
-        var parent: AddressField
-        var editing = false
-
-        init(parent: AddressField) { self.parent = parent }
-
-        func controlTextDidBeginEditing(_ obj: Notification) {
-            // Nothing but bookkeeping: the field's contents are the
-            // user's from this moment on. Touching them here is what
-            // swallowed the first keystroke.
-            editing = true
+        .overlay(alignment: .bottomLeading) {
+            Capsule()
+                .fill(Color.accentColor)
+                .frame(width: max(26, 500 * tab.loadingProgress), height: 2)
+                .padding(.leading, 14)
+                .padding(.bottom, 1.5)
+                .opacity(tab.isLoading ? 1 : 0)
+                .allowsHitTesting(false)
         }
-
-        // Deliberately no controlTextDidChange: publishing every keystroke
-        // to SwiftUI state re-evaluated the toolbar and killed the field
-        // on the FIRST character typed. The text belongs to AppKit until
-        // the user commits it.
-
-        func controlTextDidEndEditing(_ obj: Notification) {
-            editing = false
-            // Back to the name-like rendering, in AppKit — asking SwiftUI
-            // to do it would restart the very rebuild we are avoiding.
-            if let field = obj.object as? TimAddressTextField {
-                parent.restRendering(on: field)
-            }
+        .onAppear { text = restText }
+        .onChange(of: tab.urlString) { _, _ in
+            if !focused { text = restText }
         }
-
-        @objc func submit(_ sender: NSTextField) {
-            editing = false
-            parent.onSubmit(sender.stringValue)
-            sender.window?.makeFirstResponder(nil)
+        .onChange(of: cleanAddresses) { _, _ in
+            if !focused { text = restText }
+        }
+        .onChange(of: focused) { _, isFocused in
+            // Focus reveals the real address; blur returns to the name.
+            text = isFocused ? tab.urlString : restText
         }
     }
 }
