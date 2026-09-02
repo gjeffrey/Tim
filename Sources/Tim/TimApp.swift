@@ -118,6 +118,9 @@ struct TimApp: App {
                 .frame(minWidth: 900, minHeight: 560)
         }
         .windowToolbarStyle(.unified(showsTitle: false))
+        // A first window opens with room to edit — sidebar, page, inspector —
+        // not at the 900-point floor.
+        .defaultSize(width: 1360, height: 860)
         Settings {
             TimSettings()
         }
