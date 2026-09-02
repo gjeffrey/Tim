@@ -462,6 +462,7 @@ struct UnifiedSidebar: View {
 /// badge speaks the ownership grammar — a black pencil on Tim yellow
 /// when the page is yours, a quiet globe when it isn't.
 struct TabCard: View {
+    @AppStorage("tim.experimental.makeItMine") private var makeItMineEnabled = false
     @ObservedObject var tab: Tab
     let isSelected: Bool
     let isDragging: Bool
@@ -490,7 +491,7 @@ struct TabCard: View {
     /// yours can be claimed. Both actions live in the field, Safari's way.
     private var canCreate: Bool { matchedSite != nil && tab.lastHTTPStatus == 404 && !tab.isEditing }
     private var canClaim: Bool {
-        matchedSite == nil && !siteStore.sites.isEmpty && !tab.isEditing
+        makeItMineEnabled && matchedSite == nil && !siteStore.sites.isEmpty && !tab.isEditing
             && (URL(string: tab.urlString)?.scheme?.hasPrefix("http") ?? false)
     }
 
@@ -1151,6 +1152,7 @@ struct TabContentView: View {
     @State private var showImportSheet = false
     @FocusState private var addressFocused: Bool
     @AppStorage("tim.cleanAddresses") private var cleanAddresses = true
+    @AppStorage("tim.experimental.makeItMine") private var makeItMineEnabled = false
 
     private var pageURL: URL? { URL(string: tab.urlString) }
     private var matchedSite: Site? {
@@ -6390,6 +6392,7 @@ struct AddressBar: View {
     let onCreate: () -> Void
     let onClaim: () -> Void
     @EnvironmentObject var siteStore: SiteStore
+    @AppStorage("tim.experimental.makeItMine") private var makeItMineEnabled = false
     @AppStorage("tim.cleanAddresses") private var cleanAddresses = true
     @State private var text = ""
     /// Editing state comes from the field itself (begin/end editing), NOT
@@ -6414,7 +6417,7 @@ struct AddressBar: View {
     /// yours can be claimed. Both actions live in the field, Safari's way.
     private var canCreate: Bool { matchedSite != nil && tab.lastHTTPStatus == 404 && !tab.isEditing }
     private var canClaim: Bool {
-        matchedSite == nil && !siteStore.sites.isEmpty && !tab.isEditing
+        makeItMineEnabled && matchedSite == nil && !siteStore.sites.isEmpty && !tab.isEditing
             && (URL(string: tab.urlString)?.scheme?.hasPrefix("http") ?? false)
     }
 

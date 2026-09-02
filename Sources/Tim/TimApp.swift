@@ -6,6 +6,19 @@ import Sparkle
 /// App settings — the small, opinionated set. Defaults lean clean;
 /// each toggle brings back the traditional chrome for those who want it.
 struct TimSettings: View {
+    var body: some View {
+        TabView {
+            GeneralSettings()
+                .tabItem { Label("General", systemImage: "gear") }
+            ExperimentalSettings()
+                .tabItem { Label("Experimental", systemImage: "flask") }
+        }
+        .frame(width: 440)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+struct GeneralSettings: View {
     @AppStorage("tim.cleanAddresses") private var cleanAddresses = true
     @AppStorage("tim.tabDomains") private var tabDomains = false
 
@@ -25,8 +38,29 @@ struct TimSettings: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 400)
-        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// The beta's rule: the core is what must be solid; everything else is
+/// an experiment you opt into here, off by default.
+struct ExperimentalSettings: View {
+    @AppStorage("tim.experimental.makeItMine") private var makeItMine = false
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Make It Mine", isOn: $makeItMine)
+                Text("Copy a page you're viewing — images, styles, fonts — onto your own site, ready to edit. Shows as a yellow button in the address bar on pages that aren't yours. Experimental: imports are frozen snapshots and linked pages aren't followed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Experiments")
+            } footer: {
+                Text("Experimental features may change or disappear between builds.")
+                    .font(.caption)
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 
@@ -76,6 +110,21 @@ struct TimApp: App {
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") { TimApp.checkForUpdates() }
+            }
+            // While a page is being edited, Undo/Redo are the canvas's — the
+            // menu's key equivalent fires before the web page ever sees ⌘Z,
+            // so it must be routed to the engine here.
+            CommandGroup(replacing: .undoRedo) {
+                Button("Undo") {
+                    if let tab = store.selectedTab, tab.isEditing { tab.undoEdit() }
+                    else { NSApp.sendAction(Selector(("undo:")), to: nil, from: nil) }
+                }
+                .keyboardShortcut("z", modifiers: .command)
+                Button("Redo") {
+                    if let tab = store.selectedTab, tab.isEditing { tab.redoEdit() }
+                    else { NSApp.sendAction(Selector(("redo:")), to: nil, from: nil) }
+                }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
             }
             CommandGroup(replacing: .newItem) {
                 Button("New Tab") { store.newTab() }
