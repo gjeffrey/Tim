@@ -1257,7 +1257,12 @@ struct TabContentView: View {
             .inspectorColumnWidth(min: 268, ideal: 288, max: 380)
         }
         .navigationTitle("")
-        .toolbar { toolbarContent }
+        // The toolbar hangs off an EQUATABLE anchor: its content is only
+        // re-supplied when something the toolbar actually renders from
+        // changes. A window re-evaluation caused by loading progress (a
+        // page whose trackers never settle) used to re-supply the toolbar
+        // and rebuild the address field mid-keystroke.
+        .background(ToolbarAnchor(key: toolbarKey) { toolbarContent }.equatable())
         .onAppear {
             // Your own pages always load fresh — never a stale cached copy
             // of something you just published.
@@ -2025,6 +2030,19 @@ struct TabContentView: View {
             try? FileManager.default.copyItem(at: url, to: destination)
             tab.navigate(to: destination.absoluteString)
         }
+    }
+
+    /// Everything the toolbar's appearance depends on. Loading state is
+    /// deliberately absent: the address bar observes that itself.
+    private var toolbarKey: ToolbarKey {
+        ToolbarKey(
+            isEditing: tab.isEditing, isMobilePreview: tab.isMobilePreview, viewMode: viewMode,
+            previewing: previewSha != nil, editable: isPageEditable,
+            canBack: tab.canGoBack, canForward: tab.canGoForward,
+            reviewDesktop: tab.reviewDesktop, reviewMobile: tab.reviewMobile,
+            matchedSite: matchedSite?.id, siteIDs: siteStore.sites.map(\.id),
+            tabID: tab.id
+        )
     }
 
     @ToolbarContentBuilder
@@ -6457,5 +6475,32 @@ struct AddressBar: View {
         .onChange(of: cleanAddresses) { _, _ in
             if !editing { text = restText }
         }
+    }
+}
+
+
+// MARK: - Toolbar isolation
+
+struct ToolbarKey: Equatable {
+    var isEditing: Bool, isMobilePreview: Bool, viewMode: Int
+    var previewing: Bool, editable: Bool
+    var canBack: Bool, canForward: Bool
+    var reviewDesktop: Int, reviewMobile: Int
+    var matchedSite: UUID?, siteIDs: [UUID]
+    var tabID: UUID
+}
+
+/// A zero-size view that carries the window's toolbar. Equatable on a
+/// value key, so SwiftUI skips its body — and never re-supplies the
+/// toolbar — when nothing the toolbar renders from has changed.
+struct ToolbarAnchor<T: ToolbarContent>: View, Equatable {
+    let key: ToolbarKey
+    @ToolbarContentBuilder let content: () -> T
+
+    static func == (a: ToolbarAnchor, b: ToolbarAnchor) -> Bool { a.key == b.key }
+
+    var body: some View {
+        let _ = timTrace("ToolbarAnchor body (toolbar re-supplied)")
+        return Color.clear.frame(width: 0, height: 0).toolbar { content() }
     }
 }

@@ -79,11 +79,21 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
                 self.urlString = absolute == "about:blank" ? "" : absolute
             }
         })
+        // Publish only on real change: a page whose trackers never settle
+        // fires these observers continuously, and every publish re-evaluates
+        // the window — which rebuilt the toolbar under a typing cursor.
         observations.append(webView.observe(\.isLoading, options: [.new]) { [weak self] view, _ in
-            DispatchQueue.main.async { self?.isLoading = view.isLoading }
+            DispatchQueue.main.async {
+                guard let self, self.isLoading != view.isLoading else { return }
+                self.isLoading = view.isLoading
+            }
         })
         observations.append(webView.observe(\.estimatedProgress, options: [.new]) { [weak self] view, _ in
-            DispatchQueue.main.async { self?.loadingProgress = view.estimatedProgress }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let quantized = (view.estimatedProgress * 50).rounded() / 50
+                if quantized != self.loadingProgress { self.loadingProgress = quantized }
+            }
         })
         observations.append(webView.observe(\.canGoBack, options: [.new]) { [weak self] view, _ in
             DispatchQueue.main.async { self?.canGoBack = view.canGoBack }
