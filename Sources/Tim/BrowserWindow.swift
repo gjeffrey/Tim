@@ -33,6 +33,7 @@ extension Notification.Name {
     static let timReplaceMedia = Notification.Name("tim.replaceMedia")
     static let timUpscaleMedia = Notification.Name("tim.upscaleMedia")
     static let timMovePage = Notification.Name("tim.movePage")
+    static let timResumeDraft = Notification.Name("tim.resumeDraft")
     static let timBounceVideo = Notification.Name("tim.bounceVideo")
 }
 
@@ -511,6 +512,9 @@ struct TabCard: View {
                             .frame(width: 18, height: 6)
                             .clipShape(Capsule())
                             .help("Under construction — being edited, not published yet.")
+                    } else if tab.hasDraft {
+                        Circle().strokeBorder(timYellow, lineWidth: 1.5).frame(width: 6, height: 6)
+                            .help("A draft of this page is waiting.")
                     }
                 }
                 if tabDomains {
@@ -717,11 +721,40 @@ struct SiteSection: View {
                     }
                 }
 
-                if versions.count > 1 {
+                if versions.count > 1 || tab.hasDraft {
                     Text("History")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .padding(.top, 4)
+                    if tab.hasDraft, !tab.isEditing {
+                        Button {
+                            NotificationCenter.default.post(name: .timResumeDraft, object: nil)
+                        } label: {
+                            HStack(spacing: 7) {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 4, style: .continuous).fill(timYellow.opacity(0.25))
+                                    Image(systemName: "pencil.and.outline")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .frame(width: 44, height: 28)
+                                .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(timYellow, style: StrokeStyle(lineWidth: 1, dash: [3, 2])))
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text("Draft").font(.system(size: 11, weight: .medium))
+                                    Text(tab.draftDate.map { historyLabel($0) } ?? "unpublished")
+                                        .font(.system(size: 9.5)).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Unpublished changes saved on this Mac. Click to continue or discard.")
+                        .contextMenu {
+                            Button("Continue Draft…") { NotificationCenter.default.post(name: .timResumeDraft, object: nil) }
+                            Button("Discard Draft", role: .destructive) { tab.discardDraft() }
+                        }
+                    }
                     ForEach(versions) { version in
                         Button {
                             NotificationCenter.default.post(
@@ -1277,7 +1310,7 @@ struct TabContentView: View {
             // (Only the column width is pinned: a fixed .frame on the
             // content as well made the split view's min/max size flip
             // during a constraint pass — an AppKit exception and a crash.)
-            .inspectorColumnWidth(min: 280, ideal: 300, max: 320)
+            .inspectorColumnWidth(300)
         }
         .navigationTitle("")
         // The toolbar wears the sidebar's material — one piece of chrome.
@@ -1372,6 +1405,9 @@ struct TabContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .timDuplicatePage)) { _ in
             duplicatePage()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .timResumeDraft)) { _ in
+            if store.selectedTab === tab, tab.hasDraft, !tab.isEditing { askAboutDraft() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .timMovePage)) { _ in
             if store.selectedTab === tab, let s = siteStore.match(pageURL), s.target == .sftp || s.target == .cloudflare || s.target == .githubPages {
                 moveSite = ensureWorkspace(s)
@@ -1442,7 +1478,7 @@ struct TabContentView: View {
     }
 
     private var addressCapsule: some View {
-        AddressBar(tab: tab, onCreate: { createMissingPage() }, onClaim: { showImportSheet = true })
+        AddressBar(tab: tab, onCreate: { createMissingPage() }, onClaim: { showImportSheet = true }, onDraft: { askAboutDraft() })
     }
 
     /// Entering edit mode materializes a derived site (a Tim page on a
@@ -1461,8 +1497,60 @@ struct TabContentView: View {
     }
 
     private func beginEditing() {
+        if tab.hasDraft { askAboutDraft(); return }
+        startEditingFresh()
+    }
+
+    private func startEditingFresh() {
         if let matched = matchedSite { _ = ensureWorkspace(matched) }
         withoutMotion { tab.setEditing(true) }
+    }
+
+    /// A draft is a question, not a fait accompli: it may be stale — the
+    /// page could have been published from another Mac since — so the
+    /// dates are laid side by side before anything happens.
+    private func askAboutDraft() {
+        guard let url = tab.webView.url else { return }
+        let df = DateFormatter(); df.dateStyle = .medium; df.timeStyle = .short
+        let draftWhen = tab.draftDate.map { df.string(from: $0) } ?? "earlier"
+        var request = URLRequest(url: url); request.httpMethod = "HEAD"; request.cachePolicy = .reloadIgnoringLocalCacheData
+        URLSession.shared.dataTask(with: request) { _, response, _ in
+            let lastModified = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Last-Modified")
+            DispatchQueue.main.async {
+                let alert = NSAlert()
+                alert.messageText = "Continue your draft?"
+                var text = "You have an unpublished draft of this page from \(draftWhen), saved on this Mac."
+                if let lm = lastModified, let lmDate = Self.httpDate(lm) {
+                    let newer = tab.draftDate.map { lmDate > $0 } ?? false
+                    text += newer
+                        ? "\n\nThe published page changed on \(df.string(from: lmDate)) — after this draft. Continuing would replace those changes when you press Done."
+                        : "\n\nThe published page hasn't changed since (last published \(df.string(from: lmDate)))."
+                }
+                alert.informativeText = text
+                alert.addButton(withTitle: "Continue Draft")
+                alert.addButton(withTitle: "Edit Published Page")
+                alert.addButton(withTitle: "Cancel")
+                let discard = alert.addButton(withTitle: "Discard Draft")
+                discard.hasDestructiveAction = true
+                switch alert.runModal() {
+                case .alertFirstButtonReturn:
+                    if let matched = matchedSite { _ = ensureWorkspace(matched) }
+                    tab.resumeDraft()
+                case .alertSecondButtonReturn:
+                    startEditingFresh()
+                case .alertThirdButtonReturn:
+                    break
+                default:
+                    tab.discardDraft()
+                }
+            }
+        }.resume()
+    }
+
+    private static func httpDate(_ s: String) -> Date? {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(secondsFromGMT: 0)
+        f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return f.date(from: s)
     }
 
     /// The DOM about to be saved must still belong to the page this edit
@@ -7066,6 +7154,7 @@ struct AddressBar: View {
     @ObservedObject var tab: Tab
     let onCreate: () -> Void
     let onClaim: () -> Void
+    var onDraft: () -> Void = {}
     @EnvironmentObject var siteStore: SiteStore
     @AppStorage("tim.experimental.makeItMine") private var makeItMineEnabled = false
     @AppStorage("tim.cleanAddresses") private var cleanAddresses = true
@@ -7138,6 +7227,23 @@ struct AddressBar: View {
             .help(canCreate
                   ? "This page doesn't exist on your site yet — create and publish it at this address."
                   : "Make It Mine — copy this page, with its images, styles, and fonts, onto your own site, ready to edit.")
+
+            // A draft waiting on this page: Safari's in-field pattern, same
+            // opacity-stable rule as the button above.
+            Button {
+                onDraft()
+            } label: {
+                Text("Draft")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(Color.black)
+                    .padding(.horizontal, 7)
+                    .frame(height: 18)
+                    .background(Capsule().fill(timYellow))
+            }
+            .buttonStyle(.plain)
+            .opacity(tab.hasDraft && !tab.isEditing ? 1 : 0)
+            .allowsHitTesting(tab.hasDraft && !tab.isEditing)
+            .help("An unpublished draft of this page is saved on this Mac — continue it, or discard it.")
 
             TextField("Search or enter address", text: $text, onEditingChanged: { began in
                 // begin-editing re-fires on keystrokes (the trace showed five

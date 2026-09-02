@@ -40,6 +40,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     /// One-shot: the next page load must not auto-resume a draft (set
     /// while showing a version preview, which loads over the same URL).
     public var suppressDraftResume = false
+    /// An unpublished draft of this page exists on this Mac.
+    @Published public var hasDraft = false
     @Published public var isLoading: Bool = false
     @Published public var loadingProgress: Double = 0
     @Published public var canGoBack: Bool = false
@@ -88,6 +90,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         """, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         #endif
 
+        NotificationCenter.default.addObserver(forName: DraftStore.changed, object: nil, queue: .main) { [weak self] _ in
+            self?.refreshDraftState()
+        }
         observations.append(webView.observe(\.title, options: [.new]) { [weak self] view, _ in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -3090,17 +3095,16 @@ extension Tab: WKNavigationDelegate {
             self?.isTimPage = (result as? Bool) ?? false
         }
         applyPreviewViewport()
-        // An unfinished edit of this page picks up where it left off.
+        // A draft is offered, never imposed: the page loads as published,
+        // and the draft shows in the address bar and History. Only an
+        // explicit resumeDraft() brings it back into edit mode.
         if restoringDraft {
             restoringDraft = false
             setEditing(true)
-        } else if suppressDraftResume {
+        } else {
             suppressDraftResume = false
-        } else if let url = webView.url, !url.isFileURL,
-                  let draft = DraftStore.html(for: url.absoluteString) {
-            restoringDraft = true
-            webView.loadHTMLString(draft, baseURL: url)
         }
+        refreshDraftState()
     }
 
     public func refreshReviewCounts() {
@@ -3116,10 +3120,33 @@ extension Tab: WKNavigationDelegate {
 
     /// Stashes the current edit session (called before navigating away,
     /// and every few seconds while editing).
+    public func refreshDraftState() {
+        let value = webView.url.map { !$0.isFileURL && DraftStore.has($0.absoluteString) } ?? false
+        if value != hasDraft { hasDraft = value }
+    }
+
+    /// Continue the draft: its DOM replaces the page and editing begins.
+    public func resumeDraft() {
+        guard let url = webView.url, let draft = DraftStore.html(for: url.absoluteString) else { return }
+        restoringDraft = true
+        webView.loadHTMLString(draft, baseURL: url)
+    }
+
+    /// Throw the draft away; the published page stays as it is.
+    public func discardDraft() {
+        guard let url = webView.url else { return }
+        DraftStore.clear(for: url.absoluteString)
+        hasDraft = false
+    }
+
+    public var draftDate: Date? {
+        webView.url.flatMap { DraftStore.date(for: $0.absoluteString) }
+    }
+
     public func stashDraft(_ completion: (() -> Void)? = nil) {
         guard isEditing, let url = webView.url, !url.isFileURL else { completion?(); return }
         currentHTML { html in
-            if let html { DraftStore.save(html, for: url.absoluteString) }
+            if let html { DraftStore.save(html, for: url.absoluteString); self?.hasDraft = true }
             completion?()
         }
     }

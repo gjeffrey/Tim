@@ -2,10 +2,11 @@ import Foundation
 
 /// Unfinished edits survive anything: while a page is in edit mode its
 /// DOM is stashed here (every few seconds, and before any navigation
-/// away), keyed by page URL. Opening the page again resumes the session
-/// exactly where it was; Done publishes and clears. This is what lets
-/// you wander off mid-edit — other pages, other tabs, quit the app —
-/// and come back to finish.
+/// away), keyed by page URL. A draft is a history entry that hasn't been
+/// published: opening the page shows the PUBLISHED page, with the draft
+/// offered — in the address bar, in History — to continue or discard.
+/// Nothing drops you back into edit mode on its own; the page may have
+/// changed from another Mac since. Done publishes and clears.
 public enum DraftStore {
     public static let changed = Notification.Name("tim.draftsChanged")
 
@@ -31,6 +32,10 @@ public enum DraftStore {
 
     public static func html(for url: String) -> String? {
         try? String(contentsOf: file(for: url), encoding: .utf8)
+    }
+
+    public static func date(for url: String) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: file(for: url).path))?[.modificationDate] as? Date
     }
 
     public static func has(_ url: String) -> Bool {

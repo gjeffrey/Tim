@@ -474,7 +474,15 @@ struct PadBrowser: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(publishing)
             } else if isPageEditable {
-                Button("Edit") { tab.setEditing(true) }
+                Button(tab.hasDraft ? "Continue Draft" : "Edit") {
+                    if tab.hasDraft { tab.resumeDraft() } else { tab.setEditing(true) }
+                }
+                .contextMenu {
+                    if tab.hasDraft {
+                        Button("Edit Published Page") { tab.setEditing(true) }
+                        Button("Discard Draft", role: .destructive) { tab.discardDraft() }
+                    }
+                }
                     .buttonStyle(.bordered)
                     .tint(.accentColor)
             }
