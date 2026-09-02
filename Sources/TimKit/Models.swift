@@ -1,11 +1,19 @@
 import Foundation
 import WebKit
+#if os(macOS)
+import AppKit
+#endif
 
 /// One browser tab. Owns its WKWebView and mirrors its state for SwiftUI.
 /// WKWebView is the same engine on macOS, iOS, and iPadOS, so Tab is
 /// fully cross-platform.
 public final class Tab: NSObject, ObservableObject, Identifiable {
     public let id = UUID()
+
+    /// True while the address bar is being typed into. Deliberately NOT
+    /// published — nothing should re-render on it. The web view consults
+    /// it to refuse focus stolen by page scripts.
+    public var addressEditing = false
 
     @Published public var title: String = "New Tab"
     @Published public var urlString: String = ""
@@ -51,13 +59,14 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         // included) don't recognize Safari and serve different markup.
         configuration.applicationNameForUserAgent = "Version/26.0 Safari/605.1.15"
         configuration.preferences.isElementFullscreenEnabled = true
-        webView = WKWebView(frame: .zero, configuration: configuration)
+        webView = TimWebView(frame: .zero, configuration: configuration)
         webView.allowsBackForwardNavigationGestures = true
         webView.isInspectable = true
         #if os(macOS)
         webView.allowsMagnification = true
         #endif
         super.init()
+        (webView as? TimWebView)?.addressEditing = { [weak self] in self?.addressEditing ?? false }
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.configuration.userContentController.add(self, name: "timSel")
@@ -3034,4 +3043,24 @@ public final class BrowserStore: ObservableObject {
         if tabs.isEmpty { newTab() }
         persistSession()
     }
+}
+
+
+/// A web view that won't steal the keyboard from the address bar. Pages
+/// call focus() as they load — news sites keep doing it for seconds while
+/// trackers settle — and a plain WKWebView becomes first responder every
+/// time, swallowing the URL you're typing. Safari's rule: while the
+/// address field is editing, only a real click into the page moves focus.
+public final class TimWebView: WKWebView {
+    public var addressEditing: () -> Bool = { false }
+
+    #if os(macOS)
+    public override func becomeFirstResponder() -> Bool {
+        if addressEditing() {
+            let type = NSApp.currentEvent?.type
+            if type != .leftMouseDown && type != .rightMouseDown && type != .otherMouseDown { return false }
+        }
+        return super.becomeFirstResponder()
+    }
+    #endif
 }

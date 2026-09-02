@@ -1,11 +1,4 @@
 import SwiftUI
-/// Ground-truth tracing to a file (unified log wasn't capturing this process).
-func timTrace(_ m: String) {
-    let path = "/private/tmp/timtrace.log"
-    let line = "\(Date().timeIntervalSince1970) \(m)\n"
-    if let h = FileHandle(forWritingAtPath: path) { h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile() }
-    else { FileManager.default.createFile(atPath: path, contents: line.data(using: .utf8)) }
-}
 
 import AppKit
 import WebKit
@@ -341,8 +334,7 @@ struct BrowserWindow: View {
     // wallpaper glows through the sidebar glass, the toolbar unifies
     // with the window, and the whole app reads native instead of built.
     var body: some View {
-        let _ = timTrace("BrowserWindow body")
-        return NavigationSplitView(columnVisibility: $columns) {
+        NavigationSplitView(columnVisibility: $columns) {
             UnifiedSidebar()
                 .navigationSplitViewColumnWidth(min: 240, ideal: 256, max: 320)
         } detail: {
@@ -486,6 +478,20 @@ struct TabCard: View {
 
     private var isEditable: Bool {
         siteStore.isEditable(URL(string: tab.urlString), timAuthored: tab.isTimPage)
+    }
+
+    private var matchedSite: Site? {
+        let url = URL(string: tab.urlString)
+        if let site = siteStore.match(url) { return site }
+        guard tab.isTimPage || tab.lastHTTPStatus == 404, let url else { return nil }
+        return siteStore.derivedSite(for: url)
+    }
+    /// A missing page on your own site can be created; a page that isn't
+    /// yours can be claimed. Both actions live in the field, Safari's way.
+    private var canCreate: Bool { matchedSite != nil && tab.lastHTTPStatus == 404 && !tab.isEditing }
+    private var canClaim: Bool {
+        matchedSite == nil && !siteStore.sites.isEmpty && !tab.isEditing
+            && (URL(string: tab.urlString)?.scheme?.hasPrefix("http") ?? false)
     }
 
     private var subtitle: String {
@@ -1212,8 +1218,7 @@ struct TabContentView: View {
     }
 
     var body: some View {
-        let _ = timTrace("TabContentView body load=\(tab.isLoading) prog=\(Int(tab.loadingProgress * 100)) title=\(tab.title.prefix(10)) back=\(tab.canGoBack) fwd=\(tab.canGoForward) edit=\(tab.isEditing) selInfo=\(tab.selectionInfo != nil) rev=\(tab.reviewDesktop)/\(tab.reviewMobile) status=\(tab.lastHTTPStatus) tim=\(tab.isTimPage) mob=\(tab.isMobilePreview) acts=\(ActivityCenter.shared.activities.count) sites=\(siteStore.sites.count) tabs=\(store.tabs.count) selTab=\(store.selectedTabID?.uuidString.prefix(4) ?? "-") url=\(tab.urlString.suffix(18))")
-        return VStack(spacing: 0) {
+        VStack(spacing: 0) {
             if tab.isEditing {
                 // Preview's markup bar: the format row belongs to the
                 // editing mode, and arrives as one coordinated motion
@@ -1257,6 +1262,8 @@ struct TabContentView: View {
             .inspectorColumnWidth(min: 268, ideal: 288, max: 380)
         }
         .navigationTitle("")
+        // The toolbar wears the sidebar's material — one piece of chrome.
+        .toolbarBackground(.regularMaterial, for: .windowToolbar)
         // The toolbar hangs off an EQUATABLE anchor: its content is only
         // re-supplied when something the toolbar actually renders from
         // changes. A window re-evaluation caused by loading progress (a
@@ -1403,7 +1410,7 @@ struct TabContentView: View {
     }
 
     private var addressCapsule: some View {
-        AddressBar(tab: tab)
+        AddressBar(tab: tab, onCreate: { createMissingPage() }, onClaim: { showImportSheet = true })
     }
 
     /// Entering edit mode materializes a derived site (a Tim page on a
@@ -6376,7 +6383,8 @@ struct ImportSheet: View {
 // changes shape or identity, so it is never rebuilt.
 struct AddressBar: View {
     @ObservedObject var tab: Tab
-    private func trace(_ m: String) -> EmptyView { timTrace("AddressBar \(m)"); return EmptyView() }
+    let onCreate: () -> Void
+    let onClaim: () -> Void
     @EnvironmentObject var siteStore: SiteStore
     @AppStorage("tim.cleanAddresses") private var cleanAddresses = true
     @State private var text = ""
@@ -6390,6 +6398,20 @@ struct AddressBar: View {
 
     private var isEditable: Bool {
         siteStore.isEditable(URL(string: tab.urlString), timAuthored: tab.isTimPage)
+    }
+
+    private var matchedSite: Site? {
+        let url = URL(string: tab.urlString)
+        if let site = siteStore.match(url) { return site }
+        guard tab.isTimPage || tab.lastHTTPStatus == 404, let url else { return nil }
+        return siteStore.derivedSite(for: url)
+    }
+    /// A missing page on your own site can be created; a page that isn't
+    /// yours can be claimed. Both actions live in the field, Safari's way.
+    private var canCreate: Bool { matchedSite != nil && tab.lastHTTPStatus == 404 && !tab.isEditing }
+    private var canClaim: Bool {
+        matchedSite == nil && !siteStore.sites.isEmpty && !tab.isEditing
+            && (URL(string: tab.urlString)?.scheme?.hasPrefix("http") ?? false)
     }
 
     /// Safari's manner: at rest the address reads as a name — scheme and
@@ -6416,8 +6438,26 @@ struct AddressBar: View {
                 )
                 .help(isEditable ? "This page is yours — ⌘E edits it, Done publishes it." : "")
 
+            // Always in the layout, shown by opacity — a structural change
+            // beside the field would restart its editing session.
+            Button {
+                if canCreate { onCreate() } else if canClaim { onClaim() }
+            } label: {
+                Image(systemName: canCreate ? "plus.circle.fill" : "arrow.down.circle.fill")
+                    .font(.system(size: 13, weight: .medium))
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(Color.black, AnyShapeStyle(timYellow))
+                    .frame(width: 18, height: 18)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .opacity(canCreate || canClaim ? 1 : 0)
+            .allowsHitTesting(canCreate || canClaim)
+            .help(canCreate
+                  ? "This page doesn't exist on your site yet — create and publish it at this address."
+                  : "Make It Mine — copy this page, with its images, styles, and fonts, onto your own site, ready to edit.")
+
             TextField("Search or enter address", text: $text, onEditingChanged: { began in
-                timTrace("editing=\(began)")
                 // begin-editing re-fires on keystrokes (the trace showed five
                 // trues with no false). Only the TRANSITION may touch the
                 // text: reveal the real address when editing starts, restore
@@ -6425,11 +6465,17 @@ struct AddressBar: View {
                 guard began != editing else { return }
                 text = began ? tab.urlString : restText
                 editing = began
+                tab.addressEditing = began
             })
                 .textFieldStyle(.plain)
-                .font(.system(size: 13, weight: editing ? .regular : .medium))
-                .multilineTextAlignment(editing ? .leading : .center)
+                // CONSTANT while editing. Changing a field's font or
+                // alignment on focus rebuilds its cell and field editor on
+                // macOS — the editing session silently restarts and the
+                // keyboard is gone after one character. This was the bug.
+                .font(.system(size: 13, weight: .medium))
+                .multilineTextAlignment(.center)
                 .onSubmit {
+                    tab.addressEditing = false
                     tab.navigate(to: text)
                     NSApp.keyWindow?.makeFirstResponder(nil)
                 }
@@ -6469,10 +6515,8 @@ struct AddressBar: View {
                 .opacity(tab.isLoading ? 1 : 0)
                 .allowsHitTesting(false)
         }
-        .background(trace("body"))
-        .onAppear { text = restText; timTrace("AddressBar APPEAR") }
-        .onDisappear { timTrace("AddressBar DISAPPEAR") }
-        .onChange(of: text) { _, v in timTrace("text=\(v)") }
+        .onAppear { text = restText }
+        .onDisappear { tab.addressEditing = false }
         .onChange(of: tab.urlString) { _, _ in
             if !editing { text = restText }
         }
@@ -6504,7 +6548,6 @@ struct ToolbarAnchor<T: ToolbarContent>: View, Equatable {
     static func == (a: ToolbarAnchor, b: ToolbarAnchor) -> Bool { a.key == b.key }
 
     var body: some View {
-        let _ = timTrace("ToolbarAnchor body (toolbar re-supplied)")
-        return Color.clear.frame(width: 0, height: 0).toolbar { content() }
+        Color.clear.frame(width: 0, height: 0).toolbar { content() }
     }
 }

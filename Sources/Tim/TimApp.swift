@@ -51,7 +51,6 @@ struct TimApp: App {
     }
 
     init() {
-        timTrace("TimApp init")
         // Preload picker previews: warm the curated catalog's fonts
         // (download-once, persistent) so lists render instantly.
         GoogleFonts.prewarm(FontCatalog.options.compactMap { $0.googleQuery != nil ? $0.name : nil })
