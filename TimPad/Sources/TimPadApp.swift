@@ -383,14 +383,21 @@ struct PadBrowser: View {
                 .inspectorColumnWidth(min: 280, ideal: 300, max: 360)
         }
         .onAppear {
-            addressText = tab.urlString
+            addressText = prettyText
             // Desktop view means desktop, whatever the pane's width —
             // the layout viewport pins wide (scaled to fit) on iPad.
             tab.prefersDesktopViewport = UIDevice.current.userInterfaceIdiom == .pad
             tab.applyPreviewViewport()
         }
-        .onChange(of: tab.urlString) { _, value in
-            if !addressFocused { addressText = value }
+        .onChange(of: tab.urlString) { _, _ in
+            if !addressFocused { addressText = prettyText }
+        }
+        // The Mac's lessons, kept: the field's modifiers never change while
+        // it's being edited; the text swaps between the clean name and the
+        // full address only on the focus transition itself.
+        .onChange(of: addressFocused) { _, focused in
+            addressText = focused ? tab.urlString : prettyText
+            tab.addressEditing = focused
         }
         .onChange(of: tab.isLoading) { _, loading in
             // Thumbnails fall out of browsing, the Mac's way: owned pages
@@ -666,15 +673,13 @@ struct PadBrowser: View {
         }
     }
 
-    private var prettyAddress: (host: String, path: String)? {
-        guard !addressFocused,
-              let url = URL(string: tab.urlString),
-              let host = url.host()
-        else { return nil }
+    /// The address as a name: host and path, no scheme, no www.
+    private var prettyText: String {
+        guard let url = URL(string: tab.urlString), let host = url.host() else { return tab.urlString }
         let clean = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
         var path = url.path
-        if path == "/" || path.isEmpty { path = "" }
-        return (clean, path)
+        if path == "/" { path = "" }
+        return clean + path
     }
 
     private var addressCapsule: some View {
@@ -686,34 +691,20 @@ struct PadBrowser: View {
                     isPageEditable ? AnyShapeStyle(Color.black) : AnyShapeStyle(.tertiary),
                     AnyShapeStyle(timYellow)
                 )
-            ZStack {
-                TextField("Search or enter address", text: $addressText)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 15))
-                    .keyboardType(.URL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .multilineTextAlignment(addressFocused ? .leading : .center)
-                    .foregroundStyle(prettyAddress == nil ? AnyShapeStyle(.primary) : AnyShapeStyle(.clear))
-                    .focused($addressFocused)
-                    .onSubmit {
-                        tab.navigate(to: addressText)
-                        addressFocused = false
-                    }
-                if let pretty = prettyAddress {
-                    HStack(spacing: 0) {
-                        Text(pretty.host)
-                            .font(.system(size: 15, weight: .medium))
-                            .foregroundStyle(.primary)
-                        Text(pretty.path)
-                            .font(.system(size: 15))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .allowsHitTesting(false)
+            TextField("Search or enter address", text: $addressText)
+                .textFieldStyle(.plain)
+                .font(.system(size: 15, weight: .medium))
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .multilineTextAlignment(.center)
+                .submitLabel(.go)
+                .focused($addressFocused)
+                .onSubmit {
+                    tab.addressEditing = false
+                    tab.navigate(to: addressText)
+                    addressFocused = false
                 }
-            }
             .frame(maxWidth: .infinity)
             Button {
                 if tab.isLoading { tab.webView.stopLoading() } else { tab.webView.reload() }

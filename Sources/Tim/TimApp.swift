@@ -151,6 +151,9 @@ struct TimApp: App {
                 Button("Reload") { store.selectedTab?.webView.reload() }
                     .keyboardShortcut("r", modifiers: .command)
                 Divider()
+                Button("Submit to Showcase…") { NotificationCenter.default.post(name: .timSubmitShowcase, object: nil) }
+                    .disabled(URL(string: store.selectedTab?.urlString ?? "")?.scheme?.hasPrefix("http") != true)
+                Divider()
                 Button("Zoom In") {
                     if let view = store.selectedTab?.webView { view.magnification = min(3, view.magnification * 1.25) }
                 }

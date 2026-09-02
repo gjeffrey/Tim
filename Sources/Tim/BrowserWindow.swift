@@ -26,6 +26,7 @@ extension Notification.Name {
     static let timOpenPage = Notification.Name("tim.openPage")
     static let timDuplicatePage = Notification.Name("tim.duplicatePage")
     static let timToggleEdit = Notification.Name("tim.toggleEdit")
+    static let timSubmitShowcase = Notification.Name("tim.submitShowcase")
     static let timThumbsUpdated = Notification.Name("tim.thumbsUpdated")
     static let timPreviewVersion = Notification.Name("tim.previewVersion")
     static let timEditNav = Notification.Name("tim.editNav")
@@ -504,8 +505,10 @@ struct TabCard: View {
                         .font(.system(size: 12.5, weight: .medium))
                         .lineLimit(1)
                     if tab.isEditing {
-                        Circle().fill(timYellow).frame(width: 5, height: 5)
-                            .help("Being edited — not published yet.")
+                        CautionTape(stripe: 3)
+                            .frame(width: 18, height: 6)
+                            .clipShape(Capsule())
+                            .help("Under construction — being edited, not published yet.")
                     }
                 }
                 if tabDomains {
@@ -1136,6 +1139,7 @@ struct TabContentView: View {
     @State private var previewHTML = ""
     @State private var viewMode: Int = 0  // 0 desktop · 1 both · 2 iPhone
     @State private var showImportSheet = false
+    @State private var showShowcaseSheet = false
     @FocusState private var addressFocused: Bool
     @AppStorage("tim.cleanAddresses") private var cleanAddresses = true
     @AppStorage("tim.experimental.makeItMine") private var makeItMineEnabled = false
@@ -1154,12 +1158,18 @@ struct TabContentView: View {
     /// Tim's signature: a thin yellow frame on the page's own edge when
     /// the page is yours, a touch stronger while you're editing it.
     private var ownershipLine: some View {
-        Rectangle()
-            .strokeBorder(timYellow.opacity(tab.isEditing ? 1 : 0.85),
-                          lineWidth: isPageEditable ? (tab.isEditing ? 2 : 1.5) : 0)
-            .allowsHitTesting(false)
-            .animation(.easeInOut(duration: 0.3), value: isPageEditable)
-            .animation(.easeInOut(duration: 0.3), value: tab.isEditing)
+        ZStack {
+            // Editable: the thin yellow line. Editing: the site is under
+            // construction — caution tape on the page's edge.
+            Rectangle()
+                .strokeBorder(timYellow.opacity(0.85), lineWidth: isPageEditable && !tab.isEditing ? 1.5 : 0)
+            CautionTape()
+                .mask(Rectangle().strokeBorder(lineWidth: 5))
+                .opacity(tab.isEditing ? 1 : 0)
+        }
+        .allowsHitTesting(false)
+        .animation(.easeInOut(duration: 0.3), value: isPageEditable)
+        .animation(.easeInOut(duration: 0.3), value: tab.isEditing)
     }
 
     /// The page fills its pane, Safari-style — no gutter, no drawn card.
@@ -1177,11 +1187,17 @@ struct TabContentView: View {
                     .frame(width: tab.isEditing ? 680 : 390)
                     .clipShape(shape)
                     .overlay(
-                        shape.strokeBorder(
-                            isPageEditable ? AnyShapeStyle(timYellow.opacity(tab.isEditing ? 1 : 0.85))
-                                           : AnyShapeStyle(Color.primary.opacity(0.15)),
-                            lineWidth: isPageEditable ? 2 : 1
-                        )
+                        ZStack {
+                            shape.strokeBorder(
+                                isPageEditable ? AnyShapeStyle(timYellow.opacity(0.85))
+                                               : AnyShapeStyle(Color.primary.opacity(0.15)),
+                                lineWidth: isPageEditable ? 1.5 : 1
+                            )
+                            .opacity(tab.isEditing ? 0 : 1)
+                            CautionTape()
+                                .mask(shape.strokeBorder(lineWidth: 5))
+                                .opacity(tab.isEditing ? 1 : 0)
+                        }
                         .allowsHitTesting(false)
                     )
                     .shadow(color: .black.opacity(0.16), radius: 14, y: 4)
@@ -1289,6 +1305,12 @@ struct TabContentView: View {
                     tab.setEditing(false)
                 }
             }
+        }
+        .sheet(isPresented: $showShowcaseSheet) {
+            ShowcaseSheet(tab: tab)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .timSubmitShowcase)) { _ in
+            if store.selectedTab === tab { showShowcaseSheet = true }
         }
         .sheet(isPresented: $showImportSheet) {
             ImportSheet(tab: tab)
@@ -6255,6 +6277,165 @@ struct WebViewContainer: NSViewRepresentable {
 
 // MARK: - "Make It Mine": the page in the tab becomes a page on your
 // site — assets localized, copy published, pencil lit.
+
+/// Construction-site tape: yellow with black diagonals. The sign that a
+/// page is being worked on right now, as opposed to merely being yours.
+struct CautionTape: View {
+    var stripe: CGFloat = 7
+    var body: some View {
+        Canvas { ctx, size in
+            ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(timYellow))
+            var x = -size.height
+            while x < size.width {
+                var p = Path()
+                p.move(to: CGPoint(x: x, y: size.height))
+                p.addLine(to: CGPoint(x: x + stripe, y: size.height))
+                p.addLine(to: CGPoint(x: x + stripe + size.height, y: 0))
+                p.addLine(to: CGPoint(x: x + size.height, y: 0))
+                p.closeSubpath()
+                ctx.fill(p, with: .color(Color.black.opacity(0.82)))
+                x += stripe * 2
+            }
+        }
+    }
+}
+
+/// Page › Submit to Showcase… — the friction is the point: the page must
+/// be live and made with Tim, you finish editing first, you sign it with
+/// your name and a real sentence, and you say it's yours to show.
+struct ShowcaseSheet: View {
+    @ObservedObject var tab: Tab
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = NSFullUserName()
+    @State private var note = ""
+    @State private var agree = false
+    @State private var inspection: ShowcaseAPI.Inspection?
+    @State private var working = false
+    @State private var error: String?
+    @State private var thanks: String?
+
+    private var url: URL? {
+        guard let u = URL(string: tab.urlString), u.scheme?.hasPrefix("http") == true else { return nil }
+        return u
+    }
+    private var noteOK: Bool { note.trimmingCharacters(in: .whitespacesAndNewlines).count >= 20 }
+    private var nameOK: Bool { name.trimmingCharacters(in: .whitespaces).count >= 2 }
+    private var pageOK: Bool { inspection?.reachable == true && inspection?.madeWithTim == true }
+    private var canSubmit: Bool { url != nil && pageOK && !tab.isEditing && nameOK && noteOK && agree && !working }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Form {
+                Section {
+                    HStack(alignment: .top, spacing: 14) {
+                        Group {
+                            if let img = inspection?.image {
+                                AsyncImage(url: img) { phase in
+                                    if let image = phase.image { image.resizable().scaledToFill() }
+                                    else { Rectangle().fill(Color.primary.opacity(0.06)) }
+                                }
+                            } else {
+                                Rectangle().fill(Color.primary.opacity(0.06))
+                            }
+                        }
+                        .frame(width: 160, height: 84)
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(inspection?.title.isEmpty == false ? inspection!.title : (tab.title.isEmpty ? "This page" : tab.title))
+                                .font(.system(size: 14, weight: .semibold))
+                                .lineLimit(2)
+                            Text(tab.urlString)
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                            check(inspection == nil ? nil : pageOK,
+                                  inspection == nil ? "Checking the live page…"
+                                  : inspection?.reachable != true ? "Not reachable — publish it first."
+                                  : !pageOK ? "Not made with Tim." : "Live, made with Tim.")
+                            check(!tab.isEditing, tab.isEditing ? "Finish editing first (press Done)." : "Not being edited.")
+                        }
+                    }
+                    .padding(.vertical, 4)
+                } header: {
+                    Text("Submit to Showcase")
+                } footer: {
+                    Text("The Showcase is a hand-picked gallery of sites made with Tim. A person reads every submission; most hear back within a week.")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
+                Section("About it") {
+                    TextField("Your name", text: $name)
+                    TextField("A sentence about the site — what it is, who it's for", text: $note, axis: .vertical)
+                        .lineLimit(2...4)
+                    Toggle("This is my site, and I'm happy for it to be shown publicly.", isOn: $agree)
+                }
+                if let error {
+                    Section { Text(error).font(.system(size: 11.5)).foregroundStyle(.red) }
+                }
+                if let thanks {
+                    Section { Label(thanks, systemImage: "checkmark.seal.fill").font(.system(size: 12)).foregroundStyle(.secondary) }
+                }
+            }
+            .formStyle(.grouped)
+            Divider()
+            HStack {
+                Link("See the Showcase", destination: ShowcaseAPI.galleryURL)
+                    .font(.system(size: 11.5))
+                Spacer()
+                if thanks != nil {
+                    Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                    Button {
+                        submit()
+                    } label: {
+                        if working { ProgressView().controlSize(.small).frame(width: 60) } else { Text("Submit") }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .tint(timYellow)
+                    .foregroundStyle(.black)
+                    .disabled(!canSubmit)
+                }
+            }
+            .padding(14)
+        }
+        .frame(width: 480)
+        .task {
+            guard let url else { return }
+            inspection = await ShowcaseAPI.inspect(url)
+        }
+    }
+
+    @ViewBuilder private func check(_ ok: Bool?, _ text: String) -> some View {
+        HStack(spacing: 5) {
+            if let ok {
+                Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                    .foregroundStyle(ok ? Color.green : Color.orange)
+            } else {
+                ProgressView().controlSize(.mini)
+            }
+            Text(text)
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+    }
+
+    private func submit() {
+        guard let url else { return }
+        working = true; error = nil
+        Task {
+            do {
+                thanks = try await ShowcaseAPI.submit(url: url, name: name.trimmingCharacters(in: .whitespaces),
+                                                      note: note.trimmingCharacters(in: .whitespacesAndNewlines))
+            } catch {
+                self.error = error.localizedDescription
+            }
+            working = false
+        }
+    }
+}
 
 struct ImportSheet: View {
     @ObservedObject var tab: Tab

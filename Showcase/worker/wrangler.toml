@@ -1,0 +1,19 @@
+# Tim Showcase — a hand-picked gallery of sites made with Tim.
+# Lives on the Tim site: https://gabrieljeffrey.com/tim/showcase
+name = "tim-showcase"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+account_id = "8c3469e6c4ffde0d5fc0bd379a152e16"
+workers_dev = false
+routes = [
+  { pattern = "gabrieljeffrey.com/tim/showcase*", zone_name = "gabrieljeffrey.com" }
+]
+
+[[kv_namespaces]]
+binding = "SHOWCASE"
+id = "30fafd93bef94b95b813fc3e7d11a9e4"
+
+# Secrets (set once, never in this file):
+#   wrangler secret put ADMIN_TOKEN     — unlocks /tim/showcase/admin?token=…
+# Optional vars:
+#   NOTIFY_URL — a webhook POSTed on every new submission (ntfy, Slack, Shortcuts…)

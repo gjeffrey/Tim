@@ -13,7 +13,14 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     /// True while the address bar is being typed into. Deliberately NOT
     /// published — nothing should re-render on it. The web view consults
     /// it to refuse focus stolen by page scripts.
-    public var addressEditing = false
+    public var addressEditing = false {
+        didSet {
+            #if os(iOS)
+            guard addressEditing != oldValue else { return }
+            webView.evaluateJavaScript("window.__timAddressEditing = \(addressEditing);", completionHandler: nil)
+            #endif
+        }
+    }
 
     @Published public var title: String = "New Tab"
     @Published public var urlString: String = ""
@@ -70,6 +77,16 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.configuration.userContentController.add(self, name: "timSel")
+        #if os(iOS)
+        // The Mac refuses first responder while the address bar is being
+        // typed in; on iOS the equivalent is stopping the page's own
+        // focus() calls at the source — pages love to grab a search field
+        // as they load, and that yanks the keyboard off the address bar.
+        webView.configuration.userContentController.addUserScript(WKUserScript(source: """
+        (function(){var f=HTMLElement.prototype.focus;window.__timAddressEditing=false;
+        HTMLElement.prototype.focus=function(){if(window.__timAddressEditing)return;return f.apply(this,arguments)};})();
+        """, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        #endif
 
         observations.append(webView.observe(\.title, options: [.new]) { [weak self] view, _ in
             DispatchQueue.main.async {
@@ -2865,7 +2882,16 @@ extension Tab: WKNavigationDelegate {
         lastHTTPStatus = 200
     }
 
+    public func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        #if os(iOS)
+        if addressEditing { webView.evaluateJavaScript("window.__timAddressEditing = true;", completionHandler: nil) }
+        #endif
+    }
+
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        #if os(iOS)
+        if addressEditing { webView.evaluateJavaScript("window.__timAddressEditing = true;", completionHandler: nil) }
+        #endif
         webView.evaluateJavaScript(
             "!!(document.querySelector('[data-tim-canvas]') || document.querySelector('meta[name=\"generator\"][content^=\"Tim\"]'))"
         ) { [weak self] result, _ in
