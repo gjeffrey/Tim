@@ -1405,62 +1405,38 @@ struct TabContentView: View {
                 .contentTransition(.symbolEffect(.replace))
                 .help(isPageEditable ? "This page is yours — ⌘E edits it, Done publishes it." : "")
 
-            ZStack {
-                // onEditingChanged is the ground truth for "the field has
-                // the keyboard" — @FocusState misses click-to-focus here,
-                // which left typing invisible under the pretty overlay.
-                TextField("Search or enter address", text: $addressText, onEditingChanged: { editing in
-                    addressEditingText = editing
-                })
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .multilineTextAlignment(addressFocused || addressEditingText ? .leading : .center)
-                    .foregroundStyle(prettyAddress == nil ? AnyShapeStyle(.primary) : AnyShapeStyle(.clear))
-                    .focused($addressFocused)
-                    .onSubmit {
-                        tab.navigate(to: addressText)
-                        addressFocused = false
-                    }
-                // At rest, the URL reads like a name: host strong, path quiet.
-                if let pretty = prettyAddress {
-                    HStack(spacing: 0) {
-                        Text(pretty.host)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.primary)
-                        Text(pretty.path)
-                            .font(.system(size: 13))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .allowsHitTesting(false)
-                }
-            }
-            .frame(maxWidth: .infinity)
-
-            // Contextual page actions live IN the field, Safari's way.
-            // One button, always in the layout, shown by opacity — a
-            // structural appearance here would rebuild the field and
-            // steal focus mid-keystroke.
+            // Contextual page actions sit on the LEFT with the identity
+            // badge, where Safari keeps its reader and extension buttons.
+            // The right side stays uncluttered: reload, and nothing else.
             let canCreate = matchedSite != nil && tab.lastHTTPStatus == 404 && !tab.isEditing
             let canClaim = matchedSite == nil && !siteStore.sites.isEmpty && !tab.isEditing
                 && (tab.webView.url?.scheme?.hasPrefix("http") ?? false)
-            Button {
-                if canCreate { createMissingPage() } else if canClaim { showImportSheet = true }
-            } label: {
-                Image(systemName: canCreate ? "plus.circle.fill" : "arrow.down.circle.fill")
-                    .font(.system(size: 13, weight: .medium))
-                    .symbolRenderingMode(.palette)
-                    .foregroundStyle(Color.black, AnyShapeStyle(timYellow))
-                    .frame(width: 18, height: 18)
-                    .contentShape(Circle())
+            if canCreate || canClaim {
+                Button {
+                    if canCreate { createMissingPage() } else { showImportSheet = true }
+                } label: {
+                    Image(systemName: canCreate ? "plus.circle.fill" : "arrow.down.circle.fill")
+                        .font(.system(size: 13, weight: .medium))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(Color.black, AnyShapeStyle(timYellow))
+                        .frame(width: 18, height: 18)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help(canCreate
+                      ? "This page doesn't exist on your site yet — create and publish it at this address."
+                      : "Make It Mine — copy this page, with its images, styles, and fonts, onto your own site, ready to edit.")
             }
-            .buttonStyle(.plain)
-            .opacity(canCreate || canClaim ? 1 : 0)
-            .allowsHitTesting(canCreate || canClaim)
-            .help(canCreate
-                  ? "This page doesn't exist on your site yet — create and publish it at this address."
-                  : "Make It Mine — copy this page, with its images, styles, and fonts, onto your own site, ready to edit.")
+
+            AddressField(
+                text: $addressText,
+                fullValue: tab.urlString,
+                pretty: prettyAddress,
+                isFocused: addressEditingText,
+                onFocusChange: { addressEditingText = $0 },
+                onSubmit: { tab.navigate(to: $0) }
+            )
+            .frame(maxWidth: .infinity)
 
             Button {
                 if tab.isLoading { tab.webView.stopLoading() } else { tab.webView.reload() }
@@ -1486,6 +1462,21 @@ struct TabContentView: View {
             (isPageEditable ? Glass.regular.tint(timYellow.opacity(0.14)) : Glass.regular).interactive(),
             in: Capsule(style: .continuous)
         )
+        // Focused, the field reads as an open text field, Safari's way:
+        // it brightens to the editable surface and takes a key-colored
+        // ring, so there is never a doubt about where typing goes.
+        .background {
+            if addressEditingText {
+                Capsule(style: .continuous).fill(Color(nsColor: .textBackgroundColor))
+            }
+        }
+        .overlay {
+            if addressEditingText {
+                Capsule(style: .continuous)
+                    .strokeBorder(Color.accentColor, lineWidth: 3)
+                    .allowsHitTesting(false)
+            }
+        }
         .overlay(alignment: .bottomLeading) {
             // Loading is a hairline of light along the capsule's floor.
             if tab.isLoading {
@@ -2216,10 +2207,21 @@ struct TabContentView: View {
             .disabled(!tab.isEditing)
             .help("Redo (⇧⌘Z)")
 
-            Button(tab.isEditing ? "Done" : "Edit") {
+            // The one button that IS Tim: brand yellow, with the pencil
+            // that marks everything you own. It carries the most weight
+            // in the toolbar because it's the whole point of the app.
+            Button {
                 if tab.isEditing { finishEditing() } else { beginEditing() }
+            } label: {
+                Label(tab.isEditing ? "Done" : "Edit",
+                      systemImage: tab.isEditing ? "checkmark" : "pencil")
+                    .labelStyle(.titleAndIcon)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.black)
+                    .padding(.horizontal, 3)
             }
             .buttonStyle(.borderedProminent)
+            .tint(timYellow)
             .disabled(!tab.isEditing && (!isPageEditable || previewSha != nil))
             .help(tab.isEditing ? "Done (⌘E) — your changes are saved" : "Edit This Page (⌘E)")
 
@@ -6441,6 +6443,129 @@ struct ImportSheet: View {
                     }
                 }
             }
+        }
+    }
+}
+
+// MARK: - The address field, the way Safari builds one: a real AppKit
+// text field. A SwiftUI TextField inside a macOS toolbar item is torn
+// down and rebuilt whenever the toolbar re-evaluates — and it takes
+// first responder with it, which is why typing kept dying mid-URL. An
+// NSTextField owns its own editing session; nothing SwiftUI does above
+// it can interrupt the keyboard.
+
+final class TimAddressTextField: NSTextField {
+    var onFocusChange: ((Bool) -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        if ok {
+            onFocusChange?(true)
+            // Safari's move: clicking the field selects the whole URL, so
+            // typing replaces it and ⌘C copies the real address.
+            DispatchQueue.main.async { [weak self] in self?.currentEditor()?.selectAll(nil) }
+        }
+        return ok
+    }
+}
+
+struct AddressField: NSViewRepresentable {
+    @Binding var text: String
+    /// The full URL, revealed while editing.
+    let fullValue: String
+    /// Host + path, shown at rest with the host emphasized.
+    let pretty: (host: String, path: String)?
+    let isFocused: Bool
+    let onFocusChange: (Bool) -> Void
+    let onSubmit: (String) -> Void
+
+    func makeNSView(context: Context) -> TimAddressTextField {
+        let field = TimAddressTextField()
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.font = .systemFont(ofSize: 13)
+        field.lineBreakMode = .byTruncatingMiddle
+        field.cell?.usesSingleLineMode = true
+        field.cell?.wraps = false
+        field.cell?.isScrollable = true
+        field.placeholderString = "Search or enter address"
+        field.delegate = context.coordinator
+        field.target = context.coordinator
+        field.action = #selector(Coordinator.submit(_:))
+        field.onFocusChange = { focused in
+            context.coordinator.editing = focused
+            onFocusChange(focused)
+        }
+        return field
+    }
+
+    func updateNSView(_ field: TimAddressTextField, context: Context) {
+        context.coordinator.parent = self
+        // Never touch the string while the user is typing in it.
+        guard !context.coordinator.editing else { return }
+        field.alignment = .center
+        if let pretty {
+            let attributed = NSMutableAttributedString(
+                string: pretty.host,
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+                    .foregroundColor: NSColor.labelColor
+                ]
+            )
+            attributed.append(NSAttributedString(
+                string: pretty.path,
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 13),
+                    .foregroundColor: NSColor.tertiaryLabelColor
+                ]
+            ))
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.alignment = .center
+            paragraph.lineBreakMode = .byTruncatingMiddle
+            attributed.addAttribute(.paragraphStyle, value: paragraph,
+                                    range: NSRange(location: 0, length: attributed.length))
+            field.attributedStringValue = attributed
+        } else {
+            field.stringValue = text
+            field.textColor = .labelColor
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: AddressField
+        var editing = false
+
+        init(parent: AddressField) { self.parent = parent }
+
+        func controlTextDidBeginEditing(_ obj: Notification) {
+            guard let field = obj.object as? TimAddressTextField else { return }
+            editing = true
+            // Editing reveals the real address, left-aligned, selected.
+            field.alignment = .natural
+            field.stringValue = parent.fullValue
+            field.textColor = .labelColor
+            parent.onFocusChange(true)
+            DispatchQueue.main.async { field.currentEditor()?.selectAll(nil) }
+        }
+
+        func controlTextDidChange(_ obj: Notification) {
+            guard let field = obj.object as? NSTextField else { return }
+            parent.text = field.stringValue
+        }
+
+        func controlTextDidEndEditing(_ obj: Notification) {
+            editing = false
+            parent.onFocusChange(false)
+        }
+
+        @objc func submit(_ sender: NSTextField) {
+            editing = false
+            parent.text = sender.stringValue
+            parent.onSubmit(sender.stringValue)
+            sender.window?.makeFirstResponder(nil)
         }
     }
 }
