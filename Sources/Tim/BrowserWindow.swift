@@ -1266,7 +1266,11 @@ struct TabContentView: View {
                 }
             }
             .transaction { $0.animation = nil }
-            .inspectorColumnWidth(min: 268, ideal: 288, max: 380)
+            // One width, full stop. A min/ideal/max range let the column
+            // renegotiate every time the selection changed and the Form's
+            // intrinsic width moved — the "randomly resizing" sidebar.
+            .frame(width: 300)
+            .inspectorColumnWidth(300)
         }
         .navigationTitle("")
         // The toolbar wears the sidebar's material — one piece of chrome.
@@ -4364,7 +4368,7 @@ struct InspectorControls: View {
                         TextField("Label", text: $item.label, onEditingChanged: { if !$0 { pushNav() } })
                             .onSubmit { pushNav() }
                             .font(.system(size: 11.5))
-                            .frame(minWidth: 70)
+                            .frame(minWidth: 40)
                         Menu {
                             ForEach(navPages) { page in
                                 Button(page.label) { item.href = page.href; pushNav() }
@@ -4379,12 +4383,12 @@ struct InspectorControls: View {
                                 .truncationMode(.middle)
                         }
                         .menuStyle(.borderlessButton)
-                        .frame(width: 96, alignment: .leading)
+                        .frame(width: 78, alignment: .leading)
                         .help("Where this link goes. Type any address in the field to the right.")
                         TextField("Address", text: $item.href, onEditingChanged: { if !$0 { pushNav() } })
                             .onSubmit { pushNav() }
                             .font(.system(size: 10, design: .monospaced))
-                            .frame(width: 84)
+                            .frame(width: 66)
                         Button {
                             nav?.items.removeAll { $0.id == item.id }
                             pushNav()

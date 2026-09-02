@@ -1040,6 +1040,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         // the scrollable area past the page edge so there is somewhere
         // to put things even before anything lives out there.
         'html.tim-editing body::after{content:"";position:absolute;top:0;left:calc(100vw + 320px);width:1px;height:1px;}' +
+        // The bottom is a pasteboard too: while editing, the canvas keeps
+        // a third of a screen of empty rows under its last object, so
+        // there is always somewhere to drop, drag, and grab handles.
+        'html.tim-editing .tim-canvas:not(.tim-container){padding-bottom:36vh !important}' +
         'html.tim-editing [data-tim-offpage]{opacity:0.4;filter:saturate(0.5);outline:1.5px dashed rgba(127,127,127,0.55);outline-offset:2px}' +
         'html.tim-editing [data-tim-review]{outline:2px solid rgba(255,159,10,0.85) !important;outline-offset:3px;animation:timReviewPulse 1.6s ease-in-out infinite}' +
         '@keyframes timReviewPulse{50%{outline-color:rgba(255,159,10,0.25)}}';
