@@ -6418,7 +6418,11 @@ struct AddressBar: View {
 
             TextField("Search or enter address", text: $text, onEditingChanged: { began in
                 timTrace("editing=\(began)")
-                // Focus reveals the real address; blur returns to the name.
+                // begin-editing re-fires on keystrokes (the trace showed five
+                // trues with no false). Only the TRANSITION may touch the
+                // text: reveal the real address when editing starts, restore
+                // the name when it ends. Re-fires must never clobber typing.
+                guard began != editing else { return }
                 text = began ? tab.urlString : restText
                 editing = began
             })
