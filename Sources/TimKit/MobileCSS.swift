@@ -38,6 +38,8 @@ public enum MobileCSS {
         } else if let head = out.range(of: "</head>") {
             out.insert(contentsOf: block + "\n", at: head.lowerBound)
         }
+        // Editor chrome never ships: any leaked __tim-* style element goes.
+        out = out.replacingOccurrences(of: "<style[^>]*id=\"__tim-[^\"]*\"[^>]*>[\\s\\S]*?</style>\\n?", with: "", options: .regularExpression)
         out = ensuringPasteboardRules(in: out)
         // Page motion rides the same save-time pass (both platforms call it).
         out = PageMotion.ensure(in: out)

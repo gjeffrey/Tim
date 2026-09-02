@@ -308,8 +308,11 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           for (var i = 0; i < editables.length; i++) { editables[i].removeAttribute('contenteditable'); }
           var loading = clone.querySelectorAll('.tim-loading');
           for (var j = 0; j < loading.length; j++) { loading[j].classList.remove('tim-loading'); }
-          var chrome = clone.querySelector('#__tim-editor-css');
-          if (chrome) { chrome.remove(); }
+          // Everything the editor adds carries an id starting __tim- (its
+          // stylesheet, the column pin, the overlay). None of it may be
+          // saved: a leaked phone-width pin once came back on desktop.
+          var chrome = clone.querySelectorAll('[id^="__tim-"]');
+          for (var c = 0; c < chrome.length; c++) { chrome[c].remove(); }
           var pending = clone.querySelectorAll('[data-tim-placeholder]');
           for (var p = 0; p < pending.length; p++) { pending[p].remove(); }
           var replacing = clone.querySelectorAll('[data-tim-replace]');
@@ -759,8 +762,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         for (var j = 0; j < editables.length; j++) { editables[j].removeAttribute('contenteditable'); }
         var loading = clone.querySelectorAll('.tim-loading');
         for (var k = 0; k < loading.length; k++) { loading[k].classList.remove('tim-loading'); }
-        var chrome = clone.querySelector('#__tim-editor-css');
-        if (chrome) { chrome.remove(); }
+        var chrome = clone.querySelectorAll('[id^="__tim-"]');
+        for (var c = 0; c < chrome.length; c++) { chrome[c].remove(); }
         return clone.outerHTML;
       };
     })();
@@ -1203,6 +1206,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       // BEYOND the page edge (visible, reachable) instead of squeezing
       // every column — the CSS-grid behavior that made things vanish.
       // Editor-only; published pages keep their elastic 1fr tracks.
+      // Pins that leaked into a saved page (before the serializer stripped
+      // them) would pin THIS session to a stale width — clear them first.
+      Array.prototype.forEach.call(doc.querySelectorAll('style#__tim-pin-cols'), function (stale) { stale.remove(); });
       var pinCols = doc.createElement('style');
       pinCols.id = '__tim-pin-cols';
       doc.head.appendChild(pinCols);
