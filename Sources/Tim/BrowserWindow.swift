@@ -1269,7 +1269,9 @@ struct TabContentView: View {
             // One width, full stop. A min/ideal/max range let the column
             // renegotiate every time the selection changed and the Form's
             // intrinsic width moved — the "randomly resizing" sidebar.
-            .frame(width: 300)
+            // (Only the column width is pinned: a fixed .frame on the
+            // content as well made the split view's min/max size flip
+            // during a constraint pass — an AppKit exception and a crash.)
             .inspectorColumnWidth(300)
         }
         .navigationTitle("")
