@@ -31,6 +31,8 @@ extension Notification.Name {
     static let timPreviewVersion = Notification.Name("tim.previewVersion")
     static let timEditNav = Notification.Name("tim.editNav")
     static let timReplaceMedia = Notification.Name("tim.replaceMedia")
+    static let timUpscaleMedia = Notification.Name("tim.upscaleMedia")
+    static let timMovePage = Notification.Name("tim.movePage")
     static let timBounceVideo = Notification.Name("tim.bounceVideo")
 }
 
@@ -1140,6 +1142,7 @@ struct TabContentView: View {
     @State private var viewMode: Int = 0  // 0 desktop · 1 both · 2 iPhone
     @State private var showImportSheet = false
     @State private var showShowcaseSheet = false
+    @State private var moveSite: Site?
     @FocusState private var addressFocused: Bool
     @AppStorage("tim.cleanAddresses") private var cleanAddresses = true
     @AppStorage("tim.experimental.makeItMine") private var makeItMineEnabled = false
@@ -1357,6 +1360,14 @@ struct TabContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .timDuplicatePage)) { _ in
             duplicatePage()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .timMovePage)) { _ in
+            if store.selectedTab === tab, let s = siteStore.match(pageURL), s.target == .sftp || s.target == .cloudflare || s.target == .githubPages {
+                moveSite = ensureWorkspace(s)
+            }
+        }
+        .sheet(item: $moveSite) { s in
+            MovePageSheet(tab: tab, site: s)
         }
         .onReceive(NotificationCenter.default.publisher(for: .timPreviewVersion)) { note in
             guard let sha = note.userInfo?["sha"] as? String,
@@ -1857,7 +1868,7 @@ struct TabContentView: View {
 
     private func publishAlert(_ error: Error) {
         let alert = NSAlert()
-        alert.messageText = "Publish"
+        alert.messageText = "Couldn’t Publish"
         alert.informativeText = error.localizedDescription
         alert.runModal()
     }
@@ -2392,6 +2403,11 @@ struct EditingToolbar: View {
         .onReceive(NotificationCenter.default.publisher(for: .timEditNav)) { _ in
             if let site, tab.isEditing { navBuilderSite = site }
         }
+        .onAppear { registerFileDrops() }
+        .onDisappear { unregisterFileDrops() }
+        .onReceive(NotificationCenter.default.publisher(for: .timUpscaleMedia)) { note in
+            if let src = note.userInfo?["src"] as? String { upscaleSelectedMedia(src: src) }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .timReplaceMedia)) { _ in
             if tab.isEditing { replaceSelectedMedia() }
         }
@@ -2458,8 +2474,31 @@ struct EditingToolbar: View {
     private func insertMedia() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let fileURL = panel.url else { return }
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls { insertMediaFile(url, at: nil) }
+    }
+
+    /// Files dragged from the Finder land where they're dropped. Several
+    /// at once stagger down the page so none hides another.
+    private func registerFileDrops() {
+        guard let view = tab.webView as? TimWebView else { return }
+        view.fileDropHover = { point in tab.showDropHover(at: point) }
+        view.fileDrop = { urls, point in
+            guard tab.isEditing else { return false }
+            for (i, url) in urls.enumerated() {
+                insertMediaFile(url, at: CGPoint(x: point.x, y: point.y + CGFloat(i) * 40))
+            }
+            return true
+        }
+    }
+    private func unregisterFileDrops() {
+        guard let view = tab.webView as? TimWebView else { return }
+        view.fileDrop = nil
+        view.fileDropHover = nil
+    }
+
+    private func insertMediaFile(_ fileURL: URL, at point: CGPoint?) {
         let name = fileURL.lastPathComponent
         let kind = MediaKind.of(fileExtension: fileURL.pathExtension)
 
@@ -2483,7 +2522,7 @@ struct EditingToolbar: View {
         let spans = Self.mediaSpans(for: kind)
         tab.insertObject(
             html: Self.placeholderHTML(id: placeholderID, label: "Adding \(name)…"),
-            colSpan: spans.cols, rowSpan: spans.rows
+            colSpan: spans.cols, rowSpan: spans.rows, at: point
         )
         DispatchQueue.global(qos: .userInitiated).async {
             var activity = ActivityCenter.shared.begin("Adding \(name)…")
@@ -2536,6 +2575,50 @@ struct EditingToolbar: View {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let fileURL = panel.url else { return }
+        replaceSelectedMedia(with: fileURL)
+    }
+
+    /// Enlarge the selected image 2× and swap it in. The source is the
+    /// mirror's copy when there is one, else the live file.
+    private func upscaleSelectedMedia(src: String) {
+        guard let pageURL = tab.webView.url, let absolute = URL(string: src, relativeTo: pageURL)?.absoluteURL else { return }
+        var local: URL?
+        if let site, !site.localProjectPath.isEmpty {
+            let name = absolute.lastPathComponent
+            let candidate = URL(fileURLWithPath: site.localProjectPath).appendingPathComponent("media").appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: candidate.path) { local = candidate }
+        }
+        if local == nil, absolute.isFileURL { local = absolute }
+        isWorking = true
+        statusMessage = "Enlarging \(absolute.lastPathComponent)…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let activity = ActivityCenter.shared.begin("Enlarging \(absolute.lastPathComponent)…")
+            do {
+                var source = local
+                if source == nil {
+                    let (data, _) = try URLSession.shared.syncData(from: absolute)
+                    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(absolute.lastPathComponent)
+                    try data.write(to: tmp)
+                    source = tmp
+                }
+                let bigger = try Upscaler.enlarge(source!, factor: 2)
+                DispatchQueue.main.async {
+                    ActivityCenter.shared.end(activity)
+                    isWorking = false
+                    statusMessage = nil
+                    replaceSelectedMedia(with: bigger)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    ActivityCenter.shared.end(activity)
+                    isWorking = false
+                    statusMessage = "Couldn’t enlarge: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func replaceSelectedMedia(with fileURL: URL) {
         let name = fileURL.lastPathComponent
         let kind = MediaKind.of(fileExtension: fileURL.pathExtension)
         guard kind != .file else {
@@ -4140,6 +4223,7 @@ struct InspectorControls: View {
     @State private var fillColor: Color
     @State private var radius: Double
     @State private var padding: Double
+    @State private var margin: Double
     @State private var opacity: Double
     @State private var hasShadow: Bool
     @State private var shadowColor: Color = .black
@@ -4172,6 +4256,7 @@ struct InspectorControls: View {
         _fillAngle = State(initialValue: fillGradient?.angle ?? 180)
         _radius = State(initialValue: info["radius"] as? Double ?? 0)
         _padding = State(initialValue: info["padding"] as? Double ?? 0)
+        _margin = State(initialValue: info["margin"] as? Double ?? 0)
         _opacity = State(initialValue: info["opacity"] as? Double ?? 1)
         _hasShadow = State(initialValue: (info["hasShadow"] as? Int) == 1)
         _textShadowOn = State(initialValue: (info["hasTextShadow"] as? Int) == 1)
@@ -4421,8 +4506,35 @@ struct InspectorControls: View {
             controls: videoControls
         )
     }
+    private var mediaFacts: (natW: Int, natH: Int, shownW: Int, src: String)? {
+        guard let m = info["media"] as? [String: Any] else { return nil }
+        return (m["natW"] as? Int ?? 0, m["natH"] as? Int ?? 0, m["shownW"] as? Int ?? 0, m["src"] as? String ?? "")
+    }
+    /// Retina needs about two device pixels per CSS pixel; under 1.5× the
+    /// image will read as soft on every modern screen.
+    private var imageTooSmall: Bool {
+        guard (info["tag"] as? String) == "img", let f = mediaFacts, f.natW > 0, f.shownW > 0 else { return false }
+        return Double(f.natW) < Double(f.shownW) * 1.5
+    }
+
     private var mediaCard: some View {
         card {
+            if imageTooSmall, let f = mediaFacts {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("This image is \(f.natW)×\(f.natH) pixels but shows \(f.shownW) wide — it will look soft on Retina screens.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 8) {
+                        Button("Choose Larger…") { NotificationCenter.default.post(name: .timReplaceMedia, object: nil) }
+                        Button("Enlarge 2×") {
+                            NotificationCenter.default.post(name: .timUpscaleMedia, object: nil, userInfo: ["src": f.src])
+                        }
+                        .help("Resamples the image to twice its size (\(Upscaler.methodName)). A real larger original will always look better.")
+                    }
+                    .controlSize(.small)
+                }
+            }
             Button("Replace Media…") {
                 NotificationCenter.default.post(name: .timReplaceMedia, object: nil)
             }
@@ -4948,6 +5060,10 @@ struct InspectorControls: View {
                 .onChange(of: radius) { _, v in tab.setSelectionStyle("borderRadius", "\(Int(v))px") }
             sliderRow("Padding", $padding, 0...48, 2, "\(Int(padding))")
                 .onChange(of: padding) { _, v in tab.setSelectionStyle("padding", "\(Int(v))px") }
+                .help("Space inside the object's edge — shown as a dashed line with arrows pointing in.")
+            sliderRow("Margin", $margin, 0...48, 2, "\(Int(margin))")
+                .onChange(of: margin) { _, v in tab.setSelectionStyle("margin", "\(Int(v))px") }
+                .help("Space kept clear around the object inside its cells — dashed line, arrows pointing out.")
             sliderRow("Opacity", $opacity, 0.2...1, 0.05, "\(Int(opacity * 100))")
                 .onChange(of: opacity) { _, v in tab.setSelectionStyle("opacity", String(format: "%.2f", v)) }
             HStack(spacing: 8) {
@@ -6469,6 +6585,163 @@ struct CautionTape: View {
                 p.closeSubpath()
                 ctx.fill(p, with: .color(Color.black.opacity(0.82)))
                 x += stripe * 2
+            }
+        }
+    }
+}
+
+extension URLSession {
+    /// A blocking fetch for background queues (media enlargement).
+    func syncData(from url: URL) throws -> (Data, URLResponse) {
+        var result: (Data, URLResponse)?
+        var failure: Error?
+        let sem = DispatchSemaphore(value: 0)
+        dataTask(with: url) { data, response, error in
+            if let data, let response { result = (data, response) } else { failure = error }
+            sem.signal()
+        }.resume()
+        sem.wait()
+        if let result { return result }
+        throw failure ?? URLError(.badServerResponse)
+    }
+}
+
+/// File › Move… — a page is a file in a folder on your site, and moving
+/// it is choosing a folder and a name, Save-dialog style. Tim fixes the
+/// page's relative addresses for the new depth and can leave a small
+/// forwarding page behind so old links keep working.
+struct MovePageSheet: View {
+    @ObservedObject var tab: Tab
+    let site: Site
+    @Environment(\.dismiss) private var dismiss
+    @State private var folder = "/"
+    @State private var newFolder = ""
+    @State private var name = ""
+    @State private var forward = true
+    @State private var working = false
+    @State private var error: String?
+
+    private var folders: [String] { PageMover.folders(in: site.localProjectPath) }
+    private var currentRel: String { tab.webView.url.map { site.relativePagePath(for: $0) } ?? "" }
+    private var targetFolder: String {
+        let extra = newFolder.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+        let base = folder == "/" ? "" : folder
+        return extra.isEmpty ? (base.isEmpty ? "/" : base) : base + "/" + extra.replacingOccurrences(of: " ", with: "-").lowercased()
+    }
+    private var targetRel: String {
+        var n = name.trimmingCharacters(in: .whitespaces)
+        if n.isEmpty { n = "index" }
+        if !n.hasSuffix(".html") { n += ".html" }
+        return (targetFolder == "/" ? "" : targetFolder) + "/" + n
+    }
+    private var host: String { URL(string: site.origin)?.host() ?? site.origin }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Form {
+                Section {
+                    LabeledContent("Now at") { Text(host + currentRel).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled) }
+                } header: { Text("Move Page") }
+                Section("Where") {
+                    Picker("Folder", selection: $folder) {
+                        ForEach(folders, id: \.self) { f in
+                            Text(f == "/" ? host : String(f.dropFirst()).replacingOccurrences(of: "/", with: " › ")).tag(f)
+                        }
+                    }
+                    TextField("New folder inside it (optional)", text: $newFolder)
+                    TextField("File name", text: $name, prompt: Text("index"))
+                        .font(.system(size: 12, design: .monospaced))
+                    LabeledContent("Will be at") { Text(host + targetRel).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary) }
+                }
+                Section {
+                    Toggle("Leave a forwarding page at the old address", isOn: $forward)
+                    Text("Anyone with the old link lands on the new page. Search engines learn the new address too.")
+                        .font(.system(size: 10)).foregroundStyle(.tertiary)
+                }
+                if let error { Section { Text(error).font(.system(size: 11)).foregroundStyle(.red) } }
+            }
+            .formStyle(.grouped)
+            Divider()
+            HStack {
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button {
+                    move()
+                } label: {
+                    if working { ProgressView().controlSize(.small).frame(width: 44) } else { Text("Move") }
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(working || targetRel == currentRel || tab.isEditing)
+                .help(tab.isEditing ? "Finish editing first (press Done)." : "")
+            }
+            .padding(14)
+        }
+        .frame(width: 460)
+        .onAppear {
+            let rel = currentRel
+            let dir = (rel as NSString).deletingLastPathComponent
+            folder = folders.contains(dir) ? (dir.isEmpty ? "/" : dir) : "/"
+            name = ((rel as NSString).lastPathComponent as NSString).deletingPathExtension
+        }
+    }
+
+    private func move() {
+        let from = currentRel, to = targetRel
+        guard from != to, let oldURL = URL(string: site.origin + from) else { return }
+        working = true; error = nil
+        let mirror = site.localProjectPath
+        let fm = FileManager.default
+        DispatchQueue.global(qos: .userInitiated).async {
+            let activity = ActivityCenter.shared.begin("Moving \((from as NSString).lastPathComponent)…")
+            do {
+                let oldLocal = mirror + from
+                guard var html = try? String(contentsOfFile: oldLocal, encoding: .utf8) else {
+                    throw PublishError.failed("Tim doesn't have a local copy of this page yet. Open it, press Edit, then Done once — then move it.")
+                }
+                html = PageMover.rebase(html: html, from: from, to: to, origin: site.origin)
+                let newLocal = mirror + to
+                try fm.createDirectory(atPath: (newLocal as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+                try html.write(toFile: newLocal, atomically: true, encoding: .utf8)
+                let newURL = site.origin + to
+                let title = (try? NSRegularExpression(pattern: "<title[^>]*>([^<]*)</title>")).flatMap { re -> String? in
+                    guard let m = re.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)), let r = Range(m.range(at: 1), in: html) else { return nil }
+                    return String(html[r])
+                } ?? ""
+                if forward {
+                    try PageMover.forwardingPage(to: newURL, title: title).write(toFile: oldLocal, atomically: true, encoding: .utf8)
+                } else {
+                    try? fm.removeItem(atPath: oldLocal)
+                }
+                let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
+                switch site.target {
+                case .sftp:
+                    _ = try SFTP.upload(html: html, to: root + to, host: site.host, username: site.username, port: site.port)
+                    if forward {
+                        _ = try SFTP.upload(html: PageMover.forwardingPage(to: newURL, title: title), to: root + from, host: site.host, username: site.username, port: site.port)
+                    } else {
+                        _ = try SFTP.remove(root + from, host: site.host, username: site.username, port: site.port)
+                    }
+                case .cloudflare:
+                    _ = try CloudflarePublisher.publish(site: site, folder: mirror)
+                case .githubPages:
+                    _ = try GitHubPagesPublisher.publish(repo: mirror, message: "Move \(from) → \(to)")
+                }
+                SiteWorkspace.snapshot(mirror, message: "Move \(from) → \(to)")
+                DispatchQueue.main.async {
+                    ActivityCenter.shared.end(activity)
+                    working = false
+                    PageRegistry.record(url: newURL, title: title)
+                    tab.navigate(to: newURL)
+                    _ = oldURL
+                    dismiss()
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    ActivityCenter.shared.end(activity)
+                    working = false
+                    self.error = error.localizedDescription
+                }
             }
         }
     }

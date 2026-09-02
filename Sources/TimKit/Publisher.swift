@@ -20,8 +20,41 @@ public enum PublishError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .failed(let output):
-            return output.trimmingCharacters(in: .whitespacesAndNewlines)
+            return Self.explain(output)
         }
+    }
+
+    /// Raw tool output → what happened, and what to do about it. The
+    /// details stay underneath for anyone who wants them.
+    public static func explain(_ raw: String) -> String {
+        let lines = raw.split(separator: "\n").map(String.init).filter { line in
+            let t = line.trimmingCharacters(in: .whitespaces)
+            return !t.isEmpty && !t.hasPrefix("** ") && !t.hasPrefix("sftp> ") && !t.hasPrefix("Couldn't create directory")
+                && !t.hasPrefix("Connected to") && !t.hasPrefix("Uploading ") && !t.hasPrefix("remote mkdir")
+        }
+        let cleaned = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = raw.lowercased()
+        var headline: String?
+        if lower.contains("no such file or directory") {
+            headline = "The folder for this page doesn't exist on the server. Check the site's “Folder on server” in Edit Site — it should be the folder your web pages live in (Tim creates subfolders itself)."
+        } else if lower.contains("permission denied (publickey") || lower.contains("permission denied (") {
+            headline = "The server didn't accept Tim's key. Add this Mac's public key to the server's authorized_keys (Edit Site → Publishing Key shows it), or check the username."
+        } else if lower.contains("permission denied") {
+            headline = "The server refused to write there — your account can't change that folder. Check permissions on the server, or the “Folder on server” path."
+        } else if lower.contains("could not resolve hostname") || lower.contains("name or service not known") {
+            headline = "That host name doesn't resolve. Check the Host in Edit Site, and your connection."
+        } else if lower.contains("connection refused") || lower.contains("connection timed out") || lower.contains("operation timed out") || lower.contains("network is unreachable") {
+            headline = "Tim couldn't reach the server. Check the Host and Port in Edit Site, and that you're online."
+        } else if lower.contains("host key verification failed") || lower.contains("remote host identification has changed") {
+            headline = "The server's identity doesn't match what this Mac remembers. If the server was reinstalled or moved, remove its line from ~/.ssh/known_hosts and try again."
+        } else if lower.contains("no space left") || lower.contains("quota") {
+            headline = "The server is out of space."
+        } else if lower.contains("batch mode") || lower.contains("host key") && lower.contains("not") {
+            headline = "The server isn't in this Mac's known hosts yet. Connect once in Terminal (ssh user@host) to accept it, then publish again."
+        }
+        guard let headline else { return cleaned.isEmpty ? raw.trimmingCharacters(in: .whitespacesAndNewlines) : cleaned }
+        let details = lines.suffix(6).joined(separator: "\n")
+        return details.isEmpty ? headline : headline + "\n\nDetails:\n" + details
     }
 }
 
@@ -96,10 +129,33 @@ public enum SFTP {
             .appendingPathComponent("tim-upload-\(UUID().uuidString).html")
         defer { try? FileManager.default.removeItem(at: fileURL) }
         try html.write(to: fileURL, atomically: true, encoding: .utf8)
+        // Folders first: a page can live anywhere on the site, and its
+        // folder may not exist yet. sftp's mkdir isn't recursive, so each
+        // level is asked for (the "-" swallows "already exists").
         return try run(
-            batch: "put \"\(fileURL.path)\" \"\(remotePath)\"\n",
+            batch: mkdirs(forFile: remotePath) + "put \"\(fileURL.path)\" \"\(remotePath)\"\n",
             host: host, username: username, port: port
         )
+    }
+
+    static func mkdirs(forFile remotePath: String) -> String {
+        let dir = (remotePath as NSString).deletingLastPathComponent
+        let parts = dir.split(separator: "/").map(String.init)
+        guard parts.count > 2 else { return "" }
+        var out = "", acc = dir.hasPrefix("/") ? "" : "."
+        for (i, part) in parts.enumerated() {
+            acc += "/" + part
+            if i >= 2 { out += "-mkdir \"\(acc)\"\n" }
+        }
+        return out
+    }
+
+    public static func rename(from: String, to: String, host: String, username: String, port: String) throws -> String {
+        try run(batch: mkdirs(forFile: to) + "rename \"\(from)\" \"\(to)\"\n", host: host, username: username, port: port)
+    }
+
+    public static func remove(_ remotePath: String, host: String, username: String, port: String) throws -> String {
+        try run(batch: "rm \"\(remotePath)\"\n", host: host, username: username, port: port)
     }
 
     /// Lists the remote root — proof the connection, key auth, and path

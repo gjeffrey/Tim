@@ -336,7 +336,14 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     /// Inserts an object (text box, image, video) into the page's canvas,
     /// creating the canvas if the page doesn't have one yet. Spans are in
     /// grid cells (24 columns wide; rows are fixed units).
-    public func insertObject(html: String, colSpan: Int = 12, rowSpan: Int = 3) {
+    public func insertObject(html: String, colSpan: Int = 12, rowSpan: Int = 3, at point: CGPoint? = nil) {
+        if let point {
+            webView.evaluateJavaScript(
+                "window.__timInsertAt && window.__timInsertAt(\(Self.jsLiteral(html)), \(colSpan), \(rowSpan), \(Int(point.x)), \(Int(point.y)));",
+                completionHandler: nil
+            )
+            return
+        }
         webView.evaluateJavaScript(
             "window.__timInsert && window.__timInsert(\(Self.jsLiteral(html)), \(colSpan), \(rowSpan));",
             completionHandler: nil
@@ -558,6 +565,13 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     /// Sharing & search metadata: description, social image, favicon.
     /// Page motion modes ("reveal", "fade", both, or "") — stored on the
     /// body, emitted as style+script at save by PageMotion.
+    /// Drop target preview while files hover over the page (nil hides it).
+    public func showDropHover(at point: CGPoint?, colSpan: Int = 8, rowSpan: Int = 8) {
+        let js = point.map { "window.__timDropHover && window.__timDropHover(\(Int($0.x)), \(Int($0.y)), \(colSpan), \(rowSpan));" }
+            ?? "window.__timDropHover && window.__timDropHover(-1, -1, 0, 0);"
+        webView.evaluateJavaScript(js, completionHandler: nil)
+    }
+
     /// Rewrites the selected navigation object from its model (NavKit).
     public func setNav(_ json: String) {
         webView.evaluateJavaScript("window.__timNavSet && window.__timNavSet(\(Self.jsLiteral(json)));", completionHandler: nil)
@@ -860,24 +874,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         // The line against chaos: entries in the mobile stack must not
         // sit on top of each other. Anything overlapping an earlier entry
         // in both axes is pushed below it (side-by-side stays welcome).
-        (function resolveOverlaps() {
-          var entries = Object.keys(mobileLayout).map(function (id) {
-            return { id: id, a: mobileLayout[id] };
-          });
-          entries.sort(function (x, y) { return (x.a[0] - y.a[0]) || (x.a[1] - y.a[1]); });
-          for (var i = 1; i < entries.length; i++) {
-            for (var j = 0; j < i; j++) {
-              var A = entries[j].a, B = entries[i].a;
-              var colsOverlap = B[1] < A[3] && A[1] < B[3];
-              var rowsOverlap = B[0] < A[2] && A[0] < B[2];
-              if (colsOverlap && rowsOverlap) {
-                var shift = A[2] - B[0];
-                B[0] += shift;
-                B[2] += shift;
-              }
-            }
-          }
-        })();
+        // Overlap on the phone stack is the author's call, exactly as on
+        // desktop — objects go where they're put. (An earlier "politeness"
+        // pass pushed anything overlapping downward, which read as the
+        // editor refusing a perfectly good spot.)
         var css = '@media (max-width: 700px){\\n'
           + '.tim-canvas{grid-template-columns:repeat(8, 1fr) !important;grid-auto-rows:32px !important}\\n';
         for (var id2 in mobileLayout) {
@@ -1062,7 +1062,81 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       extentBox.style.cssText = 'position:absolute;border:1.5px dotted rgba(10,132,255,0.5);border-radius:4px;pointer-events:none;display:none;box-sizing:border-box;';
       var groupBox = doc.createElement('div');
       groupBox.style.cssText = 'position:absolute;pointer-events:none;';
-      overlay.appendChild(gridBox); overlay.appendChild(hoverBox); overlay.appendChild(extentBox); overlay.appendChild(box); overlay.appendChild(badge); overlay.appendChild(groupBox);
+      // Box-model guides, the way layout tools draw them: a dashed line
+      // inside the frame for padding (arrows pointing in), one outside
+      // for margin (arrows pointing out). They live inside the selection
+      // box so they turn with a rotated object.
+      var GUIDE = 'rgba(10,132,255,0.55)';
+      var padBox = doc.createElement('div');
+      padBox.style.cssText = 'position:absolute;border:1px dashed ' + GUIDE + ';pointer-events:none;display:none;box-sizing:border-box;';
+      var marBox = doc.createElement('div');
+      marBox.style.cssText = 'position:absolute;border:1px dashed ' + GUIDE + ';pointer-events:none;display:none;box-sizing:border-box;';
+      var guideArrows = [];
+      function mkArrow(parent) {
+        var a = doc.createElement('div');
+        a.style.cssText = 'position:absolute;width:6px;height:6px;border-right:1.5px solid ' + GUIDE + ';border-bottom:1.5px solid ' + GUIDE + ';pointer-events:none;display:none;';
+        parent.appendChild(a); guideArrows.push(a); return a;
+      }
+      // Eight arrows: [0-3] padding (n,e,s,w pointing inward), [4-7] margin (pointing outward).
+      for (var gi = 0; gi < 8; gi++) { mkArrow(box); }
+      box.appendChild(padBox); box.appendChild(marBox);
+      var dropBox = doc.createElement('div');
+      dropBox.style.cssText = 'position:absolute;border:2px dashed rgba(10,132,255,0.7);background:rgba(10,132,255,0.08);border-radius:6px;pointer-events:none;display:none;box-sizing:border-box;';
+      overlay.appendChild(gridBox); overlay.appendChild(hoverBox); overlay.appendChild(extentBox); overlay.appendChild(box); overlay.appendChild(badge); overlay.appendChild(groupBox); overlay.appendChild(dropBox);
+      // Arrow glyph: a chevron; rotation picks its direction. 0 = points right.
+      function aimArrow(a, x, y, deg) {
+        a.style.display = 'block';
+        a.style.left = (x - 3) + 'px'; a.style.top = (y - 3) + 'px';
+        a.style.transform = 'rotate(' + (deg - 45) + 'deg)';
+      }
+      function layoutGuides(w0, h0) {
+        for (var i = 0; i < guideArrows.length; i++) { guideArrows[i].style.display = 'none'; }
+        padBox.style.display = 'none'; marBox.style.display = 'none';
+        if (!sel || !isObject(sel)) { return; }
+        var cs = getComputedStyle(sel);
+        var pt = parseFloat(cs.paddingTop) || 0, pr = parseFloat(cs.paddingRight) || 0, pb = parseFloat(cs.paddingBottom) || 0, pl = parseFloat(cs.paddingLeft) || 0;
+        var mt = parseFloat(cs.marginTop) || 0, mr = parseFloat(cs.marginRight) || 0, mb = parseFloat(cs.marginBottom) || 0, ml = parseFloat(cs.marginLeft) || 0;
+        if (pt + pr + pb + pl > 0 && w0 > pl + pr + 4 && h0 > pt + pb + 4) {
+          padBox.style.display = 'block';
+          padBox.style.left = pl + 'px'; padBox.style.top = pt + 'px';
+          padBox.style.width = (w0 - pl - pr) + 'px'; padBox.style.height = (h0 - pt - pb) + 'px';
+          if (pt >= 9) { aimArrow(guideArrows[0], w0 / 2, pt / 2, 90); }
+          if (pr >= 9) { aimArrow(guideArrows[1], w0 - pr / 2, h0 / 2, 180); }
+          if (pb >= 9) { aimArrow(guideArrows[2], w0 / 2, h0 - pb / 2, 270); }
+          if (pl >= 9) { aimArrow(guideArrows[3], pl / 2, h0 / 2, 0); }
+        }
+        if (mt + mr + mb + ml > 0) {
+          marBox.style.display = 'block';
+          marBox.style.left = (-ml) + 'px'; marBox.style.top = (-mt) + 'px';
+          marBox.style.width = (w0 + ml + mr) + 'px'; marBox.style.height = (h0 + mt + mb) + 'px';
+          if (mt >= 9) { aimArrow(guideArrows[4], w0 / 2, -mt / 2, 270); }
+          if (mr >= 9) { aimArrow(guideArrows[5], w0 + mr / 2, h0 / 2, 0); }
+          if (mb >= 9) { aimArrow(guideArrows[6], w0 / 2, h0 + mb / 2, 90); }
+          if (ml >= 9) { aimArrow(guideArrows[7], -ml / 2, h0 / 2, 180); }
+        }
+      }
+      // Where dropped files would land: the target cells, live.
+      window.__timDropHover = function (x, y, colSpan, rowSpan) {
+        var canvas = doc.querySelector('[data-tim-canvas]');
+        if (x < 0 || !canvas) { dropBox.style.display = 'none'; return; }
+        var cell = cellAt(canvas, x, y);
+        var g = gridInfo(canvas);
+        var cr = canvas.getBoundingClientRect();
+        var cols = Math.min(colSpan || 8, colCount());
+        var left = cr.left + window.scrollX + (cell.cs - 1) * (g.colW + g.gap);
+        var top = cr.top + window.scrollY + (cell.rs - 1) * (g.rowH + g.rowGap);
+        dropBox.style.display = 'block';
+        dropBox.style.left = left + 'px'; dropBox.style.top = top + 'px';
+        dropBox.style.width = (cols * g.colW + (cols - 1) * g.gap) + 'px';
+        dropBox.style.height = ((rowSpan || 8) * g.rowH + ((rowSpan || 8) - 1) * g.rowGap) + 'px';
+      };
+      function cellAt(canvas, clientX, clientY) {
+        var g = gridInfo(canvas);
+        var cr = canvas.getBoundingClientRect();
+        var cs = 1 + Math.floor((clientX - cr.left) / (g.colW + g.gap));
+        var rs = 1 + Math.floor((clientY - cr.top) / (g.rowH + g.rowGap));
+        return { rs: Math.max(1, rs), cs: Math.max(1, Math.min(colCount(), cs)) };
+      }
       var handles = {};
       ['w', 'e', 'n', 's', 'nw', 'ne', 'sw', 'se'].forEach(function (k) {
         // Forgiving targets: a 22px hit area around an 11px dot.
@@ -1370,6 +1444,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         box.style.left = (cx - w0 / 2) + 'px'; box.style.top = (cy - h0 / 2) + 'px';
         box.style.width = w0 + 'px'; box.style.height = h0 + 'px';
         box.style.transform = angle ? 'rotate(' + angle + 'deg)' : '';
+        layoutGuides(w0, h0);
         badge.style.display = 'block';
         badge.style.left = r.x + 'px';
         badge.style.top = Math.max(2, r.y - 24) + 'px';
@@ -1888,6 +1963,11 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         notifySel(true);
       };
 
+      var insertPoint = null;
+      window.__timInsertAt = function (html, colSpan, rowSpan, x, y) {
+        insertPoint = { x: x, y: y };
+        try { window.__timInsert(html, colSpan, rowSpan); } finally { insertPoint = null; }
+      };
       window.__timInsert = function (html, colSpan, rowSpan) {
         colSpan = Math.max(1, Math.min(COLS, colSpan || 12));
         rowSpan = Math.max(1, rowSpan || 3);
@@ -1921,7 +2001,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           if (p && p.re > maxRe) { maxRe = p.re; }
         });
         checkpoint('insert');
-        setDesktopArea(placed, maxRe, 1, maxRe + rowSpan, 1 + colSpan);
+        // Dropped at a point: that cell is where it goes, on whichever
+        // layout is being edited. Otherwise the end of the page.
+        var at = insertPoint ? cellAt(canvas, insertPoint.x, insertPoint.y) : null;
+        if (at && !mobileActive()) {
+          var atCs = Math.max(1, Math.min(colCount() - colSpan + 1, at.cs));
+          setDesktopArea(placed, at.rs, atCs, at.rs + rowSpan, atCs + colSpan);
+        } else {
+          setDesktopArea(placed, maxRe, 1, maxRe + rowSpan, 1 + colSpan);
+        }
         // Into the document BEFORE any mobile bookkeeping — the layout
         // writer prunes entries whose elements aren't in the page yet,
         // which silently erased a new object's mobile placement.
@@ -1931,7 +2019,12 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           var mMax = 1;
           for (var mid in mobileLayout) { mMax = Math.max(mMax, mobileLayout[mid][2]); }
           var span = Math.min(MOBILE_COLS, colSpan);
-          mobileLayout[ensureObjectId(placed)] = [mMax, 1, mMax + rowSpan, 1 + Math.max(2, span)];
+          if (at) {
+            var mcs = Math.max(1, Math.min(MOBILE_COLS - Math.max(2, span) + 1, at.cs));
+            mobileLayout[ensureObjectId(placed)] = [at.rs, mcs, at.rs + rowSpan, mcs + Math.max(2, span)];
+          } else {
+            mobileLayout[ensureObjectId(placed)] = [mMax, 1, mMax + rowSpan, 1 + Math.max(2, span)];
+          }
           writeMobileLayout();
           // The desktop position was a guess (end of page) — worth a look.
           flagReview('desktop', placed);
@@ -2409,6 +2502,13 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
               radius: parseFloat(sel.style.borderRadius) || 0,
               opacity: parseFloat(cs.opacity) || 1,
               padding: parseFloat(sel.style.padding) || 0,
+              margin: parseFloat(sel.style.margin) || 0,
+              media: (sel.tagName === 'IMG' || sel.tagName === 'VIDEO') ? {
+                natW: sel.naturalWidth || sel.videoWidth || 0,
+                natH: sel.naturalHeight || sel.videoHeight || 0,
+                shownW: Math.round(sel.getBoundingClientRect().width),
+                src: sel.currentSrc || sel.getAttribute('src') || ''
+              } : 0,
               area: (function () { var pp = placement(sel); return pp ? [pp.rs, pp.cs, pp.re, pp.ce] : null; })(),
               maxCols: colCount(),
               hasShadow: sel.style.boxShadow ? 1 : 0,
@@ -3179,8 +3279,42 @@ public final class BrowserStore: ObservableObject {
 /// address field is editing, only a real click into the page moves focus.
 public final class TimWebView: WKWebView {
     public var addressEditing: () -> Bool = { false }
+    /// Files dragged onto the page while editing: (urls, point in page
+    /// CSS pixels) → true when handled. Hover reports the point, nil on exit.
+    public var fileDrop: ((_ urls: [URL], _ point: CGPoint) -> Bool)?
+    public var fileDropHover: ((_ point: CGPoint?) -> Void)?
 
     #if os(macOS)
+    private func mediaURLs(_ sender: NSDraggingInfo) -> [URL] {
+        let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        return urls.filter { MediaKind.of(fileExtension: $0.pathExtension) != .file }
+    }
+    private func pagePoint(_ sender: NSDraggingInfo) -> CGPoint {
+        let p = convert(sender.draggingLocation, from: nil)
+        let m = max(0.05, magnification)
+        return CGPoint(x: p.x / m, y: p.y / m)
+    }
+    public override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if fileDrop != nil, !mediaURLs(sender).isEmpty { fileDropHover?(pagePoint(sender)); return .copy }
+        return super.draggingEntered(sender)
+    }
+    public override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if fileDrop != nil, !mediaURLs(sender).isEmpty { fileDropHover?(pagePoint(sender)); return .copy }
+        return super.draggingUpdated(sender)
+    }
+    public override func draggingExited(_ sender: NSDraggingInfo?) {
+        fileDropHover?(nil)
+        super.draggingExited(sender)
+    }
+    public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        fileDropHover?(nil)
+        if let fileDrop {
+            let urls = mediaURLs(sender)
+            if !urls.isEmpty, fileDrop(urls, pagePoint(sender)) { return true }
+        }
+        return super.performDragOperation(sender)
+    }
+
     public override func becomeFirstResponder() -> Bool {
         if addressEditing() {
             let type = NSApp.currentEvent?.type

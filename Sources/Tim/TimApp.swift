@@ -135,6 +135,8 @@ struct TimApp: App {
                     .keyboardShortcut("o", modifiers: .command)
                 Button("Duplicate…") { NotificationCenter.default.post(name: .timDuplicatePage, object: nil) }
                     .keyboardShortcut("s", modifiers: [.command, .shift])
+                Button("Move…") { NotificationCenter.default.post(name: .timMovePage, object: nil) }
+                    .keyboardShortcut("m", modifiers: [.command, .option])
                 Divider()
                 Button("Close Tab") {
                     if let tab = store.selectedTab { store.close(tab) }
