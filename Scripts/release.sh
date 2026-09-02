@@ -78,6 +78,10 @@ echo "== Appcast"
     --download-url-prefix "https://gabrieljeffrey.com/tim/" \
     -o "$RELEASES_DIR/appcast.xml"
 
+# The site's Download button follows the versioned file, so it can never
+# point at a stale edge copy. (Examples/tim is the page's mirror.)
+sed -i '' "s#https://gabrieljeffrey.com/tim/Tim\(-[0-9.]*\)\{0,1\}\.zip#https://gabrieljeffrey.com/tim/Tim-$VERSION.zip#g" Examples/tim/index.html
+
 echo "== Uploading to gabrieljeffrey.com/tim"
 # The versioned zip is what the appcast points at; Tim.zip stays the
 # site's stable download link (uncached at the edge via .htaccess).
@@ -86,6 +90,7 @@ put "$ZIP" "$REMOTE_ROOT/$(basename "$ZIP")"
 put "$ZIP" "$REMOTE_ROOT/Tim.zip"
 put "$RELEASES_DIR/appcast.xml" "$REMOTE_ROOT/appcast.xml"
 put "Scripts/tim-htaccess" "$REMOTE_ROOT/.htaccess"
+put "Examples/tim/index.html" "$REMOTE_ROOT/index.html"
 SFTP
 
 echo "Release complete: https://gabrieljeffrey.com/tim/$(basename "$ZIP") (and Tim.zip)"
