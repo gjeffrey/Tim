@@ -1208,6 +1208,25 @@ struct TabContentView: View {
         .animation(.easeInOut(duration: 0.3), value: tab.isEditing)
     }
 
+    /// The floating text bar, positioned over the selection (viewport CSS
+    /// px → view points via magnification), kept inside the pane.
+    @ViewBuilder private var selectionBarOverlay: some View {
+        if tab.isEditing, let ts = tab.textSelection {
+            GeometryReader { geo in
+                let m = tab.webView.magnification
+                let x = ((ts["x"] as? Double ?? 0) + (ts["w"] as? Double ?? 0) / 2) * m
+                let y = (ts["y"] as? Double ?? 0) * m
+                let h = (ts["h"] as? Double ?? 0) * m
+                let above = y > 52
+                SelectionBar(tab: tab, site: matchedSite)
+                    .position(x: min(max(x, 130), max(130, geo.size.width - 130)),
+                              y: above ? y - 28 : y + h + 28)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            }
+            .animation(.easeOut(duration: 0.14), value: tab.textSelection == nil)
+        }
+    }
+
     /// The page fills its pane, Safari-style — no gutter, no drawn card.
     /// Phone view is the exception: a device preview deserves to look
     /// like a device sitting on the window's surface.
@@ -1226,6 +1245,7 @@ struct TabContentView: View {
                 // by CSS; only pasteboard room gives way when space is tight.
                 WebViewContainer(webView: tab.webView)
                     .frame(minWidth: 0, idealWidth: tab.isEditing ? 680 : 390, maxWidth: tab.isEditing ? 680 : 390)
+                    .overlay(selectionBarOverlay)
                     .clipShape(shape)
                     .overlay(
                         ZStack {
@@ -1252,6 +1272,7 @@ struct TabContentView: View {
                 WebViewContainer(webView: tab.webView)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .overlay(ownershipLine)
+                    .overlay(selectionBarOverlay)
                 Divider()
                 MobilePreviewPane(tab: tab, pageURL: pageURL)
             }
@@ -1259,6 +1280,7 @@ struct TabContentView: View {
             WebViewContainer(webView: tab.webView)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay(ownershipLine)
+                .overlay(selectionBarOverlay)
         }
     }
 
@@ -2510,8 +2532,8 @@ struct EditingToolbar: View {
         .onReceive(NotificationCenter.default.publisher(for: .timEditNav)) { _ in
             if let site, tab.isEditing { navBuilderSite = site }
         }
-        .onAppear { registerFileDrops() }
-        .onDisappear { unregisterFileDrops() }
+        .onAppear { registerDrops() }
+        .onDisappear { unregisterDrops() }
         .onReceive(NotificationCenter.default.publisher(for: .timUpscaleMedia)) { note in
             if let src = note.userInfo?["src"] as? String { upscaleSelectedMedia(src: src) }
         }
@@ -2586,28 +2608,76 @@ struct EditingToolbar: View {
         for url in panel.urls { insertMediaFile(url, at: nil) }
     }
 
-    /// Files dragged from the Finder land where they're dropped. Several
-    /// at once stagger down the page so none hides another.
-    private func registerFileDrops() {
+    /// Anything dropped on the page lands where it's dropped. Images,
+    /// video, and audio embed; PDFs embed with a link fallback; Markdown
+    /// and text become text objects; everything else becomes a download
+    /// link — and Option while dropping makes ANY file a download link.
+    /// Several at once stagger down the page so none hides another.
+    private func registerDrops() {
         guard let view = tab.webView as? TimWebView else { return }
-        view.fileDropHover = { point in tab.showDropHover(at: point) }
-        view.fileDrop = { urls, point in
+        view.dropHover = { point, payload in
+            tab.showDropHover(at: point, colSpan: 8, rowSpan: 8, label: Self.dropLabel(for: payload))
+        }
+        view.drop = { payload, point in
             guard tab.isEditing else { return false }
-            for (i, url) in urls.enumerated() {
-                insertMediaFile(url, at: CGPoint(x: point.x, y: point.y + CGFloat(i) * 40))
+            var y = point.y
+            for url in payload.files {
+                insertDropped(file: url, at: CGPoint(x: point.x, y: y), asLink: payload.asLink)
+                y += 40
+            }
+            for url in payload.urls {
+                let label = url.scheme == "mailto" ? url.absoluteString.replacingOccurrences(of: "mailto:", with: "") : (url.host() ?? url.absoluteString)
+                tab.insertObject(html: "<div class=\"tim-object tim-text tim-style-body\"><a href=\"\(Markdown.escapeText(url.absoluteString))\">\(Markdown.escapeText(label))</a></div>",
+                                 colSpan: 8, rowSpan: 2, at: CGPoint(x: point.x, y: y))
+                y += 40
+            }
+            if let text = payload.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
+                let paras = text.components(separatedBy: "\n\n").map { "<p>\(Markdown.escapeText($0).replacingOccurrences(of: "\n", with: "<br>"))</p>" }.joined()
+                tab.insertObject(html: "<div class=\"tim-object tim-text tim-style-body\">\(paras)</div>", colSpan: 12, rowSpan: 3, at: CGPoint(x: point.x, y: y))
             }
             return true
         }
     }
-    private func unregisterFileDrops() {
+    private func unregisterDrops() {
         guard let view = tab.webView as? TimWebView else { return }
-        view.fileDrop = nil
-        view.fileDropHover = nil
+        view.drop = nil
+        view.dropHover = nil
     }
 
-    private func insertMediaFile(_ fileURL: URL, at point: CGPoint?) {
+    static func dropLabel(for p: TimWebView.DropPayload) -> String {
+        if p.asLink { return p.files.count > 1 ? "Add \(p.files.count) download links" : "Add as download link" }
+        if let f = p.files.first {
+            let ext = f.pathExtension.lowercased()
+            let suffix = p.files.count > 1 ? " (+\(p.files.count - 1))" : ""
+            switch MediaKind.of(fileExtension: ext) {
+            case .image: return "Add image" + suffix
+            case .video: return "Add video" + suffix
+            case .audio: return "Add audio" + suffix
+            case .pdf: return "Embed PDF" + suffix
+            case .file: return (["md", "markdown", "txt", "text"].contains(ext) ? "Add as text" : "Add download link") + suffix
+            }
+        }
+        if !p.urls.isEmpty { return "Add link" }
+        return "Add text"
+    }
+
+    private func insertDropped(file: URL, at point: CGPoint, asLink: Bool) {
+        let ext = file.pathExtension.lowercased()
+        if asLink { insertMediaFile(file, at: point, forcedKind: .file); return }
+        if ["md", "markdown", "txt", "text"].contains(ext) {
+            let raw = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+            let html = (ext.hasPrefix("m"))
+                ? Markdown.html(raw)
+                : raw.components(separatedBy: "\n\n").map { "<p>\(Markdown.escapeText($0).replacingOccurrences(of: "\n", with: "<br>"))</p>" }.joined()
+            tab.insertObject(html: "<div class=\"tim-object tim-text tim-style-body\">\(html)</div>", colSpan: 12, rowSpan: 4, at: point)
+            return
+        }
+        insertMediaFile(file, at: point)
+    }
+
+    private func insertMediaFile(_ fileURL: URL, at point: CGPoint?, forcedKind: MediaKind? = nil) {
         let name = fileURL.lastPathComponent
-        let kind = MediaKind.of(fileExtension: fileURL.pathExtension)
+        let kind = forcedKind ?? MediaKind.of(fileExtension: fileURL.pathExtension)
 
         // Resolve the mirror on the main thread (may persist a default).
         var resolvedSite = site
@@ -2787,6 +2857,7 @@ struct EditingToolbar: View {
         case .image: return (8, 8)
         case .video: return (12, 8)
         case .audio: return (8, 2)
+        case .pdf: return (12, 16)
         case .file: return (6, 2)
         }
     }
@@ -2857,6 +2928,9 @@ struct EditingToolbar: View {
             return #"<video class="tim-object" controls playsinline src="\#(src)"></video>"#
         case .audio:
             return #"<audio class="tim-object" controls src="\#(src)"></audio>"#
+        case .pdf:
+            // Inline where browsers can; a plain link where they can't.
+            return "<object class=\"tim-object tim-embed\" data=\"\(src)\" type=\"application/pdf\" style=\"width:100%;height:100%\" aria-label=\"\(name)\"><a href=\"\(src)\">\(name)</a></object>"
         case .file:
             return "<div class=\"tim-object tim-text tim-style-body\"><a href=\"\(src)\">\(name)</a></div>"
         }
@@ -2931,6 +3005,9 @@ struct EditingToolbar: View {
 
 // MARK: - Link picker: link targets in proximity order
 
+/// Linking to your own pages should be a picture, not a path: the site's
+/// pages as thumbnails, this page's sections, your other sites, and a
+/// field that takes any address — with Remove Link when you're on one.
 struct LinkPicker: View {
     @ObservedObject var tab: Tab
     let site: Site?
@@ -2938,73 +3015,117 @@ struct LinkPicker: View {
 
     @State private var query = ""
     @State private var anchors: [String] = []
+    @State private var currentLink = ""
+    @State private var hovering: String?
 
     private var pageURL: URL? { tab.webView.url }
-    private var siblings: [LinkOption] { LinkSources.siblings(pageURL: pageURL, site: site) }
+    private var currentRel: String? { pageURL.flatMap { u in site?.relativePagePath(for: u) } }
+    private var sitePages: [LinkOption] {
+        guard let site else { return LinkSources.siblings(pageURL: pageURL, site: nil) }
+        return LinkSources.pages(for: site)
+            .filter { $0.href != currentRel }
+            .map { LinkOption(label: $0.label, href: site.origin + $0.href) }
+    }
     private var yours: [LinkOption] { LinkSources.yourPages(excluding: pageURL) }
-
-    private func matches(_ label: String) -> Bool {
-        query.isEmpty || label.localizedCaseInsensitiveContains(query)
+    private func matches(_ label: String) -> Bool { query.isEmpty || label.localizedCaseInsensitiveContains(query) }
+    private var typedIsAddress: Bool {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        return q.contains("://") || q.hasPrefix("mailto:") || q.hasPrefix("#") || q.hasPrefix("/") || (q.contains(".") && !q.contains(" "))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            TextField("Type to filter, or paste any URL", text: $query)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit { apply(LinkSources.normalize(query)) }
+            HStack(spacing: 8) {
+                Image(systemName: "link").foregroundStyle(.secondary)
+                TextField("Search your pages, or type any address", text: $query)
+                    .textFieldStyle(.plain)
+                    .onSubmit { if typedIsAddress { apply(LinkSources.normalize(query)) } }
+            }
+            .padding(.horizontal, 10).frame(height: 30)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(0.06)))
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    let anchorItems = Array(anchors.enumerated()).filter { matches($0.element) }
-                    if !anchorItems.isEmpty {
-                        sectionHeader("On This Page")
-                        ForEach(anchorItems, id: \.offset) { item in
-                            row(label: item.element, detail: "section", symbol: "number") {
-                                tab.anchorHref(at: item.offset) { href in apply(href) }
-                            }
+                VStack(alignment: .leading, spacing: 8) {
+                    let pages = sitePages.filter { matches($0.label) }
+                    if !pages.isEmpty {
+                        sectionHeader(site.map { $0.name.isEmpty ? "This Site" : $0.name } ?? "This Folder")
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
+                            ForEach(pages) { page in pageCard(page) }
                         }
                     }
-                    let sib = siblings.filter { matches($0.label) }
-                    if !sib.isEmpty {
-                        sectionHeader(site != nil ? "On This Site" : "In This Folder")
-                        ForEach(sib) { option in
-                            row(label: option.label, detail: option.href, symbol: "doc.text") {
-                                apply(option.href)
+                    let anchorItems = Array(anchors.enumerated()).filter { matches($0.element) }
+                    if !anchorItems.isEmpty {
+                        sectionHeader("Sections of This Page")
+                        ForEach(anchorItems, id: \.offset) { item in
+                            row(label: item.element, detail: "", symbol: "number") {
+                                tab.anchorHref(at: item.offset) { href in apply(href) }
                             }
                         }
                     }
                     let mine = yours.filter { matches($0.label) }
                     if !mine.isEmpty {
-                        sectionHeader("Your Pages")
+                        sectionHeader("Your Other Sites")
                         ForEach(mine) { option in
-                            row(label: option.label, detail: option.href, symbol: "globe") {
-                                apply(option.href)
-                            }
+                            row(label: option.label, detail: option.href, symbol: "globe") { apply(option.href) }
                         }
                     }
-                    if anchorItems.isEmpty, sib.isEmpty, mine.isEmpty {
-                        Text(query.isEmpty
-                             ? "No link targets yet — paste a URL above."
-                             : "No matches — press return to link to “\(query)”.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 6)
+                    if pages.isEmpty, anchorItems.isEmpty, mine.isEmpty, !typedIsAddress {
+                        Text(query.isEmpty ? "No pages yet — type an address to link anywhere." : "No pages match “\(query)”.")
+                            .font(.caption).foregroundStyle(.secondary).padding(.top, 6)
                     }
                 }
+                .padding(.bottom, 4)
             }
-            .frame(maxHeight: 280)
+            .frame(maxHeight: 300)
 
             HStack {
+                if !currentLink.isEmpty {
+                    Button("Remove Link") { tab.format("unlink"); dismiss() }
+                        .controlSize(.small)
+                }
                 Spacer()
-                Button("Link") { apply(LinkSources.normalize(query)) }
+                Button(typedIsAddress ? "Link to “\(query.trimmingCharacters(in: .whitespaces))”" : "Link") { apply(LinkSources.normalize(query)) }
                     .buttonStyle(.borderedProminent)
+                    .tint(timYellow)
+                    .foregroundStyle(.black)
                     .controlSize(.small)
-                    .disabled(query.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(!typedIsAddress)
+                    .lineLimit(1)
             }
         }
         .padding(12)
-        .frame(width: 360)
-        .onAppear { tab.pageAnchors { anchors = $0 } }
+        .frame(width: 372)
+        .onAppear {
+            tab.pageAnchors { anchors = $0 }
+            tab.selectionLink { currentLink = $0 }
+        }
+    }
+
+    private func pageCard(_ page: LinkOption) -> some View {
+        Button { apply(page.href) } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Group {
+                    if let thumb = ThumbnailStore.image(for: page.href) {
+                        Image(nsImage: thumb).resizable().aspectRatio(contentMode: .fill)
+                    } else {
+                        ZStack {
+                            Rectangle().fill(Color.primary.opacity(0.06))
+                            Image(systemName: "doc.text").font(.system(size: 14)).foregroundStyle(.quaternary)
+                        }
+                    }
+                }
+                .frame(height: 66)
+                .frame(maxWidth: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(hovering == page.href ? timYellow : Color.primary.opacity(0.12), lineWidth: hovering == page.href ? 2 : 1))
+                Text(page.label).font(.system(size: 11)).lineLimit(1)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 ? page.href : (hovering == page.href ? nil : hovering) }
+        .help(page.href)
     }
 
     private func sectionHeader(_ title: String) -> some View {
@@ -3012,28 +3133,18 @@ struct LinkPicker: View {
             .font(.caption2.weight(.semibold))
             .foregroundStyle(.secondary)
             .textCase(.uppercase)
-            .padding(.top, 6)
+            .padding(.top, 4)
     }
 
     private func row(label: String, detail: String, symbol: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 8) {
-                Image(systemName: symbol)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 16)
-                Text(label)
-                    .lineLimit(1)
+                Image(systemName: symbol).font(.system(size: 11)).foregroundStyle(Color.accentColor).frame(width: 16)
+                Text(label).lineLimit(1)
                 Spacer(minLength: 12)
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: 130, alignment: .trailing)
+                Text(detail).font(.caption).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle).frame(maxWidth: 140, alignment: .trailing)
             }
-            .padding(.vertical, 4)
-            .padding(.horizontal, 6)
+            .padding(.vertical, 4).padding(.horizontal, 6)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -3044,6 +3155,63 @@ struct LinkPicker: View {
         guard !value.isEmpty else { return }
         tab.format("createLink", value: value)
         dismiss()
+    }
+}
+
+/// The floating bar over selected text: what you'd reach for, where your
+/// eyes already are. Bold, italic, underline, strike, link, and the
+/// named styles — over a glass capsule that follows the selection.
+struct SelectionBar: View {
+    @ObservedObject var tab: Tab
+    let site: Site?
+    @State private var showLink = false
+
+    private var ts: [String: Any] { tab.textSelection ?? [:] }
+    private func on(_ key: String) -> Bool { (ts[key] as? Int) == 1 }
+
+    var body: some View {
+        HStack(spacing: 1) {
+            barButton("bold", on: on("bold")) { tab.format("bold") }
+            barButton("italic", on: on("italic")) { tab.format("italic") }
+            barButton("underline", on: on("underline")) { tab.format("underline") }
+            barButton("strikethrough", on: on("strike")) { tab.format("strikethrough") }
+            Divider().frame(height: 14).padding(.horizontal, 3)
+            barButton("link", on: !((ts["link"] as? String) ?? "").isEmpty) { showLink = true }
+                .popover(isPresented: $showLink, arrowEdge: .top) {
+                    LinkPicker(tab: tab, site: site) { showLink = false }
+                }
+            Menu {
+                Button("Title") { tab.applyTextStyle("tim-style-title") }
+                Button("Heading") { tab.applyTextStyle("tim-style-heading") }
+                Button("Subheading") { tab.applyTextStyle("tim-style-subheading") }
+                Button("Body") { tab.applyTextStyle("tim-style-body") }
+            } label: {
+                Text("Aa").font(.system(size: 12, weight: .semibold))
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .frame(width: 30, height: 24)
+            .help("Text style")
+        }
+        .padding(.horizontal, 6)
+        .frame(height: 32)
+        .glassEffect(.regular, in: Capsule())
+        .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
+    }
+
+    private func barButton(_ symbol: String, on: Bool, action: @escaping () -> Void) -> some View {
+        Button {
+            action()
+            tab.webView.evaluateJavaScript("window.__timTextSelRefresh && window.__timTextSelRefresh();", completionHandler: nil)
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: 26, height: 24)
+                .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(on ? Color.primary.opacity(0.14) : .clear))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
     }
 }
 

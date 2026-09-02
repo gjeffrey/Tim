@@ -42,6 +42,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     public var suppressDraftResume = false
     /// An unpublished draft of this page exists on this Mac.
     @Published public var hasDraft = false
+    /// A non-empty text selection inside the text being edited: viewport
+    /// rect in CSS px plus formatting state — what the floating bar shows.
+    @Published public var textSelection: [String: Any]?
     @Published public var isLoading: Bool = false
     @Published public var loadingProgress: Double = 0
     @Published public var canGoBack: Bool = false
@@ -79,6 +82,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.configuration.userContentController.add(self, name: "timSel")
+        webView.configuration.userContentController.add(self, name: "timText")
         #if os(iOS)
         // The Mac refuses first responder while the address bar is being
         // typed in; on iOS the equivalent is stopping the page's own
@@ -178,7 +182,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
             webView.evaluateJavaScript(Self.canvasJS, completionHandler: nil)
             webView.evaluateJavaScript("window.__timCanvasOn && window.__timCanvasOn();", completionHandler: nil)
         } else {
+            textSelection = nil
             webView.evaluateJavaScript("window.__timCanvasOff && window.__timCanvasOff();", completionHandler: nil)
+        }
+    }
+
+    /// The link around the current text caret/selection, if any.
+    public func selectionLink(_ completion: @escaping (String) -> Void) {
+        webView.evaluateJavaScript("(function(){var s=window.getSelection();var n=s&&s.anchorNode;if(!n)return '';var e=n.nodeType===1?n:n.parentElement;var a=e&&e.closest?e.closest('a[href]'):null;return a?(a.getAttribute('href')||''):''})()") { r, _ in
+            completion(r as? String ?? "")
         }
     }
 
@@ -571,9 +583,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     /// Page motion modes ("reveal", "fade", both, or "") — stored on the
     /// body, emitted as style+script at save by PageMotion.
     /// Drop target preview while files hover over the page (nil hides it).
-    public func showDropHover(at point: CGPoint?, colSpan: Int = 8, rowSpan: Int = 8) {
-        let js = point.map { "window.__timDropHover && window.__timDropHover(\(Int($0.x)), \(Int($0.y)), \(colSpan), \(rowSpan));" }
-            ?? "window.__timDropHover && window.__timDropHover(-1, -1, 0, 0);"
+    public func showDropHover(at point: CGPoint?, colSpan: Int = 8, rowSpan: Int = 8, label: String = "") {
+        let js = point.map { "window.__timDropHover && window.__timDropHover(\(Int($0.x)), \(Int($0.y)), \(colSpan), \(rowSpan), \(Self.jsLiteral(label)));" }
+            ?? "window.__timDropHover && window.__timDropHover(-1, -1, 0, 0, '');"
         webView.evaluateJavaScript(js, completionHandler: nil)
     }
 
@@ -1125,9 +1137,14 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
       }
       // Where dropped files would land: the target cells, live.
-      window.__timDropHover = function (x, y, colSpan, rowSpan) {
+      var dropLabel = doc.createElement('div');
+      dropLabel.style.cssText = 'position:absolute;left:8px;top:8px;background:#0a84ff;color:#fff;font:11px -apple-system,sans-serif;padding:3px 8px;border-radius:5px;white-space:nowrap;';
+      dropBox.appendChild(dropLabel);
+      window.__timDropHover = function (x, y, colSpan, rowSpan, label) {
         var canvas = doc.querySelector('[data-tim-canvas]');
         if (x < 0 || !canvas) { dropBox.style.display = 'none'; return; }
+        dropLabel.textContent = label || '';
+        dropLabel.style.display = label ? 'block' : 'none';
         var cell = cellAt(canvas, x, y);
         var g = gridInfo(canvas);
         var cr = canvas.getBoundingClientRect();
@@ -1971,6 +1988,39 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         layout();
         notifySel(true);
       };
+
+      // The floating text bar: while text is being edited and a real
+      // range is selected, the app hears where it is and what it's like.
+      var textSelTimer = null;
+      function postTextSel() {
+        if (!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.timText)) { return; }
+        var payload = '';
+        try {
+          var s = window.getSelection();
+          if (active && editingEl && s && s.rangeCount && !s.isCollapsed
+              && editingEl.contains(s.anchorNode) && editingEl.contains(s.focusNode)) {
+            var r = s.getRangeAt(0).getBoundingClientRect();
+            if (r.width || r.height) {
+              var an = s.anchorNode.nodeType === 1 ? s.anchorNode : s.anchorNode.parentElement;
+              var link = an && an.closest ? an.closest('a[href]') : null;
+              payload = JSON.stringify({
+                x: r.left, y: r.top, w: r.width, h: r.height,
+                bold: doc.queryCommandState('bold') ? 1 : 0,
+                italic: doc.queryCommandState('italic') ? 1 : 0,
+                underline: doc.queryCommandState('underline') ? 1 : 0,
+                strike: doc.queryCommandState('strikeThrough') ? 1 : 0,
+                link: link ? (link.getAttribute('href') || '') : ''
+              });
+            }
+          }
+        } catch (e) {}
+        window.webkit.messageHandlers.timText.postMessage(payload);
+      }
+      function scheduleTextSel() { clearTimeout(textSelTimer); textSelTimer = setTimeout(postTextSel, 160); }
+      doc.addEventListener('selectionchange', scheduleTextSel);
+      window.addEventListener('scroll', scheduleTextSel, true);
+      window.addEventListener('resize', scheduleTextSel);
+      window.__timTextSelRefresh = postTextSel;
 
       var insertPoint = null;
       window.__timInsertAt = function (html, colSpan, rowSpan, x, y) {
@@ -3060,6 +3110,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
 
 extension Tab: WKScriptMessageHandler {
     public func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == "timText" {
+            if let json = message.body as? String, !json.isEmpty, let data = json.data(using: .utf8),
+               let info = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                textSelection = info
+            } else if textSelection != nil {
+                textSelection = nil
+            }
+            return
+        }
         guard message.name == "timSel" else { return }
         if let json = message.body as? String, !json.isEmpty,
            let data = json.data(using: .utf8),
@@ -3075,6 +3134,7 @@ extension Tab: WKNavigationDelegate {
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         // Navigating away always leaves edit mode.
         if isEditing { isEditing = false }
+        textSelection = nil
         isTimPage = false
         lastHTTPStatus = 200
     }
@@ -3310,15 +3370,32 @@ public final class BrowserStore: ObservableObject {
 /// address field is editing, only a real click into the page moves focus.
 public final class TimWebView: WKWebView {
     public var addressEditing: () -> Bool = { false }
-    /// Files dragged onto the page while editing: (urls, point in page
-    /// CSS pixels) → true when handled. Hover reports the point, nil on exit.
-    public var fileDrop: ((_ urls: [URL], _ point: CGPoint) -> Bool)?
-    public var fileDropHover: ((_ point: CGPoint?) -> Void)?
+    /// What landed on the page: files, web addresses, or plain text — and
+    /// whether Option was held (add as a download link, not an embed).
+    public struct DropPayload {
+        public var files: [URL] = []
+        public var urls: [URL] = []
+        public var text: String?
+        public var asLink = false
+        public var isEmpty: Bool { files.isEmpty && urls.isEmpty && (text ?? "").isEmpty }
+    }
+    /// Drops while editing: (payload, point in page CSS pixels) → true when
+    /// handled. Hover reports the point and the Option state; nil on exit.
+    public var drop: ((_ payload: DropPayload, _ point: CGPoint) -> Bool)?
+    public var dropHover: ((_ point: CGPoint?, _ payload: DropPayload) -> Void)?
 
     #if os(macOS)
-    private func mediaURLs(_ sender: NSDraggingInfo) -> [URL] {
-        let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
-        return urls.filter { MediaKind.of(fileExtension: $0.pathExtension) != .file }
+    private func payload(_ sender: NSDraggingInfo) -> DropPayload {
+        var p = DropPayload()
+        let pb = sender.draggingPasteboard
+        let all = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? []
+        p.files = all.filter(\.isFileURL)
+        p.urls = all.filter { !$0.isFileURL && $0.scheme != nil }
+        if p.files.isEmpty, p.urls.isEmpty, let s = pb.string(forType: .string), !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if let u = URL(string: s.trimmingCharacters(in: .whitespacesAndNewlines)), let scheme = u.scheme, ["http", "https", "mailto"].contains(scheme) { p.urls = [u] } else { p.text = s }
+        }
+        p.asLink = NSEvent.modifierFlags.contains(.option)
+        return p
     }
     private func pagePoint(_ sender: NSDraggingInfo) -> CGPoint {
         let p = convert(sender.draggingLocation, from: nil)
@@ -3326,22 +3403,22 @@ public final class TimWebView: WKWebView {
         return CGPoint(x: p.x / m, y: p.y / m)
     }
     public override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        if fileDrop != nil, !mediaURLs(sender).isEmpty { fileDropHover?(pagePoint(sender)); return .copy }
+        if drop != nil { let p = payload(sender); if !p.isEmpty { dropHover?(pagePoint(sender), p); return .copy } }
         return super.draggingEntered(sender)
     }
     public override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        if fileDrop != nil, !mediaURLs(sender).isEmpty { fileDropHover?(pagePoint(sender)); return .copy }
+        if drop != nil { let p = payload(sender); if !p.isEmpty { dropHover?(pagePoint(sender), p); return .copy } }
         return super.draggingUpdated(sender)
     }
     public override func draggingExited(_ sender: NSDraggingInfo?) {
-        fileDropHover?(nil)
+        dropHover?(nil, DropPayload())
         super.draggingExited(sender)
     }
     public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        fileDropHover?(nil)
-        if let fileDrop {
-            let urls = mediaURLs(sender)
-            if !urls.isEmpty, fileDrop(urls, pagePoint(sender)) { return true }
+        dropHover?(nil, DropPayload())
+        if let drop {
+            let p = payload(sender)
+            if !p.isEmpty, drop(p, pagePoint(sender)) { return true }
         }
         return super.performDragOperation(sender)
     }
