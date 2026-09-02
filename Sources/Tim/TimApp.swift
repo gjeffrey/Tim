@@ -84,7 +84,21 @@ struct TimApp: App {
         updaterController.updater.checkForUpdates()
     }
 
+    /// The app's identifier changed to com.gabrieljeffrey.tim. Everything
+    /// saved under the old one — sites, tabs, settings — moves over on the
+    /// first launch, and the old preferences domain is removed.
+    static func migrateLegacyDefaults() {
+        let legacy = "com.gabrieljeffrey.tim"
+        let std = UserDefaults.standard
+        guard std.object(forKey: "tim.sites.v1") == nil,
+              let old = UserDefaults(suiteName: legacy)?.persistentDomain(forName: legacy), !old.isEmpty
+        else { return }
+        for (key, value) in old where key.hasPrefix("tim.") { std.set(value, forKey: key) }
+        UserDefaults.standard.removePersistentDomain(forName: legacy)
+    }
+
     init() {
+        Self.migrateLegacyDefaults()
         // Preload picker previews: warm the curated catalog's fonts
         // (download-once, persistent) so lists render instantly.
         GoogleFonts.prewarm(FontCatalog.options.compactMap { $0.googleQuery != nil ? $0.name : nil })
