@@ -3146,7 +3146,7 @@ extension Tab: WKNavigationDelegate {
     public func stashDraft(_ completion: (() -> Void)? = nil) {
         guard isEditing, let url = webView.url, !url.isFileURL else { completion?(); return }
         currentHTML { html in
-            if let html { DraftStore.save(html, for: url.absoluteString); self?.hasDraft = true }
+            if let html { DraftStore.save(html, for: url.absoluteString); self.hasDraft = true }
             completion?()
         }
     }
