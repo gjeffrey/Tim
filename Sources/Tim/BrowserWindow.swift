@@ -1082,7 +1082,7 @@ struct MobilePreviewPane: View {
                 .foregroundStyle(.secondary)
                 .padding(.top, 12)
                 WebViewContainer(webView: model.webView)
-                    .frame(width: 375)
+                    .frame(minWidth: 0, idealWidth: 375, maxWidth: 375)
                     .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: 22, style: .continuous)
@@ -1092,7 +1092,7 @@ struct MobilePreviewPane: View {
                     .padding(.bottom, 16)
             }
         }
-        .frame(width: 420)
+        .frame(minWidth: 0, idealWidth: 420, maxWidth: 420)
         .onAppear { sync() }
         .onChange(of: tab.urlString) { _, _ in
             model.lastURL = ""
@@ -1186,8 +1186,13 @@ struct TabContentView: View {
                 // Editing widens the frame onto the pasteboard — the page
                 // itself stays a true 390; the rest is where off-page
                 // objects live in plain sight.
+                // Ideal, not fixed: a hard width here is a hard MINIMUM to
+                // the split view, and sidebar + inspector + 680 can't fit a
+                // 900-point window — AppKit looped on constraints and the
+                // app aborted at launch. The page inside stays a true 390
+                // by CSS; only pasteboard room gives way when space is tight.
                 WebViewContainer(webView: tab.webView)
-                    .frame(width: tab.isEditing ? 680 : 390)
+                    .frame(minWidth: 0, idealWidth: tab.isEditing ? 680 : 390, maxWidth: tab.isEditing ? 680 : 390)
                     .clipShape(shape)
                     .overlay(
                         ZStack {
@@ -1272,7 +1277,7 @@ struct TabContentView: View {
             // (Only the column width is pinned: a fixed .frame on the
             // content as well made the split view's min/max size flip
             // during a constraint pass — an AppKit exception and a crash.)
-            .inspectorColumnWidth(300)
+            .inspectorColumnWidth(min: 280, ideal: 300, max: 320)
         }
         .navigationTitle("")
         // The toolbar wears the sidebar's material — one piece of chrome.
@@ -2275,6 +2280,12 @@ struct EditingToolbar: View {
     }
 
     var body: some View {
+        // The strip must be able to get NARROWER than its buttons: a row of
+        // fixed-size controls is a hard minimum to the window's split view,
+        // and at the window's minimum width (sidebar + inspector + this)
+        // AppKit could not settle its constraints and the app aborted at
+        // launch. Scrolling sideways when cramped costs nothing.
+        ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 12) {
             Menu {
                 Section("Objects") {
@@ -2392,8 +2403,10 @@ struct EditingToolbar: View {
                     .truncationMode(.middle)
             }
         }
-        .controlSize(.small)
         .padding(.horizontal, 12)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .controlSize(.small)
         .padding(.vertical, 6)
         .background(.ultraThinMaterial)
         .overlay(alignment: .bottom) {
