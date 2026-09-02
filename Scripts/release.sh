@@ -54,8 +54,11 @@ codesign --force --options runtime --timestamp --sign "$IDENTITY" "Tim.app"
 codesign --verify --deep --strict "Tim.app" && echo "signature OK"
 
 mkdir -p "$RELEASES_DIR"
-ZIP="$RELEASES_DIR/Tim.zip"
-rm -f "$ZIP"
+# Versioned artifact: the site is behind Cloudflare, which caches zips
+# for two days — a same-named upload was served stale to Sparkle (and
+# failed its signature check). A new name per release is a new URL.
+ZIP="$RELEASES_DIR/Tim-$VERSION.zip"
+rm -f "$ZIP" "$RELEASES_DIR/Tim.zip"
 ditto -c -k --keepParent "Tim.app" "$ZIP"
 
 if [ ${#NOTARY_AUTH[@]} -gt 0 ]; then
@@ -76,9 +79,13 @@ echo "== Appcast"
     -o "$RELEASES_DIR/appcast.xml"
 
 echo "== Uploading to gabrieljeffrey.com/tim"
+# The versioned zip is what the appcast points at; Tim.zip stays the
+# site's stable download link (uncached at the edge via .htaccess).
 sftp -o BatchMode=yes -b - "$SFTP_DEST" <<SFTP
+put "$ZIP" "$REMOTE_ROOT/$(basename "$ZIP")"
 put "$ZIP" "$REMOTE_ROOT/Tim.zip"
 put "$RELEASES_DIR/appcast.xml" "$REMOTE_ROOT/appcast.xml"
+put "Scripts/tim-htaccess" "$REMOTE_ROOT/.htaccess"
 SFTP
 
-echo "Release complete: https://gabrieljeffrey.com/tim/Tim.zip"
+echo "Release complete: https://gabrieljeffrey.com/tim/$(basename "$ZIP") (and Tim.zip)"

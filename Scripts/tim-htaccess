@@ -1,0 +1,12 @@
+# gabrieljeffrey.com/tim — uploaded by Scripts/release.sh as .htaccess
+# The site sits behind Cloudflare, which caches zips for 48h by default.
+# Release artifacts are versioned (Tim-x.y.zip) so each is a fresh URL;
+# the two files that change in place must never be cached at the edge.
+<IfModule mod_headers.c>
+  <Files "Tim.zip">
+    Header set Cache-Control "no-cache, max-age=0, must-revalidate"
+  </Files>
+  <Files "appcast.xml">
+    Header set Cache-Control "no-cache, max-age=0, must-revalidate"
+  </Files>
+</IfModule>
