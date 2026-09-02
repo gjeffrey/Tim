@@ -1149,30 +1149,67 @@ struct TabContentView: View {
     }
     private var isPageEditable: Bool { siteStore.isEditable(pageURL, timAuthored: tab.isTimPage) }
 
-    /// The page as a card — same family as the panel card, with Tim's
-    /// signature riding the card's own edge: the yellow frame when the
-    /// page is yours, a quiet hairline when it isn't.
-    private func pageCard(_ content: some View, radius: CGFloat = 10) -> some View {
-        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        return content
-            .background(Color(nsColor: .textBackgroundColor))
-            .clipShape(shape)
-            .overlay(
-                shape.strokeBorder(
-                    isPageEditable ? AnyShapeStyle(timYellow.opacity(tab.isEditing ? 1 : 0.85)) : AnyShapeStyle(Color.primary.opacity(0.12)),
-                    lineWidth: isPageEditable ? (tab.isEditing ? 2.5 : 1.5) : 1
-                )
-                .allowsHitTesting(false)
-            )
-            .shadow(color: .black.opacity(0.14), radius: 5, y: 2)
-            .padding(8)
-            .animation(.easeInOut(duration: 0.35), value: isPageEditable)
-            .animation(.easeInOut(duration: 0.35), value: tab.isEditing)
+    /// Tim's signature: a thin yellow frame on the page's own edge when
+    /// the page is yours, a touch stronger while you're editing it.
+    private var ownershipLine: some View {
+        Rectangle()
+            .strokeBorder(timYellow.opacity(tab.isEditing ? 1 : 0.85),
+                          lineWidth: isPageEditable ? (tab.isEditing ? 2 : 1.5) : 0)
+            .allowsHitTesting(false)
+            .animation(.easeInOut(duration: 0.3), value: isPageEditable)
+            .animation(.easeInOut(duration: 0.3), value: tab.isEditing)
+    }
+
+    /// The page fills its pane, Safari-style — no gutter, no drawn card.
+    /// Phone view is the exception: a device preview deserves to look
+    /// like a device sitting on the window's surface.
+    @ViewBuilder private var pageArea: some View {
+        if tab.isMobilePreview {
+            let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                // Editing widens the frame onto the pasteboard — the page
+                // itself stays a true 390; the rest is where off-page
+                // objects live in plain sight.
+                WebViewContainer(webView: tab.webView)
+                    .frame(width: tab.isEditing ? 680 : 390)
+                    .clipShape(shape)
+                    .overlay(
+                        shape.strokeBorder(
+                            isPageEditable ? AnyShapeStyle(timYellow.opacity(tab.isEditing ? 1 : 0.85))
+                                           : AnyShapeStyle(Color.primary.opacity(0.15)),
+                            lineWidth: isPageEditable ? 2 : 1
+                        )
+                        .allowsHitTesting(false)
+                    )
+                    .shadow(color: .black.opacity(0.16), radius: 14, y: 4)
+                    .padding(.vertical, 16)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(.regularMaterial)
+        } else if viewMode == 1 {
+            HStack(spacing: 0) {
+                WebViewContainer(webView: tab.webView)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay(ownershipLine)
+                Divider()
+                MobilePreviewPane(tab: tab, pageURL: pageURL)
+            }
+        } else {
+            WebViewContainer(webView: tab.webView)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay(ownershipLine)
+        }
     }
 
     var body: some View {
         VStack(spacing: 0) {
             if tab.isEditing {
+                // Preview's markup bar: the format row belongs to the
+                // editing mode, and arrives as one coordinated motion
+                // with the inspector — a single spring, no two-stage
+                // jump, nothing sliding across the page.
                 EditingToolbar(
                     tab: tab,
                     site: matchedSite,
@@ -1181,55 +1218,35 @@ struct TabContentView: View {
                 )
                 Divider()
             }
-            // Lightbox's cohesion recipe, adopted whole: the page and every
-        // side panel are the SAME rounded material-card treatment, sitting
-        // on one shared gutter surface — so chrome, panes, and content
-        // read as a single window instead of a port.
-        HStack(spacing: 0) {
+            pageArea
+        }
+        // The system inspector: AppKit owns the column, so the page can
+        // never starve it (the hand-rolled row did exactly that), and the
+        // pane wears the window's own material instead of a drawn card.
+        .inspector(isPresented: Binding(
+            get: { tab.isEditing || previewSha != nil },
+            set: { _ in }
+        )) {
             Group {
-                if tab.isMobilePreview {
-                    HStack {
-                        Spacer(minLength: 0)
-                        // Editing widens the card onto the pasteboard —
-                        // the page stays true 390; the extra is where
-                        // off-page objects live in plain sight.
-                        pageCard(WebViewContainer(webView: tab.webView)
-                            .frame(width: tab.isEditing ? 680 : 390), radius: 16)
-                        Spacer(minLength: 0)
-                    }
-                } else if viewMode == 1 {
-                    pageCard(WebViewContainer(webView: tab.webView))
-                    MobilePreviewPane(tab: tab, pageURL: pageURL)
+                if previewSha != nil {
+                    VersionPreviewPane(
+                        dateLabel: previewLabel,
+                        onRestore: { restorePreviewedVersion() },
+                        onRestoreAsNew: { restorePreviewAsNewPage() },
+                        onCancel: { exitVersionPreview() }
+                    )
                 } else {
-                    pageCard(WebViewContainer(webView: tab.webView))
+                    InspectorView(
+                        tab: tab,
+                        site: matchedSite,
+                        allowsTemplates: matchedSite != nil
+                            && !(matchedSite.map { AstroProject.isAstroProject($0.localProjectPath) } ?? false)
+                    )
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            if tab.isEditing || previewSha != nil {
-                Group {
-                    if previewSha != nil {
-                        VersionPreviewPane(
-                            dateLabel: previewLabel,
-                            onRestore: { restorePreviewedVersion() },
-                            onRestoreAsNew: { restorePreviewAsNewPage() },
-                            onCancel: { exitVersionPreview() }
-                        )
-                    } else {
-                        InspectorView(
-                            tab: tab,
-                            site: matchedSite,
-                            allowsTemplates: matchedSite != nil
-                                && !(matchedSite.map { AstroProject.isAstroProject($0.localProjectPath) } ?? false)
-                        )
-                    }
-                }
-                .timPanelCard()
-                .transaction { $0.animation = nil }
-            }
+            .transaction { $0.animation = nil }
+            .inspectorColumnWidth(min: 268, ideal: 288, max: 380)
         }
-        }
-        .background(Color(nsColor: .controlBackgroundColor))
         .navigationTitle("")
         .toolbar { toolbarContent }
         .onAppear {
@@ -1458,8 +1475,10 @@ struct TabContentView: View {
         // Ownership rides the glass itself as a yellow tint — no second
         // stroke, no glow, no pills inside pills.
         .clipShape(Capsule(style: .continuous))
+        // A whisper of yellow, not a highlighter: ownership is carried by
+        // the pencil badge; the glass only leans warm.
         .glassEffect(
-            (isPageEditable ? Glass.regular.tint(timYellow.opacity(0.5)) : Glass.regular).interactive(),
+            (isPageEditable ? Glass.regular.tint(timYellow.opacity(0.14)) : Glass.regular).interactive(),
             in: Capsule(style: .continuous)
         )
         .overlay(alignment: .bottomLeading) {
@@ -1481,9 +1500,20 @@ struct TabContentView: View {
     /// server we can write to, but outside every explicit connection):
     /// it's saved as a real connection and its mirror starts downloading
     /// while you edit, so Done has the full site to restamp against.
+    /// Entering and leaving edit mode changes the window's whole shape —
+    /// format bar in, inspector out, page resized. Animating that means
+    /// the web view relayouts on every frame of the animation, which is
+    /// exactly the jumpiness and tearing you see. One crisp frame beats
+    /// a janky quarter-second.
+    private func withoutMotion(_ body: () -> Void) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction, body)
+    }
+
     private func beginEditing() {
         if let matched = matchedSite { _ = ensureWorkspace(matched) }
-        tab.setEditing(true)
+        withoutMotion { tab.setEditing(true) }
     }
 
     /// The DOM about to be saved must still belong to the page this edit
@@ -1501,10 +1531,10 @@ struct TabContentView: View {
 
     /// Done means done: local pages save, site pages publish. One action.
     private func finishEditing() {
-        guard let url = tab.webView.url else { tab.setEditing(false); return }
+        guard let url = tab.webView.url else { withoutMotion { tab.setEditing(false) }; return }
 
         if isPlainLocalPage {
-            tab.setEditing(false)
+            withoutMotion { tab.setEditing(false) }
             ensureAutoSocialCard {
                 savePlainLocalPage {
                     PageRegistry.record(url: url.absoluteString, title: tab.title)
@@ -1514,7 +1544,7 @@ struct TabContentView: View {
             return
         }
 
-        guard let matched = matchedSite else { tab.setEditing(false); return }
+        guard let matched = matchedSite else { withoutMotion { tab.setEditing(false) }; return }
         let site = ensureWorkspace(matched)
 
         if AstroProject.isAstroProject(site.localProjectPath) {
@@ -2162,37 +2192,31 @@ struct TabContentView: View {
 
             // Fixed slots — the toolbar is the toolbar. Undo and redo are
             // always here (Keynote keeps them too), disabled outside an
-            // edit session; Edit and Done share one slot, one width.
-            HStack(spacing: 6) {
-                Button {
-                    tab.undoEdit()
-                } label: {
-                    Image(systemName: "arrow.uturn.backward")
-                        .frame(width: 24, height: 22)
-                        .contentShape(Rectangle())
-                }
-                .disabled(!tab.isEditing)
-                .help("Undo (⌘Z)")
-                Button {
-                    tab.redoEdit()
-                } label: {
-                    Image(systemName: "arrow.uturn.forward")
-                        .frame(width: 24, height: 22)
-                        .contentShape(Rectangle())
-                }
-                .disabled(!tab.isEditing)
-                .help("Redo (⇧⌘Z)")
-                Button(tab.isEditing ? "Done" : "Edit") {
-                    if tab.isEditing { finishEditing() } else { beginEditing() }
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(tab.isEditing ? Color.accentColor : Color.accentColor.opacity(0.85))
-                .frame(width: 56)
-                .disabled(!tab.isEditing && (!isPageEditable || previewSha != nil))
-                .help(tab.isEditing ? "Done (⌘E) — your changes are saved" : "Edit This Page (⌘E)")
-                .padding(.leading, 4)
+            // edit session; Edit and Done share one slot. Each is its own
+            // toolbar item: wrapping them in a stack made macOS render
+            // the cluster as one prominent blob.
+            Button {
+                tab.undoEdit()
+            } label: {
+                Label("Undo", systemImage: "arrow.uturn.backward")
             }
-            .padding(.horizontal, 4)
+            .disabled(!tab.isEditing)
+            .help("Undo (⌘Z)")
+
+            Button {
+                tab.redoEdit()
+            } label: {
+                Label("Redo", systemImage: "arrow.uturn.forward")
+            }
+            .disabled(!tab.isEditing)
+            .help("Redo (⇧⌘Z)")
+
+            Button(tab.isEditing ? "Done" : "Edit") {
+                if tab.isEditing { finishEditing() } else { beginEditing() }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!tab.isEditing && (!isPageEditable || previewSha != nil))
+            .help(tab.isEditing ? "Done (⌘E) — your changes are saved" : "Edit This Page (⌘E)")
 
             Menu {
                 ForEach(siteStore.sites) { site in
@@ -2360,13 +2384,10 @@ struct EditingToolbar: View {
                 }
             }
 
-            Text("double-click text to edit · drag objects to move · ⌫ deletes")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-
             Spacer()
 
+            // One quiet status slot — no chatty hints that truncate, no
+            // labels that come and go and shove the row around.
             if isWorking {
                 ProgressView()
                     .controlSize(.small)
@@ -2378,17 +2399,6 @@ struct EditingToolbar: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-            }
-            if site != nil {
-                Text("Done publishes")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .help("Done syncs your edits to the site and publishes them.")
-            } else if isLocalFile {
-                Text("Autosaves")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .help("Local pages save continuously — Done finishes up.")
             }
         }
         .controlSize(.small)
@@ -6262,7 +6272,17 @@ struct FontRow: View {
 struct WebViewContainer: NSViewRepresentable {
     let webView: WKWebView
 
-    func makeNSView(context: Context) -> WKWebView { webView }
+    func makeNSView(context: Context) -> WKWebView {
+        // A bare WKWebView reports a large fitting size, which starves
+        // whatever shares its row — the inspector was being crushed to a
+        // few points wide. The page takes the space it's given, never
+        // the space it wants.
+        for axis in [NSLayoutConstraint.Orientation.horizontal, .vertical] {
+            webView.setContentHuggingPriority(.defaultLow, for: axis)
+            webView.setContentCompressionResistancePriority(.defaultLow, for: axis)
+        }
+        return webView
+    }
     func updateNSView(_ nsView: WKWebView, context: Context) {}
 }
 
