@@ -1249,6 +1249,11 @@ struct TabContentView: View {
         }
         .navigationTitle("")
         .toolbar { toolbarContent }
+        // The toolbar wears the sidebar's material, so the top strip and
+        // the left strip read as one piece of window chrome with the page
+        // as content inside it — Safari's cohesion, not a white bar
+        // stapled above a gray pane.
+        .toolbarBackground(.regularMaterial, for: .windowToolbar)
         .onAppear {
             // Your own pages always load fresh — never a stale cached copy
             // of something you just published.
