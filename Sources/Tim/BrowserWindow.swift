@@ -2074,6 +2074,10 @@ struct TabContentView: View {
                 }
                 addressCapsule
                     .frame(minWidth: 280, idealWidth: 470, maxWidth: 560)
+                    // macOS wraps the principal item in its own glass pill; our
+                    // capsule ended flush against it on the right while the
+                    // top and bottom kept the container's inset. Match it.
+                    .padding(.trailing, 3)
             }
         }
 
