@@ -166,6 +166,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         isEditing = editing
         if editing {
             webView.evaluateJavaScript(Self.editTrackerJS, completionHandler: nil)
+            webView.evaluateJavaScript(
+                "window.__timNavCSS = \(Self.jsLiteral(NavKit.css)); window.__timNavJS = \(Self.jsLiteral(NavKit.script));",
+                completionHandler: nil
+            )
             webView.evaluateJavaScript(Self.canvasJS, completionHandler: nil)
             webView.evaluateJavaScript("window.__timCanvasOn && window.__timCanvasOn();", completionHandler: nil)
         } else {
@@ -554,6 +558,11 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     /// Sharing & search metadata: description, social image, favicon.
     /// Page motion modes ("reveal", "fade", both, or "") — stored on the
     /// body, emitted as style+script at save by PageMotion.
+    /// Rewrites the selected navigation object from its model (NavKit).
+    public func setNav(_ json: String) {
+        webView.evaluateJavaScript("window.__timNavSet && window.__timNavSet(\(Self.jsLiteral(json)));", completionHandler: nil)
+    }
+
     public func setPageMotion(_ modes: String) {
         let js = modes.isEmpty
             ? "document.body.removeAttribute('data-tim-motion');"
@@ -1802,6 +1811,83 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       window.addEventListener('scroll', layout, true);
       window.addEventListener('resize', layout);
 
+      // Navigation objects: read the model, rebuild from it, and make sure
+      // the page carries the nav style + script (handed in by the app).
+      window.__timNavAssets = function () {
+        if (!doc.querySelector('style[data-tim-nav]') && window.__timNavCSS) {
+          var st = doc.createElement('style'); st.setAttribute('data-tim-nav', ''); st.textContent = window.__timNavCSS;
+          (doc.head || doc.body).appendChild(st);
+        }
+        if (!doc.querySelector('script[data-tim-nav]') && window.__timNavJS) {
+          var sc = doc.createElement('script'); sc.setAttribute('data-tim-nav', ''); sc.textContent = window.__timNavJS;
+          doc.body.appendChild(sc);
+        }
+        if (window.__timNavRefresh) { window.__timNavRefresh(); }
+      };
+      function navRead(nav) {
+        var items = [];
+        var top = nav.querySelector(':scope > details > ul') || nav.querySelector('ul');
+        if (top) {
+          Array.prototype.forEach.call(top.children, function (li) {
+            var a = li.querySelector(':scope > a');
+            if (a) { items.push({ label: a.textContent.trim(), href: a.getAttribute('href') || '', depth: 0 }); }
+            var sub = li.querySelector(':scope > ul');
+            if (sub) {
+              Array.prototype.forEach.call(sub.children, function (li2) {
+                var a2 = li2.querySelector(':scope > a');
+                if (a2) { items.push({ label: a2.textContent.trim(), href: a2.getAttribute('href') || '', depth: 1 }); }
+              });
+            }
+          });
+        }
+        return {
+          d: nav.getAttribute('data-nav-d') || 'row',
+          m: nav.getAttribute('data-nav-m') || 'menu',
+          sel: nav.getAttribute('data-nav-sel') || 'underline',
+          align: nav.getAttribute('data-nav-align') || 'start',
+          gap: parseInt(nav.style.getPropertyValue('--nav-gap') || '24', 10) || 24,
+          label: nav.getAttribute('data-nav-label') || 'icon',
+          items: items
+        };
+      }
+      window.__timNavSet = function (json) {
+        var nav = sel && sel.closest ? sel.closest('.tim-nav') : null;
+        if (!nav) { return; }
+        var o = JSON.parse(json);
+        checkpoint('nav');
+        nav.setAttribute('data-nav-d', o.d || 'row');
+        nav.setAttribute('data-nav-m', o.m || 'menu');
+        nav.setAttribute('data-nav-sel', o.sel || 'underline');
+        nav.setAttribute('data-nav-align', o.align || 'start');
+        nav.setAttribute('data-nav-label', o.label || 'icon');
+        nav.style.setProperty('--nav-gap', (o.gap || 24) + 'px');
+        var det = nav.querySelector(':scope > details');
+        if (!det) {
+          det = doc.createElement('details'); det.open = true;
+          var sum = doc.createElement('summary'); sum.setAttribute('aria-label', 'Menu');
+          sum.innerHTML = '<span class="tim-nav-bars"></span><span class="tim-nav-word">Menu</span>';
+          det.appendChild(sum);
+          nav.innerHTML = ''; nav.appendChild(det);
+        }
+        var ul = doc.createElement('ul'), lastTop = null;
+        (o.items || []).forEach(function (it) {
+          var li = doc.createElement('li'), a = doc.createElement('a');
+          a.setAttribute('href', it.href || '#'); a.textContent = it.label || 'Untitled';
+          li.appendChild(a);
+          if (it.depth === 1 && lastTop) {
+            var sub = lastTop.querySelector(':scope > ul');
+            if (!sub) { sub = doc.createElement('ul'); lastTop.appendChild(sub); }
+            sub.appendChild(li);
+          } else { ul.appendChild(li); lastTop = li; }
+        });
+        var old = det.querySelector(':scope > ul');
+        if (old) { det.replaceChild(ul, old); } else { det.appendChild(ul); }
+        nav.__timMode = null;
+        window.__timNavAssets();
+        layout();
+        notifySel(true);
+      };
+
       window.__timInsert = function (html, colSpan, rowSpan) {
         colSpan = Math.max(1, Math.min(COLS, colSpan || 12));
         rowSpan = Math.max(1, rowSpan || 3);
@@ -1840,6 +1926,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         // writer prunes entries whose elements aren't in the page yet,
         // which silently erased a new object's mobile placement.
         canvas.appendChild(el);
+        if (placed.classList && placed.classList.contains('tim-nav')) { window.__timNavAssets(); }
         if (mobileActive()) {
           var mMax = 1;
           for (var mid in mobileLayout) { mMax = Math.max(mMax, mobileLayout[mid][2]); }
@@ -2350,6 +2437,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
                 src: sel.getAttribute('src') || ''
               } : 0,
               mobileHidden: (sel.hasAttribute && sel.hasAttribute('data-tim-mobile-hidden')) ? 1 : 0,
+              nav: (sel.classList && sel.classList.contains('tim-nav')) ? navRead(sel) : 0,
               rotation: (function () {
                 var m = /rotate\\((-?[0-9.]+)deg\\)/.exec(sel.style.transform || '');
                 return m ? parseFloat(m[1]) : 0;

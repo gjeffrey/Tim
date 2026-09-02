@@ -41,6 +41,7 @@ public enum MobileCSS {
         out = ensuringPasteboardRules(in: out)
         // Page motion rides the same save-time pass (both platforms call it).
         out = PageMotion.ensure(in: out)
+        out = NavKit.ensure(in: out)
         return out
     }
 

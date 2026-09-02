@@ -2274,12 +2274,15 @@ struct EditingToolbar: View {
                     } label: {
                         Label("Media…", systemImage: "photo.on.rectangle.angled")
                     }
-                    if let site, !isAstroSite {
-                        Button {
-                            navBuilderSite = site
-                        } label: {
-                            Label("Navigation…", systemImage: "list.bullet.rectangle")
+                    Button {
+                        var items: [NavKit.Item] = []
+                        if let site {
+                            items = LinkSources.pages(for: site).prefix(6).map { NavKit.Item(label: $0.label, href: site.origin + $0.href) }
                         }
+                        if items.isEmpty { items = [NavKit.Item(label: "Home", href: "/")] }
+                        tab.insertObject(html: NavKit.markup(items: items), colSpan: 24, rowSpan: 1)
+                    } label: {
+                        Label("Navigation", systemImage: "list.bullet.rectangle")
                     }
                 }
                 if let site, !isAstroSite {
@@ -4085,6 +4088,27 @@ struct InspectorView: View {
     }
 }
 
+/// The inspector's picture of a navigation object — mirrors NavKit's markup.
+struct NavModel: Codable, Equatable {
+    struct Item: Codable, Equatable, Identifiable {
+        var id = UUID()
+        var label: String
+        var href: String
+        var depth: Int
+        enum CodingKeys: String, CodingKey { case label, href, depth }
+    }
+    var d = "row", m = "menu", sel = "underline", align = "start", gap = 24, label = "icon"
+    var items: [Item] = []
+
+    static func from(_ any: Any?) -> NavModel? {
+        guard let dict = any as? [String: Any], let data = try? JSONSerialization.data(withJSONObject: dict) else { return nil }
+        return try? JSONDecoder().decode(NavModel.self, from: data)
+    }
+    var json: String {
+        (try? JSONEncoder().encode(self)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+    }
+}
+
 struct InspectorControls: View {
     @ObservedObject var tab: Tab
     var site: Site?
@@ -4164,7 +4188,11 @@ struct InspectorControls: View {
             ? "bounce" : ((video["loop"] as? Int) == 1 ? "loop" : "none"))
         _videoSound = State(initialValue: (video["muted"] as? Int) != 1)
         _videoControls = State(initialValue: (video["controls"] as? Int) == 1)
+        _nav = State(initialValue: NavModel.from(info["nav"]))
     }
+
+    @State private var nav: NavModel? = nil
+    @EnvironmentObject private var siteStore: SiteStore
 
     private var isText: Bool {
         (info["isText"] as? Int) == 1
@@ -4172,6 +4200,149 @@ struct InspectorControls: View {
     }
     private var isMedia: Bool {
         ["img", "video", "audio"].contains(info["tag"] as? String ?? "")
+    }
+
+    // MARK: Navigation
+
+    private func pushNav() { if let nav { tab.setNav(nav.json) } }
+
+    private var navPages: [LinkOption] {
+        guard let site = siteStore.match(URL(string: tab.urlString)) else { return [] }
+        return LinkSources.pages(for: site).map { LinkOption(label: $0.label, href: site.origin + $0.href) }
+    }
+
+    private func layoutPicker(_ title: String, _ value: Binding<String>) -> some View {
+        HStack {
+            rowLabel(title)
+            Picker("", selection: value) {
+                Label("Row", systemImage: "rectangle.split.3x1").tag("row")
+                Label("Column", systemImage: "rectangle.split.1x2").tag("column")
+                Label("Menu", systemImage: "line.3.horizontal").tag("menu")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .labelStyle(.iconOnly)
+        }
+    }
+
+    private var navCard: some View {
+        card("Navigation") {
+            let binding = Binding(get: { nav ?? NavModel() }, set: { nav = $0 })
+            layoutPicker("Desktop", binding.d)
+                .help("How the menu lays out on desktops: a row of links, a column, or a Menu button that opens a panel.")
+            layoutPicker("iPhone", binding.m)
+                .help("How the same menu lays out on phones.")
+            HStack {
+                rowLabel("Selected")
+                Picker("", selection: binding.sel) {
+                    Text("None").tag("none"); Text("Underline").tag("underline"); Text("Pill").tag("pill")
+                    Text("Bold").tag("bold"); Text("Dim others").tag("dim")
+                }
+                .labelsHidden()
+            }
+            .help("How the current page's link stands out.")
+            HStack {
+                rowLabel("Align")
+                Picker("", selection: binding.align) {
+                    Image(systemName: "text.alignleft").tag("start")
+                    Image(systemName: "text.aligncenter").tag("center")
+                    Image(systemName: "text.alignright").tag("end")
+                    Image(systemName: "arrow.left.and.right").tag("between")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            HStack {
+                rowLabel("Button")
+                Picker("", selection: binding.label) {
+                    Text("Icon").tag("icon"); Text("“Menu”").tag("word"); Text("Both").tag("both")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            .help("What the Menu layout's button shows.")
+            sliderRow("Spacing", Binding(get: { Double(nav?.gap ?? 24) }, set: { nav?.gap = Int($0) }), 4...64, 2, "\(nav?.gap ?? 24)")
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(binding.items) { $item in
+                    HStack(spacing: 6) {
+                        Button {
+                            item.depth = item.depth == 0 ? 1 : 0
+                            pushNav()
+                        } label: {
+                            Image(systemName: item.depth == 0 ? "arrow.turn.down.right" : "arrow.turn.up.left")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .buttonStyle(.plain)
+                        .help(item.depth == 0 ? "Make this a submenu item of the link above" : "Move back to the top level")
+                        .padding(.leading, CGFloat(item.depth) * 12)
+                        TextField("Label", text: $item.label, onEditingChanged: { if !$0 { pushNav() } })
+                            .onSubmit { pushNav() }
+                            .font(.system(size: 11.5))
+                            .frame(minWidth: 70)
+                        Menu {
+                            ForEach(navPages) { page in
+                                Button(page.label) { item.href = page.href; pushNav() }
+                            }
+                            if !navPages.isEmpty { Divider() }
+                            Button("Home") { item.href = "/"; pushNav() }
+                            Button("Top of this page") { item.href = "#"; pushNav() }
+                        } label: {
+                            Text(navPages.first { $0.href == item.href }?.label ?? item.href)
+                                .font(.system(size: 10.5))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .frame(width: 96, alignment: .leading)
+                        .help("Where this link goes. Type any address in the field to the right.")
+                        TextField("Address", text: $item.href, onEditingChanged: { if !$0 { pushNav() } })
+                            .onSubmit { pushNav() }
+                            .font(.system(size: 10, design: .monospaced))
+                            .frame(width: 84)
+                        Button {
+                            nav?.items.removeAll { $0.id == item.id }
+                            pushNav()
+                        } label: {
+                            Image(systemName: "minus.circle").font(.system(size: 10)).foregroundStyle(.tertiary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .contextMenu {
+                        Button("Move Up") { move(item.id, by: -1) }
+                        Button("Move Down") { move(item.id, by: 1) }
+                    }
+                }
+                Button {
+                    nav?.items.append(NavModel.Item(label: "New Link", href: navPages.first?.href ?? "/", depth: 0))
+                    pushNav()
+                } label: {
+                    Label("Add Link", systemImage: "plus").font(.system(size: 11))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+                .padding(.top, 2)
+            }
+            Text("Right-click a link to reorder. Row layouts open submenus on hover; Column and Menu show them indented. The current page is marked automatically on every page.")
+                .font(.system(size: 9.5))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .onChange(of: nav?.d) { _, _ in pushNav() }
+        .onChange(of: nav?.m) { _, _ in pushNav() }
+        .onChange(of: nav?.sel) { _, _ in pushNav() }
+        .onChange(of: nav?.align) { _, _ in pushNav() }
+        .onChange(of: nav?.label) { _, _ in pushNav() }
+        .onChange(of: nav?.gap) { _, _ in pushNav() }
+    }
+
+    private func move(_ id: UUID, by delta: Int) {
+        guard var items = nav?.items, let i = items.firstIndex(where: { $0.id == id }) else { return }
+        let j = i + delta
+        guard items.indices.contains(j) else { return }
+        items.swapAt(i, j)
+        nav?.items = items
+        pushNav()
     }
 
     // MARK: Video
@@ -4279,6 +4450,9 @@ struct InspectorControls: View {
 
     var body: some View {
         Form {
+            if nav != nil {
+                navCard
+            }
             if isText {
                 styleCard
                 typographyCard
