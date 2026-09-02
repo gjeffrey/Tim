@@ -39,6 +39,8 @@ public enum MobileCSS {
             out.insert(contentsOf: block + "\n", at: head.lowerBound)
         }
         out = ensuringPasteboardRules(in: out)
+        // Page motion rides the same save-time pass (both platforms call it).
+        out = PageMotion.ensure(in: out)
         return out
     }
 

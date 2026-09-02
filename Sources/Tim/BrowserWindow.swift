@@ -2036,7 +2036,7 @@ struct TabContentView: View {
             canBack: tab.canGoBack, canForward: tab.canGoForward,
             reviewDesktop: tab.reviewDesktop, reviewMobile: tab.reviewMobile,
             matchedSite: matchedSite?.id, siteIDs: siteStore.sites.map(\.id),
-            tabID: tab.id
+            tabID: tab.id, url: tab.urlString
         )
     }
 
@@ -2101,6 +2101,30 @@ struct TabContentView: View {
                         .allowsHitTesting(false)
                 }
             }
+
+            // Share — open in your default browser (the hero), copy, or
+            // the system share sheet. Always present; disabled off-web.
+            Menu {
+                Button {
+                    if let url = URL(string: tab.urlString) { NSWorkspace.shared.open(url) }
+                } label: {
+                    Label("Open in Default Browser", systemImage: "safari")
+                }
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(tab.urlString, forType: .string)
+                } label: {
+                    Label("Copy Link", systemImage: "link")
+                }
+                Divider()
+                if let url = URL(string: tab.urlString) {
+                    ShareLink(item: url) { Label("Share…", systemImage: "square.and.arrow.up") }
+                }
+            } label: {
+                Label("Share", systemImage: "square.and.arrow.up")
+            }
+            .disabled(URL(string: tab.urlString)?.scheme?.hasPrefix("http") != true)
+            .help("Open in your default browser, copy the link, or share")
 
             ActivityIndicator()
 
@@ -4855,6 +4879,11 @@ struct PageOptionsControls: View {
     @State private var showIconMaker = false
     @State private var iconPageOnly: Bool
     @State private var hideFromSearch: Bool
+    @State private var motionReveal: Bool
+    @State private var motionFade: Bool
+    private var motionModes: String {
+        [motionReveal ? "reveal" : nil, motionFade ? "fade" : nil].compactMap { $0 }.joined(separator: " ")
+    }
     @State private var makerRecipe: IconRecipe?
     @State private var makerImage: NSImage?
     @State private var editingSiteSettings: Site?
@@ -4893,6 +4922,9 @@ struct PageOptionsControls: View {
         _touchIcon = State(initialValue: info["touchIcon"] as? String ?? "")
         _iconPageOnly = State(initialValue: (info["ownIcons"] as? Int) == 1)
         _hideFromSearch = State(initialValue: (info["robotsMeta"] as? String ?? "").contains("noindex"))
+        let motion = info["motion"] as? String ?? ""
+        _motionReveal = State(initialValue: motion.contains("reveal"))
+        _motionFade = State(initialValue: motion.contains("fade"))
     }
 
     private var currentSite: Site? { siteStore.match(tab.webView.url) }
@@ -5032,6 +5064,16 @@ struct PageOptionsControls: View {
                     .onChange(of: baseSize) { _, v in tab.setPageOption("baseSize", "\(Int(v))") }
             }
 
+            card("Motion") {
+                Toggle("Reveal objects as they appear", isOn: $motionReveal)
+                    .onChange(of: motionReveal) { _, _ in tab.setPageMotion(motionModes) }
+                Toggle("Fade between pages", isOn: $motionFade)
+                    .onChange(of: motionFade) { _, _ in tab.setPageMotion(motionModes) }
+                Text("Objects fade up into place in reading order — quickly, one at a time — as they come into view. Page fades ease you in on arrival and out on the way to the next page. Both step aside for Reduce Motion.")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             card("Sharing & Search") {
                 Text("Description")
                     .font(.system(size: 11))
@@ -6529,6 +6571,7 @@ struct ToolbarKey: Equatable {
     var reviewDesktop: Int, reviewMobile: Int
     var matchedSite: UUID?, siteIDs: [UUID]
     var tabID: UUID
+    var url: String
 }
 
 /// A zero-size view that carries the window's toolbar. Equatable on a

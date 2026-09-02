@@ -535,6 +535,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     }
 
     /// Sharing & search metadata: description, social image, favicon.
+    /// Page motion modes ("reveal", "fade", both, or "") — stored on the
+    /// body, emitted as style+script at save by PageMotion.
+    public func setPageMotion(_ modes: String) {
+        let js = modes.isEmpty
+            ? "document.body.removeAttribute('data-tim-motion');"
+            : "document.body.setAttribute('data-tim-motion', \(Self.jsLiteral(modes)));"
+        webView.evaluateJavaScript(js, completionHandler: nil)
+    }
+
     public func setPageMeta(_ kind: String, _ value: String) {
         webView.evaluateJavaScript(
             "window.__timSetMeta && window.__timSetMeta(\(Self.jsLiteral(kind)), \(Self.jsLiteral(value)));",
@@ -2591,6 +2600,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         var cs = getComputedStyle(doc.body);
         return JSON.stringify({
           template: name,
+          motion: doc.body.getAttribute('data-tim-motion') || '',
           title: doc.title || '',
           bg: p.bg || cs.backgroundColor,
           bgVideo: (function () {
@@ -2813,6 +2823,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         active = true;
         overlay.style.display = 'block';
         doc.documentElement.classList.add('tim-editing');
+        doc.documentElement.classList.remove('tim-reveal', 'tim-fade');
+        doc.documentElement.classList.add('tim-ready');
         pinPageColumns();
         // Editing at phone width edits the mobile layout.
         if (collapsed()) { window.__timEnsureMobileLayout(); }
