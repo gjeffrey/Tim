@@ -1,4 +1,12 @@
 import SwiftUI
+/// Ground-truth tracing to a file (unified log wasn't capturing this process).
+func timTrace(_ m: String) {
+    let path = "/private/tmp/timtrace.log"
+    let line = "\(Date().timeIntervalSince1970) \(m)\n"
+    if let h = FileHandle(forWritingAtPath: path) { h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile() }
+    else { FileManager.default.createFile(atPath: path, contents: line.data(using: .utf8)) }
+}
+
 import AppKit
 import WebKit
 import TimKit
@@ -333,7 +341,8 @@ struct BrowserWindow: View {
     // wallpaper glows through the sidebar glass, the toolbar unifies
     // with the window, and the whole app reads native instead of built.
     var body: some View {
-        NavigationSplitView(columnVisibility: $columns) {
+        let _ = timTrace("BrowserWindow body")
+        return NavigationSplitView(columnVisibility: $columns) {
             UnifiedSidebar()
                 .navigationSplitViewColumnWidth(min: 240, ideal: 256, max: 320)
         } detail: {
@@ -1203,7 +1212,8 @@ struct TabContentView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        let _ = timTrace("TabContentView body load=\(tab.isLoading) prog=\(Int(tab.loadingProgress * 100)) title=\(tab.title.prefix(10)) back=\(tab.canGoBack) fwd=\(tab.canGoForward) edit=\(tab.isEditing) selInfo=\(tab.selectionInfo != nil) rev=\(tab.reviewDesktop)/\(tab.reviewMobile) status=\(tab.lastHTTPStatus) tim=\(tab.isTimPage) mob=\(tab.isMobilePreview) acts=\(ActivityCenter.shared.activities.count) sites=\(siteStore.sites.count) tabs=\(store.tabs.count) selTab=\(store.selectedTabID?.uuidString.prefix(4) ?? "-") url=\(tab.urlString.suffix(18))")
+        return VStack(spacing: 0) {
             if tab.isEditing {
                 // Preview's markup bar: the format row belongs to the
                 // editing mode, and arrives as one coordinated motion
@@ -6348,10 +6358,17 @@ struct ImportSheet: View {
 // changes shape or identity, so it is never rebuilt.
 struct AddressBar: View {
     @ObservedObject var tab: Tab
+    private func trace(_ m: String) -> EmptyView { timTrace("AddressBar \(m)"); return EmptyView() }
     @EnvironmentObject var siteStore: SiteStore
     @AppStorage("tim.cleanAddresses") private var cleanAddresses = true
     @State private var text = ""
-    @FocusState private var focused: Bool
+    /// Editing state comes from the field itself (begin/end editing), NOT
+    /// from @FocusState. Yesterday's working field carried no .focused()
+    /// modifier; every broken variant today did. Inside a toolbar item
+    /// FocusState never registers the click, so on the first keystroke
+    /// SwiftUI reconciles "not focused" against a focused field — and
+    /// resigns it. One character, then nothing.
+    @State private var editing = false
 
     private var isEditable: Bool {
         siteStore.isEditable(URL(string: tab.urlString), timAuthored: tab.isTimPage)
@@ -6381,14 +6398,18 @@ struct AddressBar: View {
                 )
                 .help(isEditable ? "This page is yours — ⌘E edits it, Done publishes it." : "")
 
-            TextField("Search or enter address", text: $text)
+            TextField("Search or enter address", text: $text, onEditingChanged: { began in
+                timTrace("editing=\(began)")
+                // Focus reveals the real address; blur returns to the name.
+                text = began ? tab.urlString : restText
+                editing = began
+            })
                 .textFieldStyle(.plain)
-                .font(.system(size: 13, weight: focused ? .regular : .medium))
-                .multilineTextAlignment(focused ? .leading : .center)
-                .focused($focused)
+                .font(.system(size: 13, weight: editing ? .regular : .medium))
+                .multilineTextAlignment(editing ? .leading : .center)
                 .onSubmit {
                     tab.navigate(to: text)
-                    focused = false
+                    NSApp.keyWindow?.makeFirstResponder(nil)
                 }
                 .frame(maxWidth: .infinity)
 
@@ -6414,7 +6435,7 @@ struct AddressBar: View {
         .overlay {
             Capsule(style: .continuous)
                 .strokeBorder(Color.accentColor, lineWidth: 2.5)
-                .opacity(focused ? 1 : 0)
+                .opacity(editing ? 1 : 0)
                 .allowsHitTesting(false)
         }
         .overlay(alignment: .bottomLeading) {
@@ -6426,16 +6447,15 @@ struct AddressBar: View {
                 .opacity(tab.isLoading ? 1 : 0)
                 .allowsHitTesting(false)
         }
-        .onAppear { text = restText }
+        .background(trace("body"))
+        .onAppear { text = restText; timTrace("AddressBar APPEAR") }
+        .onDisappear { timTrace("AddressBar DISAPPEAR") }
+        .onChange(of: text) { _, v in timTrace("text=\(v)") }
         .onChange(of: tab.urlString) { _, _ in
-            if !focused { text = restText }
+            if !editing { text = restText }
         }
         .onChange(of: cleanAddresses) { _, _ in
-            if !focused { text = restText }
-        }
-        .onChange(of: focused) { _, isFocused in
-            // Focus reveals the real address; blur returns to the name.
-            text = isFocused ? tab.urlString : restText
+            if !editing { text = restText }
         }
     }
 }
