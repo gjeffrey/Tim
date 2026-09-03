@@ -302,6 +302,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         (function () {
           var clone = document.documentElement.cloneNode(true);
           clone.classList.remove('tim-editing');
+          clone.classList.remove('tim-mobile-custom');
           var overlay = clone.querySelector('#__tim-overlay');
           if (overlay) { overlay.remove(); }
           var editables = clone.querySelectorAll('[contenteditable]');
@@ -507,6 +508,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     public func setMobileHidden(_ hidden: Bool) {
         webView.evaluateJavaScript(
             "window.__timSetMobileHidden && window.__timSetMobileHidden(\(hidden ? "true" : "false"));",
+            completionHandler: nil
+        )
+    }
+
+    /// Returns the phone layout to Tim's natural-height, full-width stack.
+    /// The canvas checkpoints first, so this remains a normal undoable edit.
+    public func resetMobileLayout() {
+        webView.evaluateJavaScript(
+            "window.__timResetMobileLayout && window.__timResetMobileLayout();",
             completionHandler: nil
         )
     }
@@ -810,11 +820,21 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       // reads and writes THIS map — the desktop page never changes when
       // you design for the phone.
       var mobileLayout = {};
+      // An untouched phone layout remains a self-healing, full-width
+      // reading-order stack. The first deliberate move or resize turns it
+      // into a freeform custom grid. Older saved layouts predate this flag
+      // and are conservatively treated as custom.
+      var mobileLayoutMode = 'stack';
       (function parseMobileLayout() {
         var el = doc.querySelector('style[data-tim-mobile-layout]');
         if (!el) { return; }
         try { mobileLayout = JSON.parse(el.getAttribute('data-props') || '{}') || {}; } catch (e) {}
+        mobileLayoutMode = el.getAttribute('data-mode') === 'stack' ? 'stack' : 'custom';
       })();
+      function syncMobileModeClass() {
+        doc.documentElement.classList.toggle('tim-mobile-custom', Object.keys(mobileLayout).length > 0);
+      }
+      syncMobileModeClass();
       function mobileActive() { return collapsed() && Object.keys(mobileLayout).length > 0; }
       function colCount() { return mobileActive() ? MOBILE_COLS : COLS; }
       // Type sized BY HAND at phone width is the author's word for that
@@ -849,6 +869,49 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           el.setAttribute('data-tim-id', id);
         }
         return id;
+      }
+      function mobileStackRows(el, availableWidth) {
+        var height = 0;
+        var nw = el.naturalWidth || el.videoWidth || 0;
+        var nh = el.naturalHeight || el.videoHeight || 0;
+        if (el.matches && el.matches('img,video') && nw > 0 && nh > 0) {
+          height = availableWidth * nh / nw;
+        } else {
+          // Fixed grid tracks otherwise masquerade as content height. Let
+          // the object hug its contents for one measurement, then restore
+          // the authored styles. Text and groups can now grow without
+          // colliding with the next object in the default stack.
+          var prevHeight = el.style.height;
+          var prevAlign = el.style.alignSelf;
+          el.style.height = 'max-content';
+          el.style.alignSelf = 'start';
+          height = Math.max(el.scrollHeight || 0, el.getBoundingClientRect().height || 0);
+          el.style.height = prevHeight;
+          el.style.alignSelf = prevAlign;
+        }
+        return Math.max(1, Math.ceil((Math.max(1, height) + 16) / 48));
+      }
+      function reflowMobileStack() {
+        if (mobileLayoutMode !== 'stack') { return; }
+        var canvas = doc.querySelector('[data-tim-canvas]');
+        if (!canvas) { return; }
+        var cs = getComputedStyle(canvas);
+        var availableWidth = Math.max(200, 390 - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0));
+        var row = 1;
+        var all = Array.prototype.slice.call(canvas.querySelectorAll('.tim-object')).filter(function (el) {
+          return canvasFor(el) === canvas;
+        });
+        // Hidden decorations remain reachable while editing, but live at
+        // the end so they cannot leave mysterious holes in the published
+        // reading flow.
+        var objs = all.filter(function (el) { return !el.hasAttribute('data-tim-mobile-hidden'); })
+          .concat(all.filter(function (el) { return el.hasAttribute('data-tim-mobile-hidden'); }));
+        for (var i = 0; i < objs.length; i++) {
+          var el = objs[i];
+          var rows = mobileStackRows(el, availableWidth);
+          mobileLayout[ensureObjectId(el)] = [row, 1, row + rows, MOBILE_COLS + 1];
+          row += rows;
+        }
       }
       // Every top-level object must hold a place in an explicit mobile
       // layout — anything that slipped through (a group made after the
@@ -891,15 +954,21 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           if (!doc.querySelector('[data-tim-id="' + stale + '"]')) { delete mobileLayout[stale]; }
         }
         ensureMobileCoverage();
-        // The line against chaos: entries in the mobile stack must not
-        // sit on top of each other. Anything overlapping an earlier entry
-        // in both axes is pushed below it (side-by-side stays welcome).
-        // Overlap on the phone stack is the author's call, exactly as on
-        // desktop — objects go where they're put. (An earlier "politeness"
+        reflowMobileStack();
+        syncMobileModeClass();
+        // Once customized, overlap on the phone grid is the author's call,
+        // exactly as on desktop — objects go where they're put. (An earlier "politeness"
         // pass pushed anything overlapping downward, which read as the
         // editor refusing a perfectly good spot.)
         var css = '@media (max-width: 700px){\\n'
-          + '.tim-canvas{grid-template-columns:repeat(8, 1fr) !important;grid-auto-rows:32px !important}\\n';
+          + '.tim-canvas{grid-template-columns:repeat(8, 1fr) !important;grid-auto-rows:32px !important}\\n'
+          // A group is a desktop composition boundary, not a reason for
+          // its contents to become illegible on a phone.
+          + '.tim-canvas .tim-container{grid-template-columns:minmax(0,1fr) !important;grid-auto-rows:auto !important;height:auto !important;align-self:start !important}\\n'
+          + '.tim-canvas .tim-container>.tim-object{grid-area:auto !important;transform:none !important;margin-left:0 !important;margin-right:0 !important}\\n';
+        if (mobileLayoutMode === 'stack') {
+          css += '.tim-canvas>.tim-object{transform:none !important;margin-left:0 !important;margin-right:0 !important}\\n';
+        }
         for (var id2 in mobileLayout) {
           var a = mobileLayout[id2];
           css += '.tim-canvas .tim-object[data-tim-id="' + id2 + '"]{grid-area:'
@@ -908,6 +977,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         css += '}';
         styleEl.textContent = css;
         styleEl.setAttribute('data-props', JSON.stringify(mobileLayout));
+        styleEl.setAttribute('data-mode', mobileLayoutMode);
       }
       // Cross-layout review: edits on one layout that leave a GUESS on the
       // other (a new object's default placement, text that outgrew its
@@ -946,6 +1016,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       // Text with a fixed mobile box that its content no longer fits —
       // the silent-overlap case, caught on every entry into phone width.
       function scanMobileOverflow() {
+        if (mobileLayoutMode === 'stack') {
+          writeMobileLayout();
+          return;
+        }
         for (var id in mobileLayout) {
           var el = doc.querySelector('[data-tim-id="' + id + '"]');
           if (!el || !el.classList || !el.classList.contains('tim-text')) { continue; }
@@ -959,9 +1033,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
       }
 
-      // First entry into phone-width editing: freeze the automatic stack,
-      // as rendered right now, into explicit placements — bands of
-      // side-by-side objects stay side by side, gaps stay gaps.
+      // First entry into phone-width editing: start with the boring good
+      // answer — every top-level object, full width, in reading order.
+      // Natural content height determines the rows. Only an intentional
+      // mobile drag/resize graduates this stack into a custom 8-col grid.
       window.__timEnsureMobileLayout = function () {
         if (!collapsed()) { return; }
         if (Object.keys(mobileLayout).length) {
@@ -982,42 +1057,27 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         });
         if (!objs.length) { return; }
         var cs2 = getComputedStyle(canvas);
-        var padL = parseFloat(cs2.paddingLeft) || 0;
-        var padR = parseFloat(cs2.paddingRight) || 0;
-        var cr = canvas.getBoundingClientRect();
-        var innerLeft = cr.left + padL;
-        var innerWidth = canvas.clientWidth - padL - padR;
-        var unit = 48; // 32px rows + 16px gap
-        var measured = objs.map(function (el) {
-          return { el: el, r: el.getBoundingClientRect() };
-        }).sort(function (a, b) { return (a.r.top - b.r.top) || (a.r.left - b.r.left); });
+        var innerWidth = Math.max(200, canvas.clientWidth
+          - (parseFloat(cs2.paddingLeft) || 0) - (parseFloat(cs2.paddingRight) || 0));
         var row = 1;
-        var i = 0;
-        var prevBottom = null;
-        while (i < measured.length) {
-          // A band: everything starting within 10px vertically.
-          var band = [measured[i]];
-          while (i + 1 < measured.length && Math.abs(measured[i + 1].r.top - band[0].r.top) < 10) {
-            i += 1;
-            band.push(measured[i]);
-          }
-          i += 1;
-          if (prevBottom !== null) {
-            var gapRows = Math.round((band[0].r.top - prevBottom - 16) / unit);
-            if (gapRows > 0) { row += Math.min(gapRows, 4); }
-          }
-          var bandRows = 1;
-          band.forEach(function (item) {
-            var colStart = Math.max(1, Math.min(MOBILE_COLS, Math.round((item.r.left - innerLeft) / innerWidth * MOBILE_COLS) + 1));
-            var colEnd = Math.max(colStart + 1, Math.min(MOBILE_COLS + 1, Math.round((item.r.right - innerLeft) / innerWidth * MOBILE_COLS) + 1));
-            var rows = Math.max(1, Math.round((item.r.height + 16) / unit));
-            bandRows = Math.max(bandRows, rows);
-            mobileLayout[ensureObjectId(item.el)] = [row, colStart, row + rows, colEnd];
-          });
-          prevBottom = band.reduce(function (m, item) { return Math.max(m, item.r.bottom); }, 0);
-          row += bandRows;
+        mobileLayoutMode = 'stack';
+        for (var i = 0; i < objs.length; i++) {
+          var rows = mobileStackRows(objs[i], innerWidth);
+          mobileLayout[ensureObjectId(objs[i])] = [row, 1, row + rows, MOBILE_COLS + 1];
+          row += rows;
         }
         writeMobileLayout();
+        layout();
+        notifySel(true);
+      };
+      window.__timResetMobileLayout = function () {
+        if (!collapsed()) { return; }
+        checkpoint('mobile-reset');
+        mobileLayoutMode = 'stack';
+        ensureMobileCoverage();
+        reflowMobileStack();
+        writeMobileLayout();
+        scanMobileOverflow();
         layout();
         notifySel(true);
       };
@@ -1550,6 +1610,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           if (e.altKey || k === 'rotate') {
             var rr = rectOf(sel);
             checkpoint('rotate');
+            if (mobileActive() && mobileLayoutMode === 'stack') {
+              mobileLayoutMode = 'custom';
+              writeMobileLayout();
+            }
             drag = {
               mode: 'rotate',
               cx: rr.x + rr.w / 2, cy: rr.y + rr.h / 2,
@@ -1645,7 +1709,13 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         var dc = Math.round(rawX / (g.colW + g.gap));
         var dr = Math.round(rawY / (g.rowH + g.rowGap));
         var p = drag.p0;
-        if (dc !== 0 || dr !== 0) { drag.moved = true; }
+        if (dc !== 0 || dr !== 0) {
+          drag.moved = true;
+          // This is the exact boundary between Tim's resilient default and
+          // the author's explicit composition. A click changes nothing; a
+          // real mobile move or resize opts into the custom grid.
+          if (mobileActive() && mobileLayoutMode === 'stack') { mobileLayoutMode = 'custom'; }
+        }
 
         if (drag.mode === 'move') {
           var members = drag.items || [{ el: sel, p: p }];
@@ -2085,6 +2155,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           for (var mid in mobileLayout) { mMax = Math.max(mMax, mobileLayout[mid][2]); }
           var span = Math.min(MOBILE_COLS, colSpan);
           if (at) {
+            mobileLayoutMode = 'custom';
             var mcs = Math.max(1, Math.min(MOBILE_COLS - Math.max(2, span) + 1, at.cs));
             mobileLayout[ensureObjectId(placed)] = [at.rs, mcs, at.rs + rowSpan, mcs + Math.max(2, span)];
           } else {
@@ -2132,9 +2203,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       function takeSnapshot() {
         var c = canvasEl();
         if (!c) { return null; }
-        return { c: c.innerHTML, p: JSON.stringify(templateProps), m: JSON.stringify(mobileLayout), t: JSON.stringify(mobileType) };
+        return { c: c.innerHTML, p: JSON.stringify(templateProps), m: JSON.stringify(mobileLayout), mm: mobileLayoutMode, t: JSON.stringify(mobileType) };
       }
-      function sameSnapshot(a, b) { return !!a && !!b && a.c === b.c && a.p === b.p && a.m === b.m && a.t === b.t; }
+      function sameSnapshot(a, b) { return !!a && !!b && a.c === b.c && a.p === b.p && a.m === b.m && a.mm === b.mm && a.t === b.t; }
       function checkpoint(tag) {
         var snap = takeSnapshot();
         if (!snap) { return; }
@@ -2158,9 +2229,16 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         c.innerHTML = snap.c;
         try { templateProps = JSON.parse(snap.p) || {}; } catch (e) { templateProps = {}; }
         try { mobileLayout = JSON.parse(snap.m || '{}') || {}; } catch (e2) { mobileLayout = {}; }
+        mobileLayoutMode = snap.mm === 'stack' ? 'stack' : 'custom';
         try { mobileType = JSON.parse(snap.t || '{}') || {}; } catch (e3) { mobileType = {}; }
         writeTemplates();
-        if (Object.keys(mobileLayout).length) { writeMobileLayout(); }
+        if (Object.keys(mobileLayout).length) {
+          writeMobileLayout();
+        } else {
+          var oldMobile = doc.querySelector('style[data-tim-mobile-layout]');
+          if (oldMobile) { oldMobile.remove(); }
+          syncMobileModeClass();
+        }
         writeMobileType();
         layout();
         notifySel(true);
@@ -2188,6 +2266,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       window.__timSetArea = function (rs, cs, re, ce) {
         if (!sel || !isObject(sel) || !placement(sel)) { return; }
         checkpoint('area');
+        if (mobileActive()) { mobileLayoutMode = 'custom'; }
         setArea(sel, rs, cs, re, ce);
         fitSpan(sel);
         layout();
@@ -2340,6 +2419,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         var members = groupAll().filter(function (el) { return isObject(el) && placement(el); });
         if (!members.length) { return; }
         checkpoint('align');
+        if (mobileActive()) { mobileLayoutMode = 'custom'; }
         var cols = colCount();
         var reference;
         if (members.length === 1) {
@@ -3021,6 +3101,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           if (hidden) { member.setAttribute('data-tim-mobile-hidden', ''); }
           else { member.removeAttribute('data-tim-mobile-hidden'); }
         });
+        if (mobileActive()) { writeMobileLayout(); }
         layout();
         notifySel();
       };

@@ -31,11 +31,17 @@
       // reads and writes THIS map — the desktop page never changes when
       // you design for the phone.
       var mobileLayout = {};
+      var mobileLayoutMode = 'stack';
       (function parseMobileLayout() {
         var el = doc.querySelector('style[data-tim-mobile-layout]');
         if (!el) { return; }
         try { mobileLayout = JSON.parse(el.getAttribute('data-props') || '{}') || {}; } catch (e) {}
+        mobileLayoutMode = el.getAttribute('data-mode') === 'stack' ? 'stack' : 'custom';
       })();
+      function syncMobileModeClass() {
+        doc.documentElement.classList.toggle('tim-mobile-custom', Object.keys(mobileLayout).length > 0);
+      }
+      syncMobileModeClass();
       function mobileActive() { return collapsed() && Object.keys(mobileLayout).length > 0; }
       function colCount() { return mobileActive() ? MOBILE_COLS : COLS; }
       function ensureObjectId(el) {
@@ -45,6 +51,42 @@
           el.setAttribute('data-tim-id', id);
         }
         return id;
+      }
+      function mobileStackRows(el, availableWidth) {
+        var height = 0;
+        var nw = el.naturalWidth || el.videoWidth || 0;
+        var nh = el.naturalHeight || el.videoHeight || 0;
+        if (el.matches && el.matches('img,video') && nw > 0 && nh > 0) {
+          height = availableWidth * nh / nw;
+        } else {
+          var prevHeight = el.style.height;
+          var prevAlign = el.style.alignSelf;
+          el.style.height = 'max-content';
+          el.style.alignSelf = 'start';
+          height = Math.max(el.scrollHeight || 0, el.getBoundingClientRect().height || 0);
+          el.style.height = prevHeight;
+          el.style.alignSelf = prevAlign;
+        }
+        return Math.max(1, Math.ceil((Math.max(1, height) + 16) / 48));
+      }
+      function reflowMobileStack() {
+        if (mobileLayoutMode !== 'stack') { return; }
+        var canvas = doc.querySelector('[data-tim-canvas]');
+        if (!canvas) { return; }
+        var cs = getComputedStyle(canvas);
+        var availableWidth = Math.max(200, 390 - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0));
+        var row = 1;
+        var all = Array.prototype.slice.call(canvas.querySelectorAll('.tim-object')).filter(function (el) {
+          return canvasFor(el) === canvas;
+        });
+        var objs = all.filter(function (el) { return !el.hasAttribute('data-tim-mobile-hidden'); })
+          .concat(all.filter(function (el) { return el.hasAttribute('data-tim-mobile-hidden'); }));
+        for (var i = 0; i < objs.length; i++) {
+          var el = objs[i];
+          var rows = mobileStackRows(el, availableWidth);
+          mobileLayout[ensureObjectId(el)] = [row, 1, row + rows, MOBILE_COLS + 1];
+          row += rows;
+        }
       }
       // Every top-level object must hold a place in an explicit mobile
       // layout — anything that slipped through (a group made after the
@@ -78,29 +120,15 @@
           if (!doc.querySelector('[data-tim-id="' + stale + '"]')) { delete mobileLayout[stale]; }
         }
         ensureMobileCoverage();
-        // The line against chaos: entries in the mobile stack must not
-        // sit on top of each other. Anything overlapping an earlier entry
-        // in both axes is pushed below it (side-by-side stays welcome).
-        (function resolveOverlaps() {
-          var entries = Object.keys(mobileLayout).map(function (id) {
-            return { id: id, a: mobileLayout[id] };
-          });
-          entries.sort(function (x, y) { return (x.a[0] - y.a[0]) || (x.a[1] - y.a[1]); });
-          for (var i = 1; i < entries.length; i++) {
-            for (var j = 0; j < i; j++) {
-              var A = entries[j].a, B = entries[i].a;
-              var colsOverlap = B[1] < A[3] && A[1] < B[3];
-              var rowsOverlap = B[0] < A[2] && A[0] < B[2];
-              if (colsOverlap && rowsOverlap) {
-                var shift = A[2] - B[0];
-                B[0] += shift;
-                B[2] += shift;
-              }
-            }
-          }
-        })();
+        reflowMobileStack();
+        syncMobileModeClass();
         var css = '@media (max-width: 700px){\n'
-          + '.tim-canvas{grid-template-columns:repeat(8, 1fr) !important;grid-auto-rows:32px !important}\n';
+          + '.tim-canvas{grid-template-columns:repeat(8, 1fr) !important;grid-auto-rows:32px !important}\n'
+          + '.tim-canvas .tim-container{grid-template-columns:minmax(0,1fr) !important;grid-auto-rows:auto !important;height:auto !important;align-self:start !important}\n'
+          + '.tim-canvas .tim-container>.tim-object{grid-area:auto !important;transform:none !important;margin-left:0 !important;margin-right:0 !important}\n';
+        if (mobileLayoutMode === 'stack') {
+          css += '.tim-canvas>.tim-object{transform:none !important;margin-left:0 !important;margin-right:0 !important}\n';
+        }
         for (var id2 in mobileLayout) {
           var a = mobileLayout[id2];
           css += '.tim-canvas .tim-object[data-tim-id="' + id2 + '"]{grid-area:'
@@ -109,6 +137,7 @@
         css += '}';
         styleEl.textContent = css;
         styleEl.setAttribute('data-props', JSON.stringify(mobileLayout));
+        styleEl.setAttribute('data-mode', mobileLayoutMode);
       }
       // Cross-layout review: edits on one layout that leave a GUESS on the
       // other (a new object's default placement, text that outgrew its
@@ -147,6 +176,10 @@
       // Text with a fixed mobile box that its content no longer fits —
       // the silent-overlap case, caught on every entry into phone width.
       function scanMobileOverflow() {
+        if (mobileLayoutMode === 'stack') {
+          writeMobileLayout();
+          return;
+        }
         for (var id in mobileLayout) {
           var el = doc.querySelector('[data-tim-id="' + id + '"]');
           if (!el || !el.classList || !el.classList.contains('tim-text')) { continue; }
@@ -160,9 +193,8 @@
         }
       }
 
-      // First entry into phone-width editing: freeze the automatic stack,
-      // as rendered right now, into explicit placements — bands of
-      // side-by-side objects stay side by side, gaps stay gaps.
+      // First entry into phone-width editing starts with the resilient
+      // answer: a full-width, natural-height reading-order stack.
       window.__timEnsureMobileLayout = function () {
         if (!collapsed()) { return; }
         if (Object.keys(mobileLayout).length) {
@@ -183,42 +215,27 @@
         });
         if (!objs.length) { return; }
         var cs2 = getComputedStyle(canvas);
-        var padL = parseFloat(cs2.paddingLeft) || 0;
-        var padR = parseFloat(cs2.paddingRight) || 0;
-        var cr = canvas.getBoundingClientRect();
-        var innerLeft = cr.left + padL;
-        var innerWidth = canvas.clientWidth - padL - padR;
-        var unit = 48; // 32px rows + 16px gap
-        var measured = objs.map(function (el) {
-          return { el: el, r: el.getBoundingClientRect() };
-        }).sort(function (a, b) { return (a.r.top - b.r.top) || (a.r.left - b.r.left); });
+        var innerWidth = Math.max(200, canvas.clientWidth
+          - (parseFloat(cs2.paddingLeft) || 0) - (parseFloat(cs2.paddingRight) || 0));
         var row = 1;
-        var i = 0;
-        var prevBottom = null;
-        while (i < measured.length) {
-          // A band: everything starting within 10px vertically.
-          var band = [measured[i]];
-          while (i + 1 < measured.length && Math.abs(measured[i + 1].r.top - band[0].r.top) < 10) {
-            i += 1;
-            band.push(measured[i]);
-          }
-          i += 1;
-          if (prevBottom !== null) {
-            var gapRows = Math.round((band[0].r.top - prevBottom - 16) / unit);
-            if (gapRows > 0) { row += Math.min(gapRows, 4); }
-          }
-          var bandRows = 1;
-          band.forEach(function (item) {
-            var colStart = Math.max(1, Math.min(MOBILE_COLS, Math.round((item.r.left - innerLeft) / innerWidth * MOBILE_COLS) + 1));
-            var colEnd = Math.max(colStart + 1, Math.min(MOBILE_COLS + 1, Math.round((item.r.right - innerLeft) / innerWidth * MOBILE_COLS) + 1));
-            var rows = Math.max(1, Math.round((item.r.height + 16) / unit));
-            bandRows = Math.max(bandRows, rows);
-            mobileLayout[ensureObjectId(item.el)] = [row, colStart, row + rows, colEnd];
-          });
-          prevBottom = band.reduce(function (m, item) { return Math.max(m, item.r.bottom); }, 0);
-          row += bandRows;
+        mobileLayoutMode = 'stack';
+        for (var i = 0; i < objs.length; i++) {
+          var rows = mobileStackRows(objs[i], innerWidth);
+          mobileLayout[ensureObjectId(objs[i])] = [row, 1, row + rows, MOBILE_COLS + 1];
+          row += rows;
         }
         writeMobileLayout();
+        layout();
+        notifySel(true);
+      };
+      window.__timResetMobileLayout = function () {
+        if (!collapsed()) { return; }
+        checkpoint('mobile-reset');
+        mobileLayoutMode = 'stack';
+        ensureMobileCoverage();
+        reflowMobileStack();
+        writeMobileLayout();
+        scanMobileOverflow();
         layout();
         notifySel(true);
       };
@@ -534,6 +551,10 @@
           if (e.altKey) {
             var rr = rectOf(sel);
             checkpoint('rotate');
+            if (mobileActive() && mobileLayoutMode === 'stack') {
+              mobileLayoutMode = 'custom';
+              writeMobileLayout();
+            }
             drag = {
               mode: 'rotate',
               cx: rr.x + rr.w / 2, cy: rr.y + rr.h / 2,
@@ -629,7 +650,10 @@
         var dc = Math.round(rawX / (g.colW + g.gap));
         var dr = Math.round(rawY / (g.rowH + g.rowGap));
         var p = drag.p0;
-        if (dc !== 0 || dr !== 0) { drag.moved = true; }
+        if (dc !== 0 || dr !== 0) {
+          drag.moved = true;
+          if (mobileActive() && mobileLayoutMode === 'stack') { mobileLayoutMode = 'custom'; }
+        }
 
         if (drag.mode === 'move') {
           var members = drag.items || [{ el: sel, p: p }];
@@ -936,6 +960,9 @@
         });
         checkpoint('insert');
         setDesktopArea(placed, maxRe, 1, maxRe + rowSpan, 1 + colSpan);
+        // Mobile bookkeeping only keeps entries for objects already in
+        // the document.
+        canvas.appendChild(el);
         if (mobileActive()) {
           var mMax = 1;
           for (var mid in mobileLayout) { mMax = Math.max(mMax, mobileLayout[mid][2]); }
@@ -949,7 +976,6 @@
           // bottom by default — worth a look over there.
           flagReview('mobile', placed);
         }
-        canvas.appendChild(el);
         el = placed;
         var media = (el.matches && el.matches('img,video,audio'))
           ? el
@@ -984,9 +1010,9 @@
       function takeSnapshot() {
         var c = canvasEl();
         if (!c) { return null; }
-        return { c: c.innerHTML, p: JSON.stringify(templateProps), m: JSON.stringify(mobileLayout) };
+        return { c: c.innerHTML, p: JSON.stringify(templateProps), m: JSON.stringify(mobileLayout), mm: mobileLayoutMode };
       }
-      function sameSnapshot(a, b) { return !!a && !!b && a.c === b.c && a.p === b.p && a.m === b.m; }
+      function sameSnapshot(a, b) { return !!a && !!b && a.c === b.c && a.p === b.p && a.m === b.m && a.mm === b.mm; }
       function checkpoint(tag) {
         var snap = takeSnapshot();
         if (!snap) { return; }
@@ -1010,8 +1036,15 @@
         c.innerHTML = snap.c;
         try { templateProps = JSON.parse(snap.p) || {}; } catch (e) { templateProps = {}; }
         try { mobileLayout = JSON.parse(snap.m || '{}') || {}; } catch (e2) { mobileLayout = {}; }
+        mobileLayoutMode = snap.mm === 'stack' ? 'stack' : 'custom';
         writeTemplates();
-        if (Object.keys(mobileLayout).length) { writeMobileLayout(); }
+        if (Object.keys(mobileLayout).length) {
+          writeMobileLayout();
+        } else {
+          var oldMobile = doc.querySelector('style[data-tim-mobile-layout]');
+          if (oldMobile) { oldMobile.remove(); }
+          syncMobileModeClass();
+        }
         layout();
         notifySel(true);
       }
@@ -1130,6 +1163,7 @@
         var members = groupAll().filter(function (el) { return isObject(el) && placement(el); });
         if (!members.length) { return; }
         checkpoint('align');
+        if (mobileActive()) { mobileLayoutMode = 'custom'; }
         var cols = colCount();
         var reference;
         if (members.length === 1) {
@@ -1765,6 +1799,7 @@
           if (hidden) { member.setAttribute('data-tim-mobile-hidden', ''); }
           else { member.removeAttribute('data-tim-mobile-hidden'); }
         });
+        if (mobileActive()) { writeMobileLayout(); }
         layout();
         notifySel();
       };

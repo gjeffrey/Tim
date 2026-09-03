@@ -13,7 +13,10 @@ public enum MobileCSS {
         var rules = [
             "[data-tim-mobile-hidden]{display:none !important}",
             // Multi-column text reads as one column on phones.
-            ".tim-canvas .tim-text{column-count:1 !important}"
+            ".tim-canvas .tim-text{column-count:1 !important;overflow-wrap:anywhere}",
+            // A narrow viewport must never be widened by one ambitious
+            // object, even after the author opts into a custom layout.
+            ".tim-canvas .tim-object{box-sizing:border-box;min-width:0;max-width:100%}"
         ]
         rules += styleClassRules(in: out)
         rules += inlineSizeRules(in: out)
@@ -25,9 +28,9 @@ public enum MobileCSS {
         }
         // A hand-tuned mobile layout (data-tim-mobile-layout) is the
         // author's word — synthesis stays out of layout entirely then.
-        // Group containers nest their own grids, whose child coordinates
-        // would confuse the gap math — layout synthesis sits those out too.
-        if !out.contains("data-tim-mobile-layout"), !out.contains("tim-container") {
+        // Until that point mobile is deliberately a resilient content
+        // flow, not a miniature attempt to preserve desktop geometry.
+        if !out.contains("data-tim-mobile-layout") {
             rules += layoutRules(in: out)
         }
         let block = "<style data-tim-mobile>@media (max-width: 700px){\n"
@@ -173,7 +176,6 @@ public enum MobileCSS {
         let id: String
         let tag: String
         let rs: Int, cs: Int, re: Int, ce: Int
-        let rotation: Double
     }
 
     /// The desktop layout, read back from the saved page — every object's
@@ -199,19 +201,28 @@ public enum MobileCSS {
                 ce = captureInt(tag, "grid-column-end:\\s*([0-9]+)") ?? 0
             }
             guard rs > 0, re > rs else { continue }
-            let rotation = capture(tag, "rotate\\(\\s*(-?[0-9.]+)deg").flatMap(Double.init) ?? 0
-            out.append(CanvasObject(id: id, tag: String(html[nameRange]).lowercased(), rs: rs, cs: cs, re: re, ce: ce, rotation: rotation))
+            out.append(CanvasObject(id: id, tag: String(html[nameRange]).lowercased(), rs: rs, cs: cs, re: re, ce: ce))
         }
         return out.sorted { ($0.rs, $0.cs) < ($1.rs, $1.cs) }
     }
 
-    /// Layout intent, carried to the phone: the vertical breathing between
-    /// desktop sections survives as proportional margins, and runs of
-    /// narrow side-by-side images stay side by side, two-up.
+    /// The automatic phone rendition is a reading-order flow. Desktop owns
+    /// composition; mobile starts from legibility and gives every object a
+    /// natural-height row. The `tim-mobile-custom` guard matters during the
+    /// live handoff into mobile editing: its explicit grid is written before
+    /// the page can be regenerated and replace these automatic rules.
     static func layoutRules(in html: String) -> [String] {
         let objs = objects(in: html)
-        guard objs.count > 1 else { return [] }
-        var rules: [String] = []
+        let auto = "html:not(.tim-mobile-custom)"
+        var rules = [
+            "\(auto) .tim-canvas{grid-template-columns:minmax(0,1fr) !important;grid-auto-rows:auto !important;overflow-x:clip}",
+            "\(auto) .tim-canvas .tim-object{grid-area:auto !important;transform:none !important;margin-left:0 !important;margin-right:0 !important}",
+            "\(auto) .tim-canvas>.tim-text{width:auto !important}",
+            // Groups retain their semantic boundary but shed their desktop
+            // mini-canvas on phones, so their contents read top to bottom.
+            "\(auto) .tim-canvas .tim-container{grid-template-columns:minmax(0,1fr) !important;grid-auto-rows:auto !important;height:auto !important}"
+        ]
+        guard objs.count > 1, !html.contains("tim-container") else { return rules }
 
         // Section rhythm: a gap of 3+ empty desktop rows before an object
         // becomes a proportional gap on mobile (8px per row, capped).
@@ -219,46 +230,9 @@ public enum MobileCSS {
         for obj in objs.dropFirst() {
             let gap = obj.rs - maxReSoFar
             if gap >= 3 {
-                rules.append("[data-tim-id=\"\(obj.id)\"]{margin-top:\(min(gap * 8, 72))px !important}")
+                rules.append("\(auto) [data-tim-id=\"\(obj.id)\"]{margin-top:\(min(gap * 8, 72))px !important}")
             }
             maxReSoFar = max(maxReSoFar, obj.re)
-        }
-
-        // Rotated objects swing past their rows in a vertical stack —
-        // give them the breathing room their tilt actually occupies.
-        for obj in objs where abs(obj.rotation) >= 8 {
-            let swing = min(60, Int((abs(sin(obj.rotation * .pi / 180)) * 140).rounded()))
-            rules.append("[data-tim-id=\"\(obj.id)\"]{margin-top:\(swing)px !important;margin-bottom:\(swing)px !important}")
-        }
-
-        // Image galleries: consecutive narrow images sharing rows keep
-        // their side-by-side intent as a two-up grid (an odd last image
-        // goes full width, deliberately).
-        var pairIDs: [String] = []
-        var run: [CanvasObject] = []
-        func flushRun() {
-            if run.count >= 2 {
-                var ids = run.map(\.id)
-                if ids.count % 2 == 1 { ids.removeLast() }
-                pairIDs += ids
-            }
-            run = []
-        }
-        for obj in objs {
-            let isNarrowImage = obj.tag == "img" && (obj.ce - obj.cs) <= 12
-            if isNarrowImage, let last = run.last, obj.rs < last.re, obj.cs >= last.ce {
-                run.append(obj)
-            } else {
-                flushRun()
-                if isNarrowImage { run = [obj] }
-            }
-        }
-        flushRun()
-        if !pairIDs.isEmpty {
-            rules.append(".tim-canvas{grid-template-columns:repeat(2, 1fr) !important}")
-            rules.append(".tim-canvas > .tim-object{grid-column:span 2 !important}")
-            let selector = pairIDs.map { "[data-tim-id=\"\($0)\"]" }.joined(separator: ",")
-            rules.append("\(selector){grid-column:span 1 !important}")
         }
         return rules
     }

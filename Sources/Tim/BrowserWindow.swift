@@ -1301,9 +1301,9 @@ struct TabContentView: View {
             }
             pageArea
         }
-        // The system inspector: AppKit owns the column, so the page can
-        // never starve it (the hand-rolled row did exactly that), and the
-        // pane wears the window's own material instead of a drawn card.
+        // The system inspector: AppKit owns the column, while Tim owns one
+        // stable 300-point content contract inside it. Selection changes
+        // never get to renegotiate the pane's width or outer gutter.
         .inspector(isPresented: Binding(
             get: { tab.isEditing || previewSha != nil },
             set: { _ in }
@@ -1326,13 +1326,11 @@ struct TabContentView: View {
                 }
             }
             .transaction { $0.animation = nil }
-            // One width, full stop. A min/ideal/max range let the column
-            // renegotiate every time the selection changed and the Form's
-            // intrinsic width moved — the "randomly resizing" sidebar.
-            // (Only the column width is pinned: a fixed .frame on the
-            // content as well made the split view's min/max size flip
-            // during a constraint pass — an AppKit exception and a crash.)
-            .inspectorColumnWidth(300)
+            // One width, full stop. Child controls clip to this contract;
+            // none can publish an intrinsic width back to the split view.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .clipped()
+            .inspectorColumnWidth(min: 300, ideal: 300, max: 300)
         }
         .navigationTitle("")
         // The toolbar wears the sidebar's material — one piece of chrome.
@@ -1360,8 +1358,8 @@ struct TabContentView: View {
             if !addressFocused { addressText = newValue }
             previewSha = nil
         }
-        // The inspector is a system inspector column: glass, resizable,
-        // width managed by the OS — no homemade pane, no reflow jumps.
+        // The inspector is a system inspector column with Tim's fixed,
+        // compact surface inside — native glass, no homemade split pane.
         .onDisappear {
             // Switching tabs closes the edit session: the draft is
             // stashed silently, the page keeps showing your changes, and
@@ -4399,31 +4397,53 @@ struct InspectorView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .clipped()
+        .controlSize(.small)
     }
 
     /// The trail starts at Page — always one click back to page settings —
     /// and continues through the selection's enclosing elements, each
     /// clickable. The DOM as a path, not a panel.
     private var breadcrumbs: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 2) {
-                crumb("Page", isCurrent: tab.selectionInfo == nil) {
-                    tab.clearSelection()
-                }
-                if let path = tab.selectionInfo?["path"] as? [String] {
-                    ForEach(Array(path.enumerated()), id: \.offset) { item in
-                        Image(systemName: "chevron.compact.right")
-                            .font(.system(size: 8))
-                            .foregroundStyle(.tertiary)
-                        crumb(item.element.capitalized, isCurrent: item.offset == path.count - 1) {
-                            tab.selectAncestor(item.offset)
+        HStack(spacing: 6) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 2) {
+                    crumb("Page", isCurrent: tab.selectionInfo == nil) {
+                        tab.clearSelection()
+                    }
+                    if let path = tab.selectionInfo?["path"] as? [String] {
+                        ForEach(Array(path.enumerated()), id: \.offset) { item in
+                            Image(systemName: "chevron.compact.right")
+                                .font(.system(size: 8))
+                                .foregroundStyle(.tertiary)
+                            crumb(item.element.capitalized, isCurrent: item.offset == path.count - 1) {
+                                tab.selectAncestor(item.offset)
+                            }
                         }
                     }
                 }
+                .fixedSize(horizontal: true, vertical: false)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if tab.isMobilePreview {
+                Divider().frame(height: 18)
+                Button {
+                    tab.resetMobileLayout()
+                } label: {
+                    Label("Restack", systemImage: "rectangle.stack")
+                        .font(.system(size: 10.5, weight: .medium))
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(Color.accentColor)
+                .fixedSize()
+                .help("Reset the iPhone layout to a full-width, natural-height reading-order stack. Undo restores the previous layout.")
+            }
         }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity)
         .background(Color.primary.opacity(0.02))
     }
 
@@ -4836,55 +4856,62 @@ struct InspectorControls: View {
     }
 
     var body: some View {
-        Form {
-            if nav != nil {
-                navCard
-            }
-            if isText {
-                styleCard
-                typographyCard
-            } else {
-                HStack {
-                    Text(info["label"] as? String ?? "Object")
-                        .font(.system(size: 13, weight: .semibold))
-                    Spacer()
-                    // The mirror of the Group button multi-selections get.
-                    if (info["label"] as? String) == "Group" {
-                        Button("Ungroup") { tab.ungroupSelection() }
-                            .controlSize(.small)
-                            .help("Dissolves the group — its objects return to the page, keeping their places.")
+        ScrollView(.vertical) {
+            LazyVStack(alignment: .leading, spacing: 10) {
+                if nav != nil {
+                    navCard
+                }
+                if isText {
+                    styleCard
+                    typographyCard
+                } else {
+                    card {
+                        HStack {
+                            Text(info["label"] as? String ?? "Object")
+                                .font(.system(size: 13, weight: .semibold))
+                            Spacer()
+                            // The mirror of the Group button multi-selections get.
+                            if (info["label"] as? String) == "Group" {
+                                Button("Ungroup") { tab.ungroupSelection() }
+                                    .controlSize(.small)
+                                    .help("Dissolves the group — its objects return to the page, keeping their places.")
+                            }
+                        }
                     }
                 }
-            }
-            if selectionCount > 1 {
-                card {
-                    HStack(spacing: 8) {
-                        Text("\(selectionCount) objects — edits apply to all")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Color.accentColor)
-                        Spacer()
-                        Button("Group") { tab.groupSelection() }
-                            .controlSize(.small)
-                            .help("One object from many: the group moves, resizes, fills, and rotates as a unit — and stays composed on phones.")
+                if selectionCount > 1 {
+                    card {
+                        HStack(spacing: 8) {
+                            Text("\(selectionCount) objects — edits apply to all")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.accentColor)
+                            Spacer()
+                            Button("Group") { tab.groupSelection() }
+                                .controlSize(.small)
+                                .help("One object from many: the group moves, resizes, fills, and rotates as a unit — and stays composed on phones.")
+                        }
                     }
                 }
+                if (info["tag"] as? String) == "video" {
+                    videoCard
+                }
+                if isMedia {
+                    mediaCard
+                }
+                if isCanvasObject, (info["label"] as? String) != "Canvas" {
+                    arrangeCard
+                }
+                appearanceCard
+                if allowsTemplates, isCanvasObject {
+                    templateCard
+                }
             }
-            if (info["tag"] as? String) == "video" {
-                videoCard
-            }
-            if isMedia {
-                mediaCard
-            }
-            if isCanvasObject, (info["label"] as? String) != "Canvas" {
-                arrangeCard
-            }
-            appearanceCard
-            if allowsTemplates, isCanvasObject {
-                templateCard
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
         .onAppear {
             // Warm the pinned list so the font picker opens populated.
             tab.pageFonts { fonts in
@@ -5361,11 +5388,25 @@ struct InspectorControls: View {
     // MARK: pieces
 
     private func card(_ title: String? = nil, @ViewBuilder content: () -> some View) -> some View {
-        Section {
+        VStack(alignment: .leading, spacing: 8) {
+            if let title {
+                Text(title.uppercased())
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .tracking(0.55)
+                    .foregroundStyle(.secondary)
+            }
             content()
-        } header: {
-            if let title { Text(title) }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.primary.opacity(0.035))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+        )
     }
 
     private func rowLabel(_ text: String) -> some View {
@@ -5517,37 +5558,38 @@ struct PageOptionsControls: View {
     private var currentSite: Site? { siteStore.match(tab.webView.url) }
 
     var body: some View {
-        Form {
-            card {
-                HStack(spacing: 8) {
-                    rowLabel("Template")
-                    Picker("", selection: $template) {
-                        Text("Default").tag("default")
+        ScrollView(.vertical) {
+            LazyVStack(alignment: .leading, spacing: 10) {
+                card {
+                    HStack(spacing: 8) {
+                        rowLabel("Template")
+                        Picker("", selection: $template) {
+                            Text("Default").tag("default")
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .controlSize(.small)
                     }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .controlSize(.small)
+                    Text("Page options edit this template — every page using it follows. Templates live in your theme, next to styles.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Text("Page options edit this template — every page using it follows. Templates live in your theme, next to styles.")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
 
-            card("Page") {
-                HStack(spacing: 8) {
-                    rowLabel("Title")
-                    TextField("Untitled", text: $title)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12))
-                        .padding(.vertical, 4)
-                        .padding(.horizontal, 7)
-                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(0.06)))
-                        .onChange(of: title) { _, value in tab.setPageOption("title", value) }
+                card("Page") {
+                    HStack(spacing: 8) {
+                        rowLabel("Title")
+                        TextField("Untitled", text: $title)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12))
+                            .padding(.vertical, 4)
+                            .padding(.horizontal, 7)
+                            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(0.06)))
+                            .onChange(of: title) { _, value in tab.setPageOption("title", value) }
+                    }
                 }
-            }
 
-            card("Background") {
+                card("Background") {
                 Picker("", selection: $bgMode) {
                     Text("Color").tag("color")
                     Text("Gradient").tag("gradient")
@@ -5856,12 +5898,15 @@ struct PageOptionsControls: View {
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                .formStyle(.grouped)
-                .scrollContentBackground(.hidden)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
                 .background(
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .stroke(Color.primary.opacity(0.12), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                        .fill(Color.primary.opacity(0.025))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(Color.primary.opacity(0.12), style: StrokeStyle(lineWidth: 0.5, dash: [4, 3]))
                 )
                 .sheet(item: $editingSiteSettings) { site in
                     SiteEditorSheet(site: site, prefillOrigin: nil)
@@ -5873,8 +5918,13 @@ struct PageOptionsControls: View {
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
         }
-        .padding(10)
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
     }
 
     private func applyPageGradient() {
@@ -6135,11 +6185,25 @@ struct PageOptionsControls: View {
 
     /// The automated share card: this page, snapshotted at 1200×630.
     private func card(_ title: String? = nil, @ViewBuilder content: () -> some View) -> some View {
-        Section {
+        VStack(alignment: .leading, spacing: 8) {
+            if let title {
+                Text(title.uppercased())
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .tracking(0.55)
+                    .foregroundStyle(.secondary)
+            }
             content()
-        } header: {
-            if let title { Text(title) }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.primary.opacity(0.035))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+        )
     }
 
     private func rowLabel(_ text: String) -> some View {

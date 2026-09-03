@@ -69,11 +69,13 @@ Working today:
     you drag); objects can overlap; resize from any edge in cell units.
     Freeform feel, grid truth. After every move the DOM is re-sorted by
     (row, column), so **reading order = mobile order** stays true.
-  - **Responsive by construction, never by tweaks.** Below 700px the grid
-    collapses to a single column: every object goes full-width in reading
-    order. The same Astro content is excellent on desktop and phone with
-    zero per-breakpoint work. This is architecture, not a feature flag —
-    there is no way to build a Tim page that isn't responsive.
+  - **Responsive by construction, refined only when useful.** Below 700px
+    desktop composition gives way to a natural-height reading-order stack:
+    objects go full-width, grouped mini-canvases become vertical flows, and
+    desktop rotations and horizontal offsets stay behind. Entering phone
+    editing starts from that sane stack; the first deliberate move or resize
+    opts the page into an independent 8-column mobile grid. Good mobile is the
+    default, while exceptional compositions remain possible.
   - **Double-click any text to edit it** — a text box or a flowing
     paragraph. Formatting (bold/italic/lists/links/undo) applies wherever
     the caret is. **Global text styles** (Title, Heading, Subheading,
