@@ -132,19 +132,44 @@ struct TimApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("New Tab") { store.newTab() }
                     .keyboardShortcut("t", modifiers: .command)
+                Button("Reopen Closed Tab") {
+                    guard let address = store.recentlyClosed.popLast() else { return }
+                    store.newTab()
+                    store.selectedTab?.navigate(to: address)
+                }
+                .keyboardShortcut("t", modifiers: [.command, .shift])
+                .disabled(store.recentlyClosed.isEmpty)
                 Button("New Page…") { NotificationCenter.default.post(name: .timNewPage, object: nil) }
                     .keyboardShortcut("n", modifiers: .command)
                 Button("Open…") { NotificationCenter.default.post(name: .timOpenPage, object: nil) }
                     .keyboardShortcut("o", modifiers: .command)
+                Button("Open Location…") { AddressField.focus() }
+                    .keyboardShortcut("l", modifiers: .command)
                 Button("Duplicate…") { NotificationCenter.default.post(name: .timDuplicatePage, object: nil) }
                     .keyboardShortcut("s", modifiers: [.command, .shift])
+                // No shortcut: ⌥⌘M is Minimize All, system-wide.
                 Button("Move…") { NotificationCenter.default.post(name: .timMovePage, object: nil) }
-                    .keyboardShortcut("m", modifiers: [.command, .option])
                 Divider()
                 Button("Close Tab") {
                     if let tab = store.selectedTab { store.close(tab) }
                 }
                 .keyboardShortcut("w", modifiers: .command)
+            }
+            // Where every browser keeps them, with the shortcuts every
+            // browser uses. Anything peculiar to Tim stays out of their way.
+            CommandGroup(after: .toolbar) {
+                Button("Home") { store.selectedTab?.loadStartPage() }
+                    .keyboardShortcut("h", modifiers: [.command, .shift])
+                Divider()
+                Button("Show Next Tab") { store.selectTab(offset: 1) }
+                    .keyboardShortcut("]", modifiers: [.command, .shift])
+                Button("Show Previous Tab") { store.selectTab(offset: -1) }
+                    .keyboardShortcut("[", modifiers: [.command, .shift])
+                ForEach(1...9, id: \.self) { n in
+                    Button("Tab \(n)") { store.selectTab(number: n) }
+                        .keyboardShortcut(KeyEquivalent(Character("\(n)")), modifiers: .command)
+                }
+                Divider()
             }
             CommandMenu("Page") {
                 Button("Toggle Edit Mode") { NotificationCenter.default.post(name: .timToggleEdit, object: nil) }
@@ -156,7 +181,7 @@ struct TimApp: App {
                 Button("Restack iPhone Layout") {
                     NotificationCenter.default.post(name: .timRestackMobile, object: nil)
                 }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .keyboardShortcut("r", modifiers: [.control, .command])
                 .disabled(!(store.selectedTab?.isEditing ?? false))
                 Button("Reload") { store.selectedTab?.webView.reload() }
                     .keyboardShortcut("r", modifiers: .command)

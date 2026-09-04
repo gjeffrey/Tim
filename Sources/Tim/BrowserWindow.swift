@@ -4453,6 +4453,30 @@ enum ThumbnailStore {
     }
 }
 
+/// ⌘L, the way every browser means it. The address field deliberately
+/// carries no @FocusState — that is what cost a day of typing bugs — so
+/// focus is handed to it through AppKit instead, which changes none of
+/// the field's own modifiers.
+enum AddressField {
+    static func focus() {
+        guard let window = NSApp.keyWindow, let root = window.contentView else { return }
+        guard let field = find(in: root) else { return }
+        window.makeFirstResponder(field)
+        field.currentEditor()?.selectAll(nil)
+    }
+
+    private static func find(in view: NSView) -> NSTextField? {
+        if let field = view as? NSTextField, field.isEditable,
+           field.placeholderString == "Search or enter address" {
+            return field
+        }
+        for child in view.subviews {
+            if let found = find(in: child) { return found }
+        }
+        return nil
+    }
+}
+
 // MARK: - New local page (a single .html canvas file, no site needed)
 
 enum LocalPages {

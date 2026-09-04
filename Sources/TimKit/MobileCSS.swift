@@ -13,7 +13,10 @@ public enum MobileCSS {
         var rules = [
             "[data-tim-mobile-hidden]{display:none !important}",
             // Multi-column text reads as one column on phones.
-            ".tim-canvas .tim-text{column-count:1 !important;overflow-wrap:anywhere}",
+            // A word is never broken in half. A headline that outgrows the
+            // screen overflows it — visibly wrong, and obviously fixable —
+            // where "Hollan / d" just looks broken and nobody knows why.
+            ".tim-canvas .tim-text{column-count:1 !important;overflow-wrap:normal;word-break:normal}",
             // A narrow viewport must never be widened by one ambitious
             // object, even after the author opts into a custom layout.
             ".tim-canvas .tim-object{box-sizing:border-box;min-width:0;max-width:100%}",
@@ -27,6 +30,8 @@ public enum MobileCSS {
         ]
         rules += styleClassRules(in: out)
         rules += inlineSizeRules(in: out)
+        rules += spacingRules(in: out)
+        rules += pageSpacingRules(in: out)
         // Media keeps its own shape on phones — natural aspect at column
         // width, never stretched or cropped into row-derived boxes. This
         // holds even under hand-tuned mobile layouts.
@@ -276,6 +281,53 @@ public enum MobileCSS {
     /// gentle curve (28 + a quarter of the excess, capped at 48px) — so
     /// a 96px title lands near 44, a 40px subhead near 31, and their
     /// ORDER never flattens the way a hard floor did.
+    /// Space is proportional to the canvas it was chosen on. 128px of
+    /// breathing room above a 1320px composition is a third of a phone
+    /// screen, so margins and padding come down with the viewport —
+    /// keeping their rhythm rather than their measurements. Small values
+    /// are left alone: 8px means the same thing everywhere.
+    static func scaleSpace(_ px: Double) -> Double {
+        guard px > 12 else { return px }
+        return (12 + (px - 12) * 0.34).rounded()
+    }
+
+    /// Margins and padding an author set on individual objects.
+    static func spacingRules(in html: String) -> [String] {
+        var rules: [String] = []
+        for property in ["margin", "padding"] {
+            for pattern in [
+                "data-tim-id=\"([^\"]+)\"[^>]*style=\"[^\"]*?(?<![-a-z])\(property):\\s*([0-9.]+)px",
+                "style=\"[^\"]*?(?<![-a-z])\(property):\\s*([0-9.]+)px[^\"]*\"[^>]*data-tim-id=\"([^\"]+)\""
+            ] {
+                guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+                let idFirst = pattern.hasPrefix("data-tim-id")
+                for match in regex.matches(in: html, range: NSRange(html.startIndex..., in: html)) {
+                    guard let a = Range(match.range(at: 1), in: html),
+                          let b = Range(match.range(at: 2), in: html)
+                    else { continue }
+                    let id = String(html[idFirst ? a : b])
+                    guard let px = Double(html[idFirst ? b : a]) else { continue }
+                    let scaled = scaleSpace(px)
+                    guard scaled < px else { continue }
+                    rules.append(String(format: "[data-tim-id=\"%@\"]{%@:%.0fpx !important}", id, property, scaled))
+                }
+            }
+        }
+        return rules
+    }
+
+    /// The page's own breathing room, set in Page Options and written into
+    /// the template rule — which outranks the base phone padding, so it
+    /// followed the page down to 390 at full size.
+    static func pageSpacingRules(in html: String) -> [String] {
+        guard let range = html.range(of: "\\.tim-canvas\\{padding:\\s*([0-9.]+)px", options: .regularExpression),
+              let px = Double(capture(String(html[range]), "([0-9.]+)px") ?? "")
+        else { return [] }
+        let scaled = scaleSpace(px)
+        guard scaled < px else { return [] }
+        return [String(format: ".tim-canvas{padding-top:%.0fpx !important;padding-bottom:%.0fpx !important}", scaled, scaled)]
+    }
+
     static func scaleRule(px: Double, selector: String) -> String? {
         guard px > 28 else { return nil }
         let mobile = min(48.0, 28 + (px - 28) * 0.24)

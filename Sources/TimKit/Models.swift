@@ -3543,8 +3543,29 @@ public final class BrowserStore: ObservableObject {
         persistSession()
     }
 
+    /// What was closed, most recent last — so ⇧⌘T can bring it back.
+    @Published public var recentlyClosed: [String] = []
+
+    /// ⌘1…⌘9: the ninth selects the LAST tab, as Safari does.
+    public func selectTab(number: Int) {
+        guard !tabs.isEmpty else { return }
+        let index = number >= 9 ? tabs.count - 1 : min(number - 1, tabs.count - 1)
+        selectedTabID = tabs[index].id
+    }
+
+    public func selectTab(offset: Int) {
+        guard !tabs.isEmpty, let current = tabs.firstIndex(where: { $0.id == selectedTabID }) else { return }
+        let next = ((current + offset) % tabs.count + tabs.count) % tabs.count
+        selectedTabID = tabs[next].id
+    }
+
     public func close(_ tab: Tab) {
         guard let index = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+        let address = tab.urlString
+        if !address.isEmpty {
+            recentlyClosed.append(address)
+            if recentlyClosed.count > 20 { recentlyClosed.removeFirst() }
+        }
         tabs.remove(at: index)
         if selectedTabID == tab.id {
             selectedTabID = tabs.indices.contains(index) ? tabs[index].id : tabs.last?.id
