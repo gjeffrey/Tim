@@ -34,6 +34,53 @@ public enum PageComponents {
         "<div data-tim-component=\"\(name)\" style=\"display:contents\">\(content)</div>"
     }
 
+    /// A component that belongs on every page has to be VISIBLE on every
+    /// page. Pages differ: the rows a nav occupies may be empty on one and
+    /// hold a hero photograph on another, and that photograph may carry a
+    /// z-index of its own. So the injected copy lands above whatever the
+    /// page already stacks, rather than behind it — which reads, exactly
+    /// and wrongly, as the component never having been added.
+    static func raised(_ stamped: String, above pageHTML: String) -> String {
+        // Only what objects themselves stack by — an inline style. A
+        // stylesheet's own z-index (NavKit's menu panel sits at 60) says
+        // nothing about how the page's objects are ordered.
+        var top = 0
+        if let re = try? NSRegularExpression(pattern: "style=\"([^\"]*)\"") {
+            for match in re.matches(in: pageHTML, range: NSRange(pageHTML.startIndex..., in: pageHTML)) {
+                guard let r = Range(match.range(at: 1), in: pageHTML) else { continue }
+                let style = String(pageHTML[r])
+                guard let zr = style.range(of: "z-index:\\s*(-?[0-9]+)", options: .regularExpression),
+                      let value = Int(style[zr].replacingOccurrences(of: "z-index:", with: "").trimmingCharacters(in: .whitespaces))
+                else { continue }
+                top = max(top, value)
+            }
+        }
+        // The wrapper is display:contents — the element inside it is what
+        // actually stacks, so that is the one to raise.
+        guard let wrapperEnd = stamped.range(of: "display:contents\">", options: .literal),
+              let tagStart = stamped.range(of: "<", range: wrapperEnd.upperBound..<stamped.endIndex),
+              let tagEnd = stamped.range(of: ">", range: tagStart.upperBound..<stamped.endIndex)
+        else { return stamped }
+
+        var tag = String(stamped[tagStart.lowerBound..<tagEnd.upperBound])
+        let z = "z-index: \(top + 1)"
+        if let styleAttr = tag.range(of: "style=\""),
+           let styleEnd = tag.range(of: "\"", range: styleAttr.upperBound..<tag.endIndex) {
+            var style = String(tag[styleAttr.upperBound..<styleEnd.lowerBound])
+            style = style.replacingOccurrences(of: "z-index:\\s*-?[0-9]+;?\\s*", with: "", options: .regularExpression)
+            if !style.isEmpty, !style.hasSuffix(";") { style += ";" }
+            style += " \(z);"
+            tag.replaceSubrange(styleAttr.upperBound..<styleEnd.lowerBound, with: style)
+        } else {
+            let selfClosing = tag.hasSuffix("/>")
+            let insertAt = tag.index(tag.endIndex, offsetBy: selfClosing ? -2 : -1)
+            tag.insert(contentsOf: " style=\"\(z)\"", at: insertAt)
+        }
+        var out = stamped
+        out.replaceSubrange(tagStart.lowerBound..<tagEnd.upperBound, with: tag)
+        return out
+    }
+
     /// Component regions found in page HTML: [name: innerHTML].
     public static func harvest(fromPageHTML html: String) -> [String: String] {
         var out: [String: String] = [:]
@@ -127,7 +174,8 @@ public enum PageComponents {
                       !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                       let tagEnd = pageHTML.range(of: ">", range: canvasAttr.upperBound..<pageHTML.endIndex)
                 else { continue }
-                pageHTML.insert(contentsOf: "\n" + stamped(name: name, content: content), at: tagEnd.upperBound)
+                pageHTML.insert(contentsOf: "\n" + raised(stamped(name: name, content: content), above: pageHTML),
+                                at: tagEnd.upperBound)
                 pageChanged = true
             }
             if pageChanged {
