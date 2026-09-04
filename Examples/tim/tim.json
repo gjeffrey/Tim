@@ -11,12 +11,20 @@
       "imageBased" : false,
       "text" : "HWJ",
       "textColorHex" : "#FFCBE8"
+    },
+    "site" : {
+      "backgroundEndHex" : "",
+      "backgroundHex" : "#FEED00",
+      "fontFamily" : "",
+      "imageBased" : false,
+      "text" : "T",
+      "textColorHex" : "#000000"
     }
   },
-  "iconRecipesUpdated" : "2026-08-31T21:22:01Z",
-  "iconsUpdated" : "2026-09-01T22:14:28Z",
-  "siteFavicon" : "",
-  "siteTouchIcon" : "",
-  "updated" : "2026-09-01T22:14:28Z",
+  "iconRecipesUpdated" : "2026-09-04T22:14:44Z",
+  "iconsUpdated" : "2026-09-04T22:14:46Z",
+  "siteFavicon" : "media\/icon.png",
+  "siteTouchIcon" : "media\/icon.png",
+  "updated" : "2026-09-04T22:14:46Z",
   "version" : 1
 }

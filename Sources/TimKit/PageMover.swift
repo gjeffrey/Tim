@@ -111,17 +111,50 @@ public enum PageMover {
     }
 
     /// Folders in a site mirror (site-relative, "/" first), for the picker.
-    public static func folders(in mirror: String) -> [String] {
-        guard let subpaths = try? FileManager.default.subpathsOfDirectory(atPath: mirror) else { return ["/"] }
-        var dirs: [String] = ["/"]
-        for rel in subpaths {
-            let full = (mirror as NSString).appendingPathComponent(rel)
-            var isDir: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: full, isDirectory: &isDir), isDir.boolValue else { continue }
-            let first = rel.split(separator: "/").first.map(String.init) ?? rel
-            if first.hasPrefix(".") || first.hasPrefix("_") || ["media", "components", "node_modules", "dist", "src", "public"].contains(first) { continue }
-            dirs.append("/" + rel)
+    /// Somewhere a page could go, and what is already there.
+    public struct Folder: Identifiable, Equatable {
+        public var path: String          // "/" or "/family/2026"
+        public var pages: Int            // pages already published here
+        public var hasMainPage: Bool     // an index.html, so the folder itself opens
+        public var id: String { path }
+        public init(path: String, pages: Int, hasMainPage: Bool) {
+            self.path = path; self.pages = pages; self.hasMainPage = hasMainPage
         }
-        return dirs.sorted()
+    }
+
+    /// Only the folders that already hold pages, plus the site root. A
+    /// server is full of directories nobody publishing a page cares
+    /// about; the ones with your pages in them are the ones worth
+    /// offering.
+    public static func folders(in mirror: String) -> [Folder] {
+        let fm = FileManager.default
+        guard let subpaths = try? fm.subpathsOfDirectory(atPath: mirror) else {
+            return [Folder(path: "/", pages: 0, hasMainPage: false)]
+        }
+        var counts: [String: Int] = [:]
+        var mains: Set<String> = []
+        for rel in subpaths where rel.hasSuffix(".html") {
+            let first = rel.split(separator: "/").first.map(String.init) ?? rel
+            if first.hasPrefix("."), first != rel { continue }
+            if first.hasPrefix(".") || first.hasPrefix("_")
+                || ["media", "components", "node_modules", "dist", "src", "public"].contains(first) { continue }
+            let dir = (rel as NSString).deletingLastPathComponent
+            let key = dir.isEmpty ? "/" : "/" + dir
+            counts[key, default: 0] += 1
+            if (rel as NSString).lastPathComponent == "index.html" { mains.insert(key) }
+        }
+        counts["/"] = counts["/"] ?? 0
+        return counts.keys.sorted().map {
+            Folder(path: $0, pages: counts[$0] ?? 0, hasMainPage: mains.contains($0))
+        }
+    }
+
+    /// What is already published at an address, if anything.
+    public static func existing(_ rel: String, in mirror: String) -> (title: String, modified: Date)? {
+        let path = mirror + rel
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let html = try? String(contentsOfFile: path, encoding: .utf8)
+        else { return nil }
+        return (title(of: html), (attrs[.modificationDate] as? Date) ?? .distantPast)
     }
 }

@@ -418,6 +418,7 @@ struct UnifiedSidebar: View {
 
                 if let tab = store.selectedTab {
                     SiteSection(tab: tab)
+                    OtherSitesSection(tab: tab)
                         .id(tab.id)
                 }
             }
@@ -616,6 +617,118 @@ struct NewTabButton: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+    }
+}
+
+/// Every other site you own, reachable without a tab open on it. The
+/// sidebar is where your things live; tabs are only what you happen to be
+/// looking at, and spending one per site would confuse the two.
+struct OtherSitesSection: View {
+    @ObservedObject var tab: Tab
+    @EnvironmentObject var siteStore: SiteStore
+
+    @State private var expanded: Set<UUID> = []
+    @State private var pages: [UUID: [LinkOption]] = [:]
+
+    private var current: Site? { siteStore.match(URL(string: tab.urlString)) }
+    private var others: [Site] { siteStore.sites.filter { $0.id != current?.id } }
+
+    var body: some View {
+        if !others.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Divider().padding(.vertical, 10)
+                Text(current == nil ? "Your Sites" : "Your Other Sites")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+
+                ForEach(others) { site in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Button {
+                            toggle(site)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Circle()
+                                    .fill(timYellow.opacity(0.55))
+                                    .frame(width: 7, height: 7)
+                                Text(site.name.isEmpty ? host(site) : site.name)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .lineLimit(1)
+                                Spacer(minLength: 4)
+                                Image(systemName: expanded.contains(site.id) ? "chevron.down" : "chevron.right")
+                                    .font(.system(size: 8, weight: .semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            Button("Open Site") { tab.navigate(to: site.origin) }
+                        }
+
+                        if expanded.contains(site.id) {
+                            let list = pages[site.id] ?? []
+                            if list.isEmpty {
+                                Text("No pages yet")
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.tertiary)
+                                    .padding(.leading, 13)
+                            }
+                            ForEach(list) { page in
+                                Button {
+                                    tab.navigate(to: site.origin + page.href)
+                                } label: {
+                                    HStack(spacing: 7) {
+                                        Group {
+                                            if let thumb = ThumbnailStore.image(for: site.origin + page.href) {
+                                                Image(nsImage: thumb).resizable().aspectRatio(contentMode: .fill)
+                                            } else {
+                                                ZStack {
+                                                    Rectangle().fill(Color.primary.opacity(0.05))
+                                                    Image(systemName: "doc.text")
+                                                        .font(.system(size: 8))
+                                                        .foregroundStyle(.quaternary)
+                                                }
+                                            }
+                                        }
+                                        .frame(width: 38, height: 24)
+                                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                                        .overlay(RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                            .stroke(Color.primary.opacity(0.12), lineWidth: 1))
+                                        Text(page.label)
+                                            .font(.system(size: 11))
+                                            .lineLimit(1)
+                                        Spacer(minLength: 0)
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .help(site.origin + page.href)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func host(_ site: Site) -> String {
+        URL(string: site.origin)?.host() ?? site.origin
+    }
+
+    /// Pages are read off the main thread the first time a site opens —
+    /// the sidebar must never touch the filesystem while drawing.
+    private func toggle(_ site: Site) {
+        if expanded.contains(site.id) {
+            expanded.remove(site.id)
+            return
+        }
+        expanded.insert(site.id)
+        guard pages[site.id] == nil else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let loaded = LinkSources.pages(for: site)
+            DispatchQueue.main.async { pages[site.id] = loaded }
+        }
     }
 }
 
@@ -7146,8 +7259,23 @@ struct MovePageSheet: View {
     }
     private var movingHouse: Bool { !isLocal && destination?.id != site?.id }
 
-    private var folders: [String] {
-        destination.map { PageMover.folders(in: $0.localProjectPath) } ?? ["/"]
+    private var folders: [PageMover.Folder] {
+        destination.map { PageMover.folders(in: $0.localProjectPath) }
+            ?? [PageMover.Folder(path: "/", pages: 0, hasMainPage: false)]
+    }
+    private var chosenFolder: PageMover.Folder? {
+        folders.first { $0.path == targetFolder } ?? folders.first { $0.path == folder }
+    }
+    /// A page already at this address — the one thing worth interrupting for.
+    private var wouldReplace: (title: String, modified: Date)? {
+        guard let destination, !destination.localProjectPath.isEmpty else { return nil }
+        if !isLocal, targetRel == currentRel, destination.id == site?.id { return nil }
+        return PageMover.existing(targetRel, in: destination.localProjectPath)
+    }
+    /// A folder nobody can open yet, because nothing in it is the main page.
+    private var offerMainPage: Bool {
+        guard let f = chosenFolder, f.path != "/", !f.hasMainPage else { return false }
+        return name.trimmingCharacters(in: .whitespaces).lowercased() != "index"
     }
     private var currentRel: String {
         guard let site, let url = tab.webView.url else { return "" }
@@ -7168,6 +7296,14 @@ struct MovePageSheet: View {
         if !n.hasSuffix(".html") { n += ".html" }
         return (targetFolder == "/" ? "" : targetFolder) + "/" + n
     }
+    /// "gabrieljeffrey.com" for the root, otherwise the folder path in
+    /// plain words with what is already in it.
+    private func folderLabel(_ f: PageMover.Folder) -> String {
+        let name = f.path == "/" ? host(destination) : String(f.path.dropFirst()).replacingOccurrences(of: "/", with: " › ")
+        guard f.pages > 0 else { return name }
+        return "\(name)  —  \(f.pages) page\(f.pages == 1 ? "" : "s")"
+    }
+
     private func host(_ s: Site?) -> String {
         guard let s else { return "" }
         return URL(string: s.origin)?.host() ?? s.origin
@@ -7213,16 +7349,36 @@ struct MovePageSheet: View {
                             }
                         }
                         Picker("Folder", selection: $folder) {
-                            ForEach(folders, id: \.self) { f in
-                                Text(f == "/" ? host(destination) : String(f.dropFirst()).replacingOccurrences(of: "/", with: " › ")).tag(f)
+                            ForEach(folders) { f in
+                                Text(folderLabel(f)).tag(f.path)
                             }
                         }
                         TextField("New folder inside it (optional)", text: $newFolder)
-                        TextField("File name", text: $name, prompt: Text("index"))
+                        TextField("Page name", text: $name, prompt: Text("index"))
                             .font(.system(size: 12, design: .monospaced))
                         LabeledContent("Will be at") {
                             Text(host(destination) + targetRel)
                                 .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+                        }
+                        if let existing = wouldReplace {
+                            Label {
+                                Text("Replaces “\(existing.title.isEmpty ? "Untitled" : existing.title)”, last changed \(existing.modified.formatted(date: .abbreviated, time: .shortened)).")
+                            } icon: {
+                                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                            }
+                            .font(.system(size: 10.5))
+                            .fixedSize(horizontal: false, vertical: true)
+                        } else if offerMainPage, let f = chosenFolder {
+                            HStack(alignment: .top, spacing: 6) {
+                                Image(systemName: "lightbulb").foregroundStyle(.secondary)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Nothing opens when someone visits \(host(destination))\(f.path) yet.")
+                                    Button("Make this the main page there") { name = "index" }
+                                        .controlSize(.small)
+                                }
+                            }
+                            .font(.system(size: 10.5))
+                            .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     if !isLocal {
@@ -7253,7 +7409,7 @@ struct MovePageSheet: View {
                     go()
                 } label: {
                     if working { ProgressView().controlSize(.small).frame(width: 52) }
-                    else { Text(isLocal ? "Put It Online" : "Move") }
+                    else { Text(wouldReplace != nil ? "Replace" : (isLocal ? "Put It Online" : "Move")) }
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
@@ -7271,7 +7427,8 @@ struct MovePageSheet: View {
             } else {
                 let rel = currentRel
                 let dir = (rel as NSString).deletingLastPathComponent
-                folder = folders.contains(dir) ? (dir.isEmpty ? "/" : dir) : "/"
+                let key = dir.isEmpty ? "/" : dir
+                folder = folders.contains { $0.path == key } ? key : "/"
                 name = ((rel as NSString).lastPathComponent as NSString).deletingPathExtension
             }
         }
