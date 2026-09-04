@@ -92,8 +92,10 @@ public enum PageComponents {
             let name = String(html[attr.upperBound..<nameEnd.lowerBound])
             let inner = String(html[region.inner])
             // An empty region is a husk, not an edit — harvesting it would
-            // blank the master and wipe the component from every page.
-            if !inner.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // blank the master and wipe the component from every page. And
+            // a copy this page owns is this page's business, not the site's.
+            if !inner.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               !ownsItsCopy(html, name) {
                 out[name] = inner
             }
             search = region.outerEnd
@@ -134,6 +136,35 @@ public enum PageComponents {
             }
         }
         return nil
+    }
+
+    /// A page may keep its OWN copy of a shared object: marked
+    /// data-tim-own, the master stops overwriting it and its edits stop
+    /// becoming the master. Everything else still follows the master, so
+    /// the common case — change the nav once, everywhere — is unchanged.
+    static func ownsItsCopy(_ pageHTML: String, _ name: String) -> Bool {
+        guard let attr = pageHTML.range(of: "data-tim-component=\"\(name)\""),
+              let tagEnd = pageHTML.range(of: ">", range: attr.upperBound..<pageHTML.endIndex)
+        else { return false }
+        return pageHTML[attr.upperBound..<tagEnd.lowerBound].contains("data-tim-own")
+    }
+
+    /// Is this shared object on the page at all?
+    public static func present(_ pageHTML: String, _ name: String) -> Bool {
+        pageHTML.contains("data-tim-component=\"\(name)\"")
+    }
+
+    /// Every shared object a site has, with a readable name.
+    public static func shared(in folder: String) -> [(name: String, label: String)] {
+        list(in: folder).filter { $0.hasPrefix("tpl-") }.map { name in
+            let content = html(named: name, in: folder) ?? ""
+            let label: String
+            if content.contains("tim-nav") { label = "Navigation" }
+            else if content.contains("<header") { label = "Header" }
+            else if content.contains("<footer") { label = "Footer" }
+            else { label = "Shared object" }
+            return (name, label)
+        }
     }
 
     /// Deleting a template component on a page marks the page's body with
@@ -249,7 +280,8 @@ public enum PageComponents {
             guard var pageHTML = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
             var pageChanged = false
             for name in names {
-                guard let content = html(named: name, in: folder),
+                guard !ownsItsCopy(pageHTML, name),
+                      let content = html(named: name, in: folder),
                       !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                       let updated = replaceRegion(in: pageHTML, name: name, with: content),
                       updated != pageHTML

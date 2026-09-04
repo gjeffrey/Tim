@@ -629,6 +629,45 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
     }
 
+    /// Which shared objects this page has, which it keeps its own copy
+    /// of, and which it has sent away.
+    public func componentState(_ completion: @escaping ([String: Any]) -> Void) {
+        webView.evaluateJavaScript("window.__timComponentState ? window.__timComponentState() : ''") { result, _ in
+            guard let json = result as? String, let data = json.data(using: .utf8),
+                  let info = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            else { completion([:]); return }
+            completion(info)
+        }
+    }
+
+    public func setComponentOwn(_ name: String, _ own: Bool) {
+        webView.evaluateJavaScript(
+            "window.__timSetComponentOwn && window.__timSetComponentOwn(\(Self.jsLiteral(name)), \(own));",
+            completionHandler: nil
+        )
+    }
+
+    public func removeComponent(_ name: String) {
+        webView.evaluateJavaScript(
+            "window.__timRemoveComponent && window.__timRemoveComponent(\(Self.jsLiteral(name)));",
+            completionHandler: nil
+        )
+    }
+
+    public func addComponent(_ name: String, html: String) {
+        webView.evaluateJavaScript(
+            "window.__timAddComponent && window.__timAddComponent(\(Self.jsLiteral(name)), \(Self.jsLiteral(html)));",
+            completionHandler: nil
+        )
+    }
+
+    public func resetComponent(_ name: String, html: String) {
+        webView.evaluateJavaScript(
+            "window.__timResetComponent && window.__timResetComponent(\(Self.jsLiteral(name)), \(Self.jsLiteral(html)));",
+            completionHandler: nil
+        )
+    }
+
     /// Rewrites the selected navigation object from its model (NavKit).
     public func setNav(_ json: String) {
         webView.evaluateJavaScript("window.__timNavSet && window.__timNavSet(\(Self.jsLiteral(json)));", completionHandler: nil)
@@ -2183,6 +2222,94 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       window.addEventListener('resize', scheduleTextSel);
       window.__timTextSelRefresh = postTextSel;
 
+      // Only objects it actually overlaps matter; the rest keep their
+      // implicit zero, the way the arrange commands leave them.
+      function bringToFront(el, canvas) {
+        if (!el || !canvas) { return; }
+        // A component wrapper is display:contents and has no box of its
+        // own — the object inside it is what occupies space and stacks.
+        var box = (el.matches && el.matches('[data-tim-component]')) ? el.firstElementChild : el;
+        if (!box) { return; }
+        var a = box.getBoundingClientRect();
+        var covered = Array.prototype.slice.call(canvas.querySelectorAll('.tim-object')).filter(function (other) {
+          if (other === box || box.contains(other) || canvasFor(other) !== canvas) { return false; }
+          var b = other.getBoundingClientRect();
+          return !(b.right <= a.left || b.left >= a.right || b.bottom <= a.top || b.top >= a.bottom);
+        });
+        if (!covered.length) { return; }
+        var top = 0;
+        covered.forEach(function (other) { top = Math.max(top, parseInt(other.style.zIndex, 10) || 0); });
+        box.style.zIndex = String(top + 1);
+      }
+
+      // Shared objects, page by page: what is here, what this page keeps
+      // its own copy of, and what it has sent away.
+      function omitList() {
+        return (doc.body.getAttribute('data-tim-omit') || '').split(/\\s+/).filter(function (n) { return n; });
+      }
+      function setOmitList(names) {
+        if (names.length) { doc.body.setAttribute('data-tim-omit', names.join(' ')); }
+        else { doc.body.removeAttribute('data-tim-omit'); }
+      }
+      window.__timComponentState = function () {
+        var present = [];
+        var wraps = doc.querySelectorAll('[data-tim-component]');
+        for (var i = 0; i < wraps.length; i++) {
+          present.push({
+            name: wraps[i].getAttribute('data-tim-component'),
+            own: wraps[i].hasAttribute('data-tim-own') ? 1 : 0
+          });
+        }
+        return JSON.stringify({ present: present, omitted: omitList() });
+      };
+      window.__timSetComponentOwn = function (name, own) {
+        var wrap = doc.querySelector('[data-tim-component="' + name + '"]');
+        if (!wrap) { return; }
+        checkpoint('component');
+        if (own) { wrap.setAttribute('data-tim-own', ''); } else { wrap.removeAttribute('data-tim-own'); }
+        notifySel(true);
+      };
+      window.__timRemoveComponent = function (name) {
+        checkpoint('component');
+        var wrap = doc.querySelector('[data-tim-component="' + name + '"]');
+        if (wrap) {
+          if (sel && wrap.contains(sel)) { sel = null; }
+          wrap.remove();
+        }
+        var names = omitList();
+        if (names.indexOf(name) < 0) { names.push(name); }
+        setOmitList(names);
+        layout();
+        notifySel(true);
+      };
+      window.__timAddComponent = function (name, html) {
+        var canvas = doc.querySelector('[data-tim-canvas]:not(.tim-container)') || doc.querySelector('[data-tim-canvas]');
+        if (!canvas) { return; }
+        checkpoint('component');
+        setOmitList(omitList().filter(function (n) { return n !== name; }));
+        var existing = doc.querySelector('[data-tim-component="' + name + '"]');
+        if (existing) { existing.remove(); }
+        var tmp = doc.createElement('div');
+        tmp.innerHTML = html;
+        var wrap = tmp.firstElementChild;
+        if (!wrap) { return; }
+        canvas.insertBefore(wrap, canvas.firstChild);
+        bringToFront(wrap, canvas);
+        layout();
+        notifySel(true);
+      };
+      window.__timResetComponent = function (name, html) {
+        var wrap = doc.querySelector('[data-tim-component="' + name + '"]');
+        if (!wrap) { return; }
+        checkpoint('component');
+        wrap.removeAttribute('data-tim-own');
+        wrap.innerHTML = html;
+        var canvas = canvasFor(wrap.firstElementChild) || doc.querySelector('[data-tim-canvas]');
+        bringToFront(wrap, canvas);
+        layout();
+        notifySel(true);
+      };
+
       var insertPoint = null;
       window.__timInsertAt = function (html, colSpan, rowSpan, x, y) {
         insertPoint = { x: x, y: y };
@@ -2285,19 +2412,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         fitSpan(el);
         layout();
         // You put it there, so it goes on top of whatever it landed on.
-        // Only objects it actually overlaps matter; the rest keep their
-        // implicit zero, the way the arrange commands leave them.
-        (function () {
-          var covered = Array.prototype.slice.call(canvas.querySelectorAll('.tim-object')).filter(function (other) {
-            if (other === el || canvasFor(other) !== canvas) { return false; }
-            var a = el.getBoundingClientRect(), b = other.getBoundingClientRect();
-            return !(b.right <= a.left || b.left >= a.right || b.bottom <= a.top || b.top >= a.bottom);
-          });
-          if (!covered.length) { return; }
-          var top = 0;
-          covered.forEach(function (other) { top = Math.max(top, parseInt(other.style.zIndex, 10) || 0); });
-          el.style.zIndex = String(top + 1);
-        })();
+        bringToFront(el, canvas);
         notifySel();
         el.scrollIntoView({ block: 'nearest' });
       };
@@ -2777,6 +2892,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
               templateComponent: (function () {
                 var wrap = sel.closest ? sel.closest('[data-tim-component]') : null;
                 return wrap ? (wrap.getAttribute('data-tim-component') || '') : '';
+              })(),
+              templateOwn: (function () {
+                var wrap = sel.closest ? sel.closest('[data-tim-component]') : null;
+                return wrap && wrap.hasAttribute('data-tim-own') ? 1 : 0;
               })(),
               fontFamily: String(cs.fontFamily || '').split(',')[0].replace(/["']/g, '').trim(),
               italic: cs.fontStyle === 'italic' ? 1 : 0,

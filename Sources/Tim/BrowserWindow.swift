@@ -5277,28 +5277,64 @@ struct InspectorControls: View {
         (info["templateComponent"] as? String ?? "").hasPrefix("tpl-")
     }
 
+    private var componentName: String { info["templateComponent"] as? String ?? "" }
+    private var componentIsOwn: Bool { (info["templateOwn"] as? Int) == 1 }
+
     private var templateCard: some View {
-        card {
-            if (info["templateComponent"] as? String) == "tpl-nav" {
+        card(componentName.isEmpty ? nil : "On Every Page") {
+            if componentName == "tpl-nav" {
                 Button("Edit Navigation…") {
                     NotificationCenter.default.post(name: .timEditNav, object: nil)
                 }
                 .font(.system(size: 11))
                 .help("Choose which pages appear, add links, and reorder.")
             }
-            Toggle("On every page", isOn: Binding(
-                get: { onEveryPage },
-                set: { on in
-                    tab.setSelectionOnEveryPage(on, name: "tpl-" + String(UUID().uuidString.prefix(6)).lowercased())
+            if componentName.isEmpty {
+                Toggle("On every page", isOn: Binding(
+                    get: { onEveryPage },
+                    set: { on in
+                        tab.setSelectionOnEveryPage(on, name: "tpl-" + String(UUID().uuidString.prefix(6)).lowercased())
+                    }
+                ))
+                .font(.system(size: 12))
+                Text("Adds this object to the template: every page gets it, in this spot, on your next Done.")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                // The one decision that matters: does what you do here
+                // happen everywhere, or only here?
+                HStack(spacing: 8) {
+                    rowLabel("Changes")
+                    Picker("", selection: Binding(
+                        get: { componentIsOwn ? "page" : "site" },
+                        set: { tab.setComponentOwn(componentName, $0 == "page") }
+                    )) {
+                        Text("Every page").tag("site")
+                        Text("This page").tag("page")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
                 }
-            ))
-            .font(.system(size: 12))
-            Text(onEveryPage
-                 ? "Part of this page's template — it appears on every page, and edits here update it everywhere on Done."
-                 : "Adds this object to the template: every page gets it, in this spot, on your next Done.")
-                .font(.system(size: 9.5))
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
+                Text(componentIsOwn
+                     ? "This page keeps its own copy: what you change here stays here, and the shared version no longer replaces it."
+                     : "What you change here changes it on every page, on your next Done.")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    if componentIsOwn {
+                        Button("Reset to Shared") {
+                            guard let site, let content = PageComponents.html(named: componentName, in: site.localProjectPath) else { return }
+                            tab.resetComponent(componentName, html: content)
+                        }
+                        .help("Throws away this page's copy and takes the shared one again.")
+                    }
+                    Button("Remove from This Page") { tab.removeComponent(componentName) }
+                        .help("Leaves it out of this page only. Page Options can put it back.")
+                }
+                .controlSize(.small)
+            }
         }
     }
 
@@ -5872,6 +5908,9 @@ struct PageOptionsControls: View {
     @State private var bgEnd: Color
     @State private var bgAngle: Double
     @State private var bgVideoBounce = false
+    @State private var sharedObjects: [(name: String, label: String)] = []
+    @State private var presentComponents: Set<String> = []
+    @State private var ownComponents: Set<String> = []
 
     init(tab: Tab, info: [String: Any], reload: @escaping () -> Void) {
         self.tab = tab
@@ -6041,6 +6080,34 @@ struct PageOptionsControls: View {
                     .onChange(of: padY) { _, v in tab.setPageOption("padY", "\(Int(v))") }
                 sliderRow("Base Size", $baseSize, 12...22, 1, "\(Int(baseSize))")
                     .onChange(of: baseSize) { _, v in tab.setPageOption("baseSize", "\(Int(v))") }
+            }
+
+            if !sharedObjects.isEmpty {
+                card("On Every Page") {
+                    ForEach(sharedObjects, id: \.name) { object in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Toggle(object.label, isOn: Binding(
+                                get: { presentComponents.contains(object.name) },
+                                set: { on in setShared(object.name, on: on) }
+                            ))
+                            .font(.system(size: 12))
+                            if presentComponents.contains(object.name), ownComponents.contains(object.name) {
+                                HStack(spacing: 6) {
+                                    Text("This page keeps its own copy")
+                                        .font(.system(size: 9.5))
+                                        .foregroundStyle(.secondary)
+                                    Button("Reset") { resetShared(object.name) }
+                                        .controlSize(.small)
+                                }
+                                .padding(.leading, 2)
+                            }
+                        }
+                    }
+                    Text("Objects that appear on every page of the site. Switch one off to leave it out of this page — and back on here when you want it again.")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             card("iPhone") {
@@ -6292,6 +6359,44 @@ struct PageOptionsControls: View {
         .scrollBounceBehavior(.basedOnSize)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
+        .onAppear { loadSharedObjects() }
+    }
+
+    /// The site's shared objects, and what this page does with each.
+    private func loadSharedObjects() {
+        guard let site = currentSite, !site.localProjectPath.isEmpty else {
+            sharedObjects = []
+            return
+        }
+        let found = PageComponents.shared(in: site.localProjectPath)
+        tab.componentState { state in
+            let present = (state["present"] as? [[String: Any]]) ?? []
+            sharedObjects = found
+            presentComponents = Set(present.compactMap { $0["name"] as? String })
+            ownComponents = Set(present.compactMap { ($0["own"] as? Int) == 1 ? $0["name"] as? String : nil })
+        }
+    }
+
+    private func setShared(_ name: String, on: Bool) {
+        if on {
+            guard let site = currentSite,
+                  let content = PageComponents.html(named: name, in: site.localProjectPath)
+            else { return }
+            tab.addComponent(name, html: PageComponents.stamped(name: name, content: content))
+            presentComponents.insert(name)
+        } else {
+            tab.removeComponent(name)
+            presentComponents.remove(name)
+            ownComponents.remove(name)
+        }
+    }
+
+    private func resetShared(_ name: String) {
+        guard let site = currentSite,
+              let content = PageComponents.html(named: name, in: site.localProjectPath)
+        else { return }
+        tab.resetComponent(name, html: content)
+        ownComponents.remove(name)
     }
 
     private func applyPageGradient() {
