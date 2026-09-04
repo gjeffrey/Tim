@@ -7887,6 +7887,8 @@ struct AddressBar: View {
     /// A page that lives only on this Mac. It has no address anyone else
     /// could use, so the field shows its name and a badge says the rest.
     private var isLocalPage: Bool { URL(string: tab.urlString)?.isFileURL == true }
+    private var showDraft: Bool { tab.hasDraft && !tab.isEditing }
+    private var showLocalBadge: Bool { isLocalPage && !editing }
 
     private var restText: String {
         if isLocalPage, let url = URL(string: tab.urlString) {
@@ -7924,43 +7926,15 @@ struct AddressBar: View {
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
+            .frame(width: canPublish || canCreate || canClaim ? nil : 0)
             .opacity(canPublish || canCreate || canClaim ? 1 : 0)
             .allowsHitTesting(canPublish || canCreate || canClaim)
+            .clipped()
             .help(canPublish
                   ? "Put it online — copy this page, and its pictures, to a site you own."
                   : (canCreate
                      ? "This page doesn't exist on your site yet — create and publish it at this address."
                      : "Make It Mine — copy this page, with its images, styles, and fonts, onto your own site, ready to edit."))
-
-            // A draft waiting on this page: Safari's in-field pattern, same
-            // opacity-stable rule as the button above.
-            Button {
-                onDraft()
-            } label: {
-                Text("Draft")
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(Color.black)
-                    .padding(.horizontal, 7)
-                    .frame(height: 18)
-                    .background(Capsule().fill(timYellow))
-            }
-            .buttonStyle(.plain)
-            .opacity(tab.hasDraft && !tab.isEditing ? 1 : 0)
-            .allowsHitTesting(tab.hasDraft && !tab.isEditing)
-            .help("An unpublished draft of this page is saved on this Mac — continue it, or discard it.")
-
-            // A local page has no address anyone else can reach. Saying so
-            // permanently, right where the address would be, is kinder
-            // than letting someone discover it at the wrong moment.
-            Text("On This Mac")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 7)
-                .frame(height: 18)
-                .background(Capsule().strokeBorder(Color.primary.opacity(0.25), lineWidth: 1))
-                .opacity(isLocalPage && !editing ? 1 : 0)
-                .allowsHitTesting(false)
-                .help("This page is a file on your Mac. Nobody else can see it until you publish it to a site.")
 
             TextField("Search or enter address", text: $text, onEditingChanged: { began in
                 // begin-editing re-fires on keystrokes (the trace showed five
@@ -7985,6 +7959,45 @@ struct AddressBar: View {
                     NSApp.keyWindow?.makeFirstResponder(nil)
                 }
                 .frame(maxWidth: .infinity)
+
+            // Status sits AFTER the address, and takes no width when it has
+            // nothing to say — three badges reserving space ahead of the
+            // field pushed the address off its own centre and clipped it.
+            // Width is layout, not structure: the field keeps its identity
+            // and its editing session.
+            Button {
+                onDraft()
+            } label: {
+                Text("Draft")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(Color.black)
+                    .padding(.horizontal, 7)
+                    .frame(height: 18)
+                    .background(Capsule().fill(timYellow))
+            }
+            .buttonStyle(.plain)
+            .fixedSize()
+            .frame(width: showDraft ? nil : 0)
+            .opacity(showDraft ? 1 : 0)
+            .allowsHitTesting(showDraft)
+            .clipped()
+            .help("An unpublished draft of this page is saved on this Mac — continue it, or discard it.")
+
+            // A local page has no address anyone else can reach. Saying so
+            // permanently is kinder than letting someone discover it at the
+            // wrong moment.
+            Text("On This Mac")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 7)
+                .frame(height: 18)
+                .background(Capsule().strokeBorder(Color.primary.opacity(0.25), lineWidth: 1))
+                .fixedSize()
+                .frame(width: showLocalBadge ? nil : 0)
+                .opacity(showLocalBadge ? 1 : 0)
+                .allowsHitTesting(false)
+                .clipped()
+                .help("This page is a file on your Mac. Nobody else can see it until you publish it to a site.")
 
             Button {
                 if tab.isLoading { tab.webView.stopLoading() } else { tab.webView.reload() }
