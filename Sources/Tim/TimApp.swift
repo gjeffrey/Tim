@@ -148,7 +148,7 @@ struct TimApp: App {
                 Button("Duplicate…") { NotificationCenter.default.post(name: .timDuplicatePage, object: nil) }
                     .keyboardShortcut("s", modifiers: [.command, .shift])
                 // No shortcut: ⌥⌘M is Minimize All, system-wide.
-                Button(store.selectedTab?.webView.url?.isFileURL == true ? "Put It Online…" : "Move…") {
+                Button(store.selectedTab?.webView.url?.isFileURL == true ? "Put It Online…" : "Change Address…") {
                     NotificationCenter.default.post(name: .timMovePage, object: nil)
                 }
                 Divider()

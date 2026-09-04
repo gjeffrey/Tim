@@ -1660,7 +1660,7 @@ struct TabContentView: View {
                    onCreate: { createMissingPage() },
                    onClaim: { showImportSheet = true },
                    onDraft: { askAboutDraft() },
-                   onPublish: { NotificationCenter.default.post(name: .timMovePage, object: nil) })
+                   onAddress: { NotificationCenter.default.post(name: .timMovePage, object: nil) })
     }
 
     /// Entering edit mode materializes a derived site (a Tim page on a
@@ -7329,7 +7329,7 @@ struct MovePageSheet: View {
                             .font(.system(size: 10.5)).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                } header: { Text(isLocal ? "Put It Online" : "Move Page") }
+                } header: { Text(isLocal ? "Put It Online" : "Change the Address") }
 
                 if siteStore.sites.isEmpty {
                     Section {
@@ -7409,7 +7409,7 @@ struct MovePageSheet: View {
                     go()
                 } label: {
                     if working { ProgressView().controlSize(.small).frame(width: 52) }
-                    else { Text(wouldReplace != nil ? "Replace" : (isLocal ? "Put It Online" : "Move")) }
+                    else { Text(wouldReplace != nil ? "Replace" : (isLocal ? "Put It Online" : "Change Address")) }
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
@@ -7847,7 +7847,9 @@ struct AddressBar: View {
     let onCreate: () -> Void
     let onClaim: () -> Void
     var onDraft: () -> Void = {}
-    var onPublish: () -> Void = {}
+    /// Put a local page online, or change a published page's address —
+    /// the same sheet, because they are the same question.
+    var onAddress: () -> Void = {}
     @EnvironmentObject var siteStore: SiteStore
     @AppStorage("tim.experimental.makeItMine") private var makeItMineEnabled = false
     @AppStorage("tim.cleanAddresses") private var cleanAddresses = true
@@ -7904,19 +7906,44 @@ struct AddressBar: View {
 
     var body: some View {
         HStack(spacing: 7) {
-            Image(systemName: isLocalPage ? "internaldrive.fill" : (isEditable ? "pencil.circle.fill" : "globe"))
-                .font(.system(size: 13, weight: .medium))
-                .symbolRenderingMode(isEditable && !isLocalPage ? .palette : .monochrome)
-                .foregroundStyle(
-                    isEditable ? AnyShapeStyle(Color.black) : AnyShapeStyle(.tertiary),
-                    AnyShapeStyle(timYellow)
-                )
-                .help(isEditable ? "This page is yours — ⌘E edits it, Done publishes it." : "")
+            // What a document title is in a Mac app: click it for the
+            // things you can do to this page. Always a Menu, whatever the
+            // page — the field beside it must never see the structure of
+            // its row change.
+            Menu {
+                if isLocalPage {
+                    // Both need the page finished: the sheet copies what is
+                    // saved, not what is still open in the editor.
+                    Button("Put It Online…") { onAddress() }.disabled(tab.isEditing)
+                } else if isEditable {
+                    Button("Change Address…") { onAddress() }.disabled(tab.isEditing)
+                    Button("Duplicate…") { NotificationCenter.default.post(name: .timDuplicatePage, object: nil) }
+                }
+                if isEditable || isLocalPage { Divider() }
+                Button("Copy Link") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(tab.urlString, forType: .string)
+                }
+            } label: {
+                Image(systemName: isLocalPage ? "internaldrive.fill" : (isEditable ? "pencil.circle.fill" : "globe"))
+                    .font(.system(size: 13, weight: .medium))
+                    .symbolRenderingMode(isEditable && !isLocalPage ? .palette : .monochrome)
+                    .foregroundStyle(
+                        isEditable ? AnyShapeStyle(Color.black) : AnyShapeStyle(.tertiary),
+                        AnyShapeStyle(timYellow)
+                    )
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help(isLocalPage
+                  ? "This page lives on your Mac. Click for what you can do with it."
+                  : (isEditable ? "This page is yours — ⌘E edits it. Click to change its address." : "Click to copy this link."))
 
             // Always in the layout, shown by opacity — a structural change
             // beside the field would restart its editing session.
             Button {
-                if canPublish { onPublish() } else if canCreate { onCreate() } else if canClaim { onClaim() }
+                if canPublish { onAddress() } else if canCreate { onCreate() } else if canClaim { onClaim() }
             } label: {
                 Image(systemName: canPublish ? "arrow.up.circle.fill" : (canCreate ? "plus.circle.fill" : "arrow.down.circle.fill"))
                     .font(.system(size: 13, weight: .medium))
