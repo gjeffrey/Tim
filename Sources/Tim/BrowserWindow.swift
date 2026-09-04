@@ -524,12 +524,7 @@ struct TabCard: View {
                     Text(tab.title.isEmpty ? "New Tab" : tab.title)
                         .font(.system(size: 12.5, weight: .medium))
                         .lineLimit(1)
-                    if tab.isEditing {
-                        CautionTape(stripe: 3)
-                            .frame(width: 18, height: 6)
-                            .clipShape(Capsule())
-                            .help("Under construction — being edited, not published yet.")
-                    } else if tab.hasDraft {
+                    if tab.hasDraft, !tab.isEditing {
                         Circle().strokeBorder(timYellow, lineWidth: 1.5).frame(width: 6, height: 6)
                             .help("A draft of this page is waiting.")
                     }
@@ -557,6 +552,16 @@ struct TabCard: View {
                 shape.fill(Color.primary.opacity(hovering ? 0.075 : 0.04))
             }
         }
+        // The page being edited has construction tape on its edge; its tab
+        // wears the same tape, so the two read as one thing under work.
+        .overlay {
+            CautionTape(stripe: 4)
+                .mask(shape.strokeBorder(lineWidth: 2.5))
+                .opacity(tab.isEditing ? 1 : 0)
+                .allowsHitTesting(false)
+        }
+        .animation(.easeInOut(duration: 0.3), value: tab.isEditing)
+        .help(tab.isEditing ? "Under construction — being edited, not published yet." : "")
         .contentShape(shape)
         .scaleEffect(isDragging ? 1.03 : 1)
         .shadow(color: .black.opacity(isDragging ? 0.22 : 0), radius: 9, y: 4)
