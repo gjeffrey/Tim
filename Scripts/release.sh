@@ -13,6 +13,12 @@
 set -e
 cd "$(dirname "$0")/.."
 
+# The version this release is stamped and NAMED with. make-app.sh reads
+# TIM_VERSION from the environment; release.sh needs it by name too, for
+# the versioned artifact and the site's download link. (Without this the
+# zip shipped as "Tim-.zip".)
+VERSION="${TIM_VERSION:-0.4}"
+
 IDENTITY="Developer ID Application: Gabriel Jeffrey (VDNJRV3PR9)"
 
 # Notary auth, in order of preference: a keychain profile (TimNotary, or
