@@ -153,6 +153,11 @@ struct TimApp: App {
                     if let tab = store.selectedTab { tab.setMobilePreview(!tab.isMobilePreview) }
                 }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
+                Button("Restack iPhone Layout") {
+                    NotificationCenter.default.post(name: .timRestackMobile, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(!(store.selectedTab?.isEditing ?? false))
                 Button("Reload") { store.selectedTab?.webView.reload() }
                     .keyboardShortcut("r", modifiers: .command)
                 Divider()

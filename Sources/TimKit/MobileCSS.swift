@@ -16,7 +16,14 @@ public enum MobileCSS {
             ".tim-canvas .tim-text{column-count:1 !important;overflow-wrap:anywhere}",
             // A narrow viewport must never be widened by one ambitious
             // object, even after the author opts into a custom layout.
-            ".tim-canvas .tim-object{box-sizing:border-box;min-width:0;max-width:100%}"
+            ".tim-canvas .tim-object{box-sizing:border-box;min-width:0;max-width:100%}",
+            // Desktop columns mean nothing at 390. An object the phone
+            // layout never placed takes the full width instead of being
+            // squeezed into a column that doesn't exist here — the
+            // difference between a photograph and an eight-pixel sliver.
+            // Explicitly placed objects match more specifically and keep
+            // their own placement.
+            ".tim-canvas > .tim-object{grid-column:1 / -1 !important}"
         ]
         rules += styleClassRules(in: out)
         rules += inlineSizeRules(in: out)

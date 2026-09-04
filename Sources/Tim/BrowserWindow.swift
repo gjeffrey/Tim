@@ -33,6 +33,7 @@ extension Notification.Name {
     static let timReplaceMedia = Notification.Name("tim.replaceMedia")
     static let timUpscaleMedia = Notification.Name("tim.upscaleMedia")
     static let timReplaceFromPhotos = Notification.Name("tim.replaceFromPhotos")
+    static let timRestackMobile = Notification.Name("tim.restackMobile")
     static let timMovePage = Notification.Name("tim.movePage")
     static let timResumeDraft = Notification.Name("tim.resumeDraft")
     static let timBounceVideo = Notification.Name("tim.bounceVideo")
@@ -1428,6 +1429,17 @@ struct TabContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .timResumeDraft)) { _ in
             if store.selectedTab === tab, tab.hasDraft, !tab.isEditing { askAboutDraft() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .timRestackMobile)) { _ in
+            guard store.selectedTab === tab, tab.isEditing else { return }
+            // Restacking measures every object at phone width, so the page
+            // has to be there to be measured.
+            if tab.isMobilePreview {
+                tab.resetMobileLayout()
+            } else {
+                tab.setMobilePreview(true)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { tab.resetMobileLayout() }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .timMovePage)) { _ in
             if store.selectedTab === tab, let s = siteStore.match(pageURL), s.target == .sftp || s.target == .cloudflare || s.target == .githubPages {
@@ -5773,6 +5785,23 @@ struct PageOptionsControls: View {
                     .onChange(of: padY) { _, v in tab.setPageOption("padY", "\(Int(v))") }
                 sliderRow("Base Size", $baseSize, 12...22, 1, "\(Int(baseSize))")
                     .onChange(of: baseSize) { _, v in tab.setPageOption("baseSize", "\(Int(v))") }
+            }
+
+            card("iPhone") {
+                HStack(spacing: 8) {
+                    Button("Restack") {
+                        NotificationCenter.default.post(name: .timRestackMobile, object: nil)
+                    }
+                    .controlSize(.small)
+                    Text("⇧⌘R")
+                        .font(.system(size: 9.5).monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                }
+                Text("Lays the phone version out again as a full-width reading-order stack, sized to each object's own content. Use it after a page has drifted — undo brings the old arrangement back.")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             card("Motion") {

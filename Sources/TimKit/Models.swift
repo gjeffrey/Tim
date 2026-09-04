@@ -932,27 +932,29 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       function ensureMobileCoverage() {
         var canvas = doc.querySelector('[data-tim-canvas]');
         if (!canvas || !Object.keys(mobileLayout).length) { return; }
-        var bottom = 1;
-        for (var k in mobileLayout) { bottom = Math.max(bottom, mobileLayout[k][2]); }
-        var objs = canvas.querySelectorAll('.tim-object');
+        var objs = Array.prototype.slice.call(canvas.querySelectorAll('.tim-object'))
+          .filter(function (el) { return canvasFor(el) === canvas; });
+        var width = collapsed() ? Math.max(200, canvas.clientWidth - 32) : 358;
         for (var i = 0; i < objs.length; i++) {
           var el = objs[i];
-          if (canvasFor(el) !== canvas) { continue; }
           var id = el.getAttribute('data-tim-id');
           if (id && mobileLayout[id]) { continue; }
-          var p = desktopPlacement(el);
-          var rows = p ? Math.max(2, p.re - p.rs) : 3;
-          // Media keeps its shape: the healed box takes its rows from the
-          // natural aspect at full mobile width, not from desktop rows —
-          // desktop row counts stretched every image they touched.
-          var nw = el.naturalWidth || el.videoWidth || 0;
-          var nh = el.naturalHeight || el.videoHeight || 0;
-          if (el.matches && el.matches('img,video') && nw > 0 && nh > 0) {
-            var mw = collapsed() ? Math.max(200, canvas.clientWidth - 32) : 358;
-            rows = Math.max(2, Math.round((mw * nh / nw + 16) / 48));
+          // Full width, sized to its own content — never the desktop rows,
+          // which stretched or crushed everything they touched.
+          var rows = mobileStackRows(el, width);
+          // And in reading order: directly beneath the nearest earlier
+          // object that already has a place, pushing the rest down. An
+          // object added at the top of the page belongs at the top here.
+          var at = 1;
+          for (var j = i - 1; j >= 0; j--) {
+            var prevID = objs[j].getAttribute('data-tim-id');
+            if (prevID && mobileLayout[prevID]) { at = mobileLayout[prevID][2]; break; }
           }
-          mobileLayout[ensureObjectId(el)] = [bottom, 1, bottom + rows, MOBILE_COLS + 1];
-          bottom += rows;
+          for (var key in mobileLayout) {
+            var a = mobileLayout[key];
+            if (a[0] >= at) { a[0] += rows; a[2] += rows; }
+          }
+          mobileLayout[ensureObjectId(el)] = [at, 1, at + rows, MOBILE_COLS + 1];
         }
       }
       function writeMobileLayout() {
@@ -974,6 +976,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         // editor refusing a perfectly good spot.)
         var css = '@media (max-width: 700px){\\n'
           + '.tim-canvas{grid-template-columns:repeat(8, 1fr) !important;grid-auto-rows:32px !important}\\n'
+          // Nothing may inherit its DESKTOP columns at phone width; the
+          // per-object rules below are more specific and still win.
+          + '.tim-canvas>.tim-object{grid-column:1 / -1 !important}\\n'
           // A group is a desktop composition boundary, not a reason for
           // its contents to become illegible on a phone.
           + '.tim-canvas .tim-container{grid-template-columns:minmax(0,1fr) !important;grid-auto-rows:auto !important;height:auto !important;align-self:start !important}\\n'
@@ -2215,6 +2220,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         // which silently erased a new object's mobile placement.
         canvas.appendChild(el);
         if (placed.classList && placed.classList.contains('tim-nav')) { window.__timNavAssets(); }
+        // Reading order is DOM order, and DOM order is what the phone
+        // follows — so an object dropped near the top of the page has to
+        // take its place in the document there, not at the end of it.
+        resort(canvas);
         if (mobileActive()) {
           var mMax = 1;
           for (var mid in mobileLayout) { mMax = Math.max(mMax, mobileLayout[mid][2]); }
@@ -2230,8 +2239,11 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           // The desktop position was a guess (end of page) — worth a look.
           flagReview('desktop', placed);
         } else if (Object.keys(mobileLayout).length) {
-          // A hand-tuned mobile layout exists; this object will join its
-          // bottom by default — worth a look over there.
+          // The phone layout is explicit, so give this object a real place
+          // in it now — full width, its own height, in reading order —
+          // rather than leaving it to inherit a desktop grid-area that
+          // means nothing at 390.
+          writeMobileLayout();
           flagReview('mobile', placed);
         }
         el = placed;
@@ -2240,7 +2252,13 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           : (el.querySelector ? el.querySelector('img,video,audio') : null);
         if (media) {
           el.classList.add('tim-loading');
-          var settle = function () { el.classList.remove('tim-loading'); layout(); };
+          var settle = function () {
+            el.classList.remove('tim-loading');
+            // Now that the file's real proportions are known, the phone
+            // layout can size its row properly.
+            if (Object.keys(mobileLayout).length) { writeMobileLayout(); }
+            layout();
+          };
           media.addEventListener('load', settle);
           media.addEventListener('loadeddata', settle);
           media.addEventListener('canplay', settle);
@@ -2251,6 +2269,20 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         sel = el;
         fitSpan(el);
         layout();
+        // You put it there, so it goes on top of whatever it landed on.
+        // Only objects it actually overlaps matter; the rest keep their
+        // implicit zero, the way the arrange commands leave them.
+        (function () {
+          var covered = Array.prototype.slice.call(canvas.querySelectorAll('.tim-object')).filter(function (other) {
+            if (other === el || canvasFor(other) !== canvas) { return false; }
+            var a = el.getBoundingClientRect(), b = other.getBoundingClientRect();
+            return !(b.right <= a.left || b.left >= a.right || b.bottom <= a.top || b.top >= a.bottom);
+          });
+          if (!covered.length) { return; }
+          var top = 0;
+          covered.forEach(function (other) { top = Math.max(top, parseInt(other.style.zIndex, 10) || 0); });
+          el.style.zIndex = String(top + 1);
+        })();
         notifySel();
         el.scrollIntoView({ block: 'nearest' });
       };
