@@ -48,6 +48,52 @@ public enum PageMover {
         return rel
     }
 
+    /// Every local file the page points at — pictures, video, stylesheets
+    /// — keyed by the reference as written. Linked pages are not assets,
+    /// and anything that isn't actually on disk is ignored.
+    public static func localAssets(in html: String, pageFile: URL) -> [String: URL] {
+        var found: [String: URL] = [:]
+        let dir = pageFile.deletingLastPathComponent()
+        for pattern in ["(?:src|href|poster)=\"([^\"]+)\"", "url\\((['\"]?)([^)'\"]+)\\1\\)"] {
+            guard let re = try? NSRegularExpression(pattern: pattern) else { continue }
+            let group = pattern.hasPrefix("url") ? 2 : 1
+            for match in re.matches(in: html, range: NSRange(html.startIndex..., in: html)) {
+                guard let r = Range(match.range(at: group), in: html) else { continue }
+                let ref = String(html[r])
+                let ext = (ref as NSString).pathExtension.lowercased()
+                guard isRelative(ref), ext != "html", ext != "htm" else { continue }
+                let file = dir.appendingPathComponent(ref).standardizedFileURL
+                if FileManager.default.fileExists(atPath: file.path) { found[ref] = file }
+            }
+        }
+        return found
+    }
+
+    /// Rewrites a local page's asset references to where they will live on
+    /// the site: media/<name>, reached from the page's own depth.
+    public static func rewritingAssets(in html: String, assets: [String: String], pageDepth: Int) -> String {
+        var out = html
+        let up = String(repeating: "../", count: max(0, pageDepth))
+        for (ref, name) in assets.sorted(by: { $0.key.count > $1.key.count }) {
+            out = out.replacingOccurrences(of: "\"\(ref)\"", with: "\"\(up)media/\(name)\"")
+            out = out.replacingOccurrences(of: "'\(ref)'", with: "'\(up)media/\(name)'")
+            out = out.replacingOccurrences(of: "(\(ref))", with: "(\(up)media/\(name))")
+        }
+        return out
+    }
+
+    /// The page's own title, for the forwarding stub and the registry.
+    public static func title(of html: String) -> String {
+        capture(html, "<title[^>]*>([^<]*)</title>")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    static func capture(_ s: String, _ pattern: String) -> String? {
+        guard let re = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+              let m = re.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)),
+              let r = Range(m.range(at: 1), in: s) else { return nil }
+        return String(s[r])
+    }
+
     /// The small page left behind: forwards visitors and search engines.
     public static func forwardingPage(to newURL: String, title: String) -> String {
         let t = title.isEmpty ? "This page has moved" : title

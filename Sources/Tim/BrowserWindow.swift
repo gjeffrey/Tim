@@ -1191,7 +1191,8 @@ struct TabContentView: View {
     @State private var viewMode: Int = 0  // 0 desktop · 1 both · 2 iPhone
     @State private var showImportSheet = false
     @State private var showShowcaseSheet = false
-    @State private var moveSite: Site?
+    @State private var showMoveSheet = false
+    @State private var moveSourceSite: Site?
     @FocusState private var addressFocused: Bool
     @AppStorage("tim.cleanAddresses") private var cleanAddresses = true
     @AppStorage("tim.experimental.makeItMine") private var makeItMineEnabled = false
@@ -1465,12 +1466,20 @@ struct TabContentView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .timMovePage)) { _ in
-            if store.selectedTab === tab, let s = siteStore.match(pageURL), s.target == .sftp || s.target == .cloudflare || s.target == .githubPages {
-                moveSite = ensureWorkspace(s)
+            guard store.selectedTab === tab else { return }
+            // Every site needs its local folder before it can be a
+            // destination, whichever one is chosen in the sheet.
+            for s in siteStore.sites { _ = ensureWorkspace(s) }
+            if let s = siteStore.match(pageURL) {
+                moveSourceSite = ensureWorkspace(s)
+                showMoveSheet = true
+            } else if pageURL?.isFileURL == true {
+                moveSourceSite = nil
+                showMoveSheet = true
             }
         }
-        .sheet(item: $moveSite) { s in
-            MovePageSheet(tab: tab, site: s)
+        .sheet(isPresented: $showMoveSheet) {
+            MovePageSheet(tab: tab, site: moveSourceSite)
         }
         .onReceive(NotificationCenter.default.publisher(for: .timPreviewVersion)) { note in
             guard let sha = note.userInfo?["sha"] as? String,
@@ -1534,7 +1543,11 @@ struct TabContentView: View {
     }
 
     private var addressCapsule: some View {
-        AddressBar(tab: tab, onCreate: { createMissingPage() }, onClaim: { showImportSheet = true }, onDraft: { askAboutDraft() })
+        AddressBar(tab: tab,
+                   onCreate: { createMissingPage() },
+                   onClaim: { showImportSheet = true },
+                   onDraft: { askAboutDraft() },
+                   onPublish: { NotificationCenter.default.post(name: .timMovePage, object: nil) })
     }
 
     /// Entering edit mode materializes a derived site (a Tim page on a
@@ -7107,10 +7120,19 @@ extension URLSession {
 /// it is choosing a folder and a name, Save-dialog style. Tim fixes the
 /// page's relative addresses for the new depth and can leave a small
 /// forwarding page behind so old links keep working.
+/// One sheet for two questions that are really the same question: where
+/// should this page live? A page that exists only on your Mac gets put
+/// online. A page already on a site gets moved — to another folder,
+/// another name, or another site entirely.
 struct MovePageSheet: View {
     @ObservedObject var tab: Tab
-    let site: Site
+    /// The site this page is on now; nil for a page that has never been
+    /// published and lives only on this Mac.
+    let site: Site?
+    @EnvironmentObject var siteStore: SiteStore
     @Environment(\.dismiss) private var dismiss
+
+    @State private var destinationID: UUID?
     @State private var folder = "/"
     @State private var newFolder = ""
     @State private var name = ""
@@ -7118,8 +7140,23 @@ struct MovePageSheet: View {
     @State private var working = false
     @State private var error: String?
 
-    private var folders: [String] { PageMover.folders(in: site.localProjectPath) }
-    private var currentRel: String { tab.webView.url.map { site.relativePagePath(for: $0) } ?? "" }
+    private var isLocal: Bool { site == nil }
+    private var destination: Site? {
+        siteStore.sites.first { $0.id == destinationID } ?? site ?? siteStore.sites.first
+    }
+    private var movingHouse: Bool { !isLocal && destination?.id != site?.id }
+
+    private var folders: [String] {
+        destination.map { PageMover.folders(in: $0.localProjectPath) } ?? ["/"]
+    }
+    private var currentRel: String {
+        guard let site, let url = tab.webView.url else { return "" }
+        return site.relativePagePath(for: url)
+    }
+    private var localFile: URL? {
+        guard isLocal, let url = tab.webView.url, url.isFileURL else { return nil }
+        return url
+    }
     private var targetFolder: String {
         let extra = newFolder.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
         let base = folder == "/" ? "" : folder
@@ -7131,29 +7168,79 @@ struct MovePageSheet: View {
         if !n.hasSuffix(".html") { n += ".html" }
         return (targetFolder == "/" ? "" : targetFolder) + "/" + n
     }
-    private var host: String { URL(string: site.origin)?.host() ?? site.origin }
+    private func host(_ s: Site?) -> String {
+        guard let s else { return "" }
+        return URL(string: s.origin)?.host() ?? s.origin
+    }
+    private var canGo: Bool {
+        guard !working, !tab.isEditing, destination != nil else { return false }
+        if isLocal { return localFile != nil }
+        return targetRel != currentRel || movingHouse
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             Form {
                 Section {
-                    LabeledContent("Now at") { Text(host + currentRel).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled) }
-                } header: { Text("Move Page") }
-                Section("Where") {
-                    Picker("Folder", selection: $folder) {
-                        ForEach(folders, id: \.self) { f in
-                            Text(f == "/" ? host : String(f.dropFirst()).replacingOccurrences(of: "/", with: " › ")).tag(f)
+                    LabeledContent(isLocal ? "This page" : "Now at") {
+                        Text(isLocal ? (localFile?.lastPathComponent ?? "—") : host(site) + currentRel)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    if isLocal {
+                        Text("It lives on this Mac and nobody else can open it. Putting it online copies it — and its pictures — to a site you own.")
+                            .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } header: { Text(isLocal ? "Put It Online" : "Move Page") }
+
+                if siteStore.sites.isEmpty {
+                    Section {
+                        Text("You haven't connected a site yet. Tim needs somewhere to publish to — your own server or Cloudflare.")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button("Connect a Site…") {
+                            dismiss()
+                            NotificationCenter.default.post(name: .timHomeAction, object: nil, userInfo: ["action": "connect"])
                         }
                     }
-                    TextField("New folder inside it (optional)", text: $newFolder)
-                    TextField("File name", text: $name, prompt: Text("index"))
-                        .font(.system(size: 12, design: .monospaced))
-                    LabeledContent("Will be at") { Text(host + targetRel).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary) }
-                }
-                Section {
-                    Toggle("Leave a forwarding page at the old address", isOn: $forward)
-                    Text("Anyone with the old link lands on the new page. Search engines learn the new address too.")
-                        .font(.system(size: 10)).foregroundStyle(.tertiary)
+                } else {
+                    Section("Where") {
+                        Picker("Site", selection: Binding(get: { destination?.id }, set: { destinationID = $0 })) {
+                            ForEach(siteStore.sites) { s in
+                                Text(s.name.isEmpty ? host(s) : s.name).tag(Optional(s.id))
+                            }
+                        }
+                        Picker("Folder", selection: $folder) {
+                            ForEach(folders, id: \.self) { f in
+                                Text(f == "/" ? host(destination) : String(f.dropFirst()).replacingOccurrences(of: "/", with: " › ")).tag(f)
+                            }
+                        }
+                        TextField("New folder inside it (optional)", text: $newFolder)
+                        TextField("File name", text: $name, prompt: Text("index"))
+                            .font(.system(size: 12, design: .monospaced))
+                        LabeledContent("Will be at") {
+                            Text(host(destination) + targetRel)
+                                .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+                        }
+                    }
+                    if !isLocal {
+                        Section {
+                            Toggle("Leave a forwarding page at the old address", isOn: $forward)
+                            Text(movingHouse
+                                 ? "The page moves to a different site. Anyone with the old link is forwarded to the new one."
+                                 : "Anyone with the old link lands on the new page. Search engines learn the new address too.")
+                                .font(.system(size: 10)).foregroundStyle(.tertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    } else {
+                        Section {
+                            Text("The file on your Mac stays where it is. From here on, the copy online is the one Tim edits.")
+                                .font(.system(size: 10)).foregroundStyle(.tertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
                 if let error { Section { Text(error).font(.system(size: 11)).foregroundStyle(.red) } }
             }
@@ -7163,74 +7250,51 @@ struct MovePageSheet: View {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
                 Button {
-                    move()
+                    go()
                 } label: {
-                    if working { ProgressView().controlSize(.small).frame(width: 44) } else { Text("Move") }
+                    if working { ProgressView().controlSize(.small).frame(width: 52) }
+                    else { Text(isLocal ? "Put It Online" : "Move") }
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
-                .disabled(working || targetRel == currentRel || tab.isEditing)
+                .disabled(!canGo)
                 .help(tab.isEditing ? "Finish editing first (press Done)." : "")
             }
             .padding(14)
         }
-        .frame(width: 460)
+        .frame(width: 470)
         .onAppear {
-            let rel = currentRel
-            let dir = (rel as NSString).deletingLastPathComponent
-            folder = folders.contains(dir) ? (dir.isEmpty ? "/" : dir) : "/"
-            name = ((rel as NSString).lastPathComponent as NSString).deletingPathExtension
+            destinationID = site?.id ?? siteStore.sites.first?.id
+            if let file = localFile {
+                name = file.deletingPathExtension().lastPathComponent
+                folder = "/"
+            } else {
+                let rel = currentRel
+                let dir = (rel as NSString).deletingLastPathComponent
+                folder = folders.contains(dir) ? (dir.isEmpty ? "/" : dir) : "/"
+                name = ((rel as NSString).lastPathComponent as NSString).deletingPathExtension
+            }
         }
     }
 
-    private func move() {
-        let from = currentRel, to = targetRel
-        guard from != to, let oldURL = URL(string: site.origin + from) else { return }
+    private func go() {
+        guard let destination else { return }
         working = true; error = nil
-        let mirror = site.localProjectPath
-        let fm = FileManager.default
+        let to = targetRel
+        let from = currentRel
+        let source = site
+        let file = localFile
+        let leaveForward = forward
         DispatchQueue.global(qos: .userInitiated).async {
-            let activity = ActivityCenter.shared.begin("Moving \((from as NSString).lastPathComponent)…")
+            let activity = ActivityCenter.shared.begin(file != nil ? "Putting the page online…" : "Moving the page…")
             do {
-                let oldLocal = mirror + from
-                guard var html = try? String(contentsOfFile: oldLocal, encoding: .utf8) else {
-                    throw PublishError.failed("Tim doesn't have a local copy of this page yet. Open it, press Edit, then Done once — then move it.")
-                }
-                html = PageMover.rebase(html: html, from: from, to: to, origin: site.origin)
-                let newLocal = mirror + to
-                try fm.createDirectory(atPath: (newLocal as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-                try html.write(toFile: newLocal, atomically: true, encoding: .utf8)
-                let newURL = site.origin + to
-                let title = (try? NSRegularExpression(pattern: "<title[^>]*>([^<]*)</title>")).flatMap { re -> String? in
-                    guard let m = re.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)), let r = Range(m.range(at: 1), in: html) else { return nil }
-                    return String(html[r])
-                } ?? ""
-                if forward {
-                    try PageMover.forwardingPage(to: newURL, title: title).write(toFile: oldLocal, atomically: true, encoding: .utf8)
-                } else {
-                    try? fm.removeItem(atPath: oldLocal)
-                }
-                let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
-                switch site.target {
-                case .sftp:
-                    _ = try SFTP.upload(html: html, to: root + to, host: site.host, username: site.username, port: site.port)
-                    if forward {
-                        _ = try SFTP.upload(html: PageMover.forwardingPage(to: newURL, title: title), to: root + from, host: site.host, username: site.username, port: site.port)
-                    } else {
-                        _ = try SFTP.remove(root + from, host: site.host, username: site.username, port: site.port)
-                    }
-                case .cloudflare:
-                    _ = try CloudflarePublisher.publish(site: site, folder: mirror)
-                case .githubPages:
-                    _ = try GitHubPagesPublisher.publish(repo: mirror, message: "Move \(from) → \(to)")
-                }
-                SiteWorkspace.snapshot(mirror, message: "Move \(from) → \(to)")
+                let newURL = try file != nil
+                    ? publishLocal(file!, to: destination, at: to)
+                    : moveExisting(from: from, to: to, source: source!, destination: destination, forward: leaveForward)
                 DispatchQueue.main.async {
                     ActivityCenter.shared.end(activity)
                     working = false
-                    PageRegistry.record(url: newURL, title: title)
                     tab.navigate(to: newURL)
-                    _ = oldURL
                     dismiss()
                 }
             } catch {
@@ -7240,6 +7304,87 @@ struct MovePageSheet: View {
                     self.error = error.localizedDescription
                 }
             }
+        }
+    }
+
+    /// A page on this Mac, and everything it points at, copied onto a site.
+    private func publishLocal(_ file: URL, to destination: Site, at rel: String) throws -> String {
+        let fm = FileManager.default
+        let mirror = destination.localProjectPath
+        guard !mirror.isEmpty else { throw PublishError.failed("That site has no local folder yet. Open its settings once, then try again.") }
+        var html = try String(contentsOf: file, encoding: .utf8)
+
+        // Its pictures come too, into the site's media folder.
+        let assets = PageMover.localAssets(in: html, pageFile: file)
+        let mediaDir = (mirror as NSString).appendingPathComponent("media")
+        try fm.createDirectory(atPath: mediaDir, withIntermediateDirectories: true)
+        var names: [String: String] = [:]
+        for (ref, source) in assets {
+            let name = source.lastPathComponent
+            let dest = (mediaDir as NSString).appendingPathComponent(name)
+            if fm.fileExists(atPath: dest) { try? fm.removeItem(atPath: dest) }
+            try fm.copyItem(at: source, to: URL(fileURLWithPath: dest))
+            names[ref] = name
+        }
+        let depth = max(0, rel.split(separator: "/").count - 1)
+        html = PageMover.rewritingAssets(in: html, assets: names, pageDepth: depth)
+        html = MobileCSS.regenerate(in: html)
+
+        let local = mirror + rel
+        try fm.createDirectory(atPath: (local as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try html.write(toFile: local, atomically: true, encoding: .utf8)
+
+        for name in names.values { try EditingToolbar.uploadStagedMedia(site: destination, name: name) }
+        try upload(html: html, to: rel, site: destination, message: "Publish \(rel)")
+
+        let url = destination.origin + rel
+        SiteWorkspace.snapshot(mirror, message: "Publish \(rel)")
+        DispatchQueue.main.async { PageRegistry.record(url: url, title: tab.title) }
+        return url
+    }
+
+    /// A published page changing address — possibly on a different site.
+    private func moveExisting(from: String, to: String, source: Site, destination: Site, forward: Bool) throws -> String {
+        let fm = FileManager.default
+        let oldLocal = source.localProjectPath + from
+        guard var html = try? String(contentsOfFile: oldLocal, encoding: .utf8) else {
+            throw PublishError.failed("Tim doesn't have a local copy of this page yet. Open it, press Edit, then Done once — then move it.")
+        }
+        html = PageMover.rebase(html: html, from: from, to: to, origin: source.origin)
+        let newLocal = destination.localProjectPath + to
+        try fm.createDirectory(atPath: (newLocal as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try html.write(toFile: newLocal, atomically: true, encoding: .utf8)
+
+        let newURL = destination.origin + to
+        let title = PageMover.title(of: html)
+        try upload(html: html, to: to, site: destination, message: "Move \(from) → \(to)")
+
+        if forward {
+            let stub = PageMover.forwardingPage(to: newURL, title: title)
+            try? stub.write(toFile: oldLocal, atomically: true, encoding: .utf8)
+            try upload(html: stub, to: from, site: source, message: "Forward \(from)")
+        } else {
+            try? fm.removeItem(atPath: oldLocal)
+            if case .sftp = source.target {
+                let root = source.remoteRoot.hasSuffix("/") ? String(source.remoteRoot.dropLast()) : source.remoteRoot
+                _ = try? SFTP.remove(root + from, host: source.host, username: source.username, port: source.port)
+            }
+        }
+        SiteWorkspace.snapshot(destination.localProjectPath, message: "Move \(from) → \(to)")
+        DispatchQueue.main.async { PageRegistry.record(url: newURL, title: title) }
+        return newURL
+    }
+
+    /// One page onto one site, whichever way that site publishes.
+    private func upload(html: String, to rel: String, site: Site, message: String) throws {
+        switch site.target {
+        case .sftp:
+            let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
+            _ = try SFTP.upload(html: html, to: root + rel, host: site.host, username: site.username, port: site.port)
+        case .cloudflare:
+            _ = try CloudflarePublisher.publish(site: site, folder: site.localProjectPath)
+        case .githubPages:
+            _ = try GitHubPagesPublisher.publish(repo: site.localProjectPath, message: message)
         }
     }
 }
@@ -7545,6 +7690,7 @@ struct AddressBar: View {
     let onCreate: () -> Void
     let onClaim: () -> Void
     var onDraft: () -> Void = {}
+    var onPublish: () -> Void = {}
     @EnvironmentObject var siteStore: SiteStore
     @AppStorage("tim.experimental.makeItMine") private var makeItMineEnabled = false
     @AppStorage("tim.cleanAddresses") private var cleanAddresses = true
@@ -7570,6 +7716,8 @@ struct AddressBar: View {
     /// A missing page on your own site can be created; a page that isn't
     /// yours can be claimed. Both actions live in the field, Safari's way.
     private var canCreate: Bool { matchedSite != nil && tab.lastHTTPStatus == 404 && !tab.isEditing }
+    /// A page that lives only here can be put somewhere everyone can reach.
+    private var canPublish: Bool { isLocalPage && !tab.isEditing }
     private var canClaim: Bool {
         makeItMineEnabled && matchedSite == nil && !siteStore.sites.isEmpty && !tab.isEditing
             && (URL(string: tab.urlString)?.scheme?.hasPrefix("http") ?? false)
@@ -7609,9 +7757,9 @@ struct AddressBar: View {
             // Always in the layout, shown by opacity — a structural change
             // beside the field would restart its editing session.
             Button {
-                if canCreate { onCreate() } else if canClaim { onClaim() }
+                if canPublish { onPublish() } else if canCreate { onCreate() } else if canClaim { onClaim() }
             } label: {
-                Image(systemName: canCreate ? "plus.circle.fill" : "arrow.down.circle.fill")
+                Image(systemName: canPublish ? "arrow.up.circle.fill" : (canCreate ? "plus.circle.fill" : "arrow.down.circle.fill"))
                     .font(.system(size: 13, weight: .medium))
                     .symbolRenderingMode(.palette)
                     .foregroundStyle(Color.black, AnyShapeStyle(timYellow))
@@ -7619,11 +7767,13 @@ struct AddressBar: View {
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            .opacity(canCreate || canClaim ? 1 : 0)
-            .allowsHitTesting(canCreate || canClaim)
-            .help(canCreate
-                  ? "This page doesn't exist on your site yet — create and publish it at this address."
-                  : "Make It Mine — copy this page, with its images, styles, and fonts, onto your own site, ready to edit.")
+            .opacity(canPublish || canCreate || canClaim ? 1 : 0)
+            .allowsHitTesting(canPublish || canCreate || canClaim)
+            .help(canPublish
+                  ? "Put it online — copy this page, and its pictures, to a site you own."
+                  : (canCreate
+                     ? "This page doesn't exist on your site yet — create and publish it at this address."
+                     : "Make It Mine — copy this page, with its images, styles, and fonts, onto your own site, ready to edit."))
 
             // A draft waiting on this page: Safari's in-field pattern, same
             // opacity-stable rule as the button above.
