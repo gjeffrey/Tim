@@ -24,25 +24,9 @@ public enum CloudflareAPI {
     // MARK: Token, in the Keychain
 
     static let service = "com.gabrieljeffrey.tim"
-    static let legacyService = "com.gabrieljeffrey.tim"
     static let account = "cloudflare-api-token"
 
-    public static var token: String? {
-        if let value = read(service: service) { return value }
-        // One-time move from the identifier this app no longer uses.
-        if let value = read(service: legacyService) {
-            if storeToken(value) {
-                SecItemDelete([
-                    kSecClass as String: kSecClassGenericPassword,
-                    kSecAttrService as String: legacyService,
-                    kSecAttrAccount as String: account,
-                    kSecAttrSynchronizable as String: kSecAttrSynchronizableAny
-                ] as CFDictionary)
-            }
-            return value
-        }
-        return nil
-    }
+    public static var token: String? { read(service: service) }
 
     static func read(service: String) -> String? {
         let query: [String: Any] = [
