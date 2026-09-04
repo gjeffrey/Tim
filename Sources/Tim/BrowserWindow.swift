@@ -32,6 +32,7 @@ extension Notification.Name {
     static let timEditNav = Notification.Name("tim.editNav")
     static let timReplaceMedia = Notification.Name("tim.replaceMedia")
     static let timUpscaleMedia = Notification.Name("tim.upscaleMedia")
+    static let timReplaceFromPhotos = Notification.Name("tim.replaceFromPhotos")
     static let timMovePage = Notification.Name("tim.movePage")
     static let timResumeDraft = Notification.Name("tim.resumeDraft")
     static let timBounceVideo = Notification.Name("tim.bounceVideo")
@@ -2411,6 +2412,11 @@ struct EditingToolbar: View {
                         Label("Media…", systemImage: "photo.on.rectangle.angled")
                     }
                     Button {
+                        insertFromPhotos()
+                    } label: {
+                        Label("Photos…", systemImage: "photo.stack")
+                    }
+                    Button {
                         var items: [NavKit.Item] = []
                         if let site {
                             items = LinkSources.pages(for: site).prefix(6).map { NavKit.Item(label: $0.label, href: site.origin + $0.href) }
@@ -2535,6 +2541,9 @@ struct EditingToolbar: View {
         .onReceive(NotificationCenter.default.publisher(for: .timUpscaleMedia)) { note in
             if let src = note.userInfo?["src"] as? String { upscaleSelectedMedia(src: src) }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .timReplaceFromPhotos)) { _ in
+            replaceFromPhotos()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .timReplaceMedia)) { _ in
             if tab.isEditing { replaceSelectedMedia() }
         }
@@ -2606,6 +2615,21 @@ struct EditingToolbar: View {
         for url in panel.urls { insertMediaFile(url, at: nil) }
     }
 
+    /// The system Photos picker: albums, People, Places and search, none of
+    /// which a file dialog can reach — a Photos library is an opaque package.
+    private func insertFromPhotos() {
+        PhotosBrowser.pick(multiple: true) { urls in
+            for url in urls { insertMediaFile(url, at: nil) }
+        }
+    }
+
+    private func replaceFromPhotos() {
+        PhotosBrowser.pick(multiple: false) { urls in
+            guard let url = urls.first else { return }
+            replaceSelectedMedia(with: url)
+        }
+    }
+
     /// Anything dropped on the page lands where it's dropped. Images,
     /// video, and audio embed; PDFs embed with a link fallback; Markdown
     /// and text become text objects; everything else becomes a download
@@ -2655,6 +2679,17 @@ struct EditingToolbar: View {
             case .file: return (["md", "markdown", "txt", "text"].contains(ext) ? "Add as text" : "Add download link") + suffix
             }
         }
+        if p.promised > 0 {
+            let suffix = p.promised > 1 ? " (+\(p.promised - 1))" : ""
+            switch MediaKind.of(fileExtension: p.promisedExtension) {
+            case .image: return "Add image" + suffix
+            case .video: return "Add video" + suffix
+            case .audio: return "Add audio" + suffix
+            case .pdf: return "Embed PDF" + suffix
+            case .file: return (p.promisedExtension.isEmpty ? "Add media" : "Add file") + suffix
+            }
+        }
+        if p.imageData { return "Add image" }
         if !p.urls.isEmpty { return "Add link" }
         return "Add text"
     }
@@ -4830,8 +4865,13 @@ struct InspectorControls: View {
                     .controlSize(.small)
                 }
             }
-            Button("Replace Media…") {
-                NotificationCenter.default.post(name: .timReplaceMedia, object: nil)
+            HStack(spacing: 10) {
+                Button("Replace Media…") {
+                    NotificationCenter.default.post(name: .timReplaceMedia, object: nil)
+                }
+                Button("From Photos…") {
+                    NotificationCenter.default.post(name: .timReplaceFromPhotos, object: nil)
+                }
             }
             .font(.system(size: 11))
             Text("Swap the file — position, size, and styling stay put.")

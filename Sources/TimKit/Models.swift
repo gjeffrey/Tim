@@ -1,5 +1,6 @@
 import Foundation
 import WebKit
+import UniformTypeIdentifiers
 #if os(macOS)
 import AppKit
 #endif
@@ -3457,32 +3458,84 @@ public final class BrowserStore: ObservableObject {
 /// address field is editing, only a real click into the page moves focus.
 public final class TimWebView: WKWebView {
     public var addressEditing: () -> Bool = { false }
-    /// What landed on the page: files, web addresses, or plain text — and
-    /// whether Option was held (add as a download link, not an embed).
+    /// What landed on the page. Not everything arrives as a path: Photos,
+    /// Mail, Messages and Safari hand over a *promise* of files, or raw
+    /// image bytes with nothing behind them on disk.
     public struct DropPayload {
         public var files: [URL] = []
         public var urls: [URL] = []
         public var text: String?
+        /// The pasteboard carries image bytes with no file behind them.
+        public var imageData = false
+        /// Files the source will only write once the drop is accepted.
+        public var promised = 0
+        /// What those promised files will be, when the source says so.
+        public var promisedExtension = ""
         public var asLink = false
-        public var isEmpty: Bool { files.isEmpty && urls.isEmpty && (text ?? "").isEmpty }
+        public var isEmpty: Bool {
+            files.isEmpty && urls.isEmpty && (text ?? "").isEmpty && !imageData && promised == 0
+        }
     }
     /// Drops while editing: (payload, point in page CSS pixels) → true when
     /// handled. Hover reports the point and the Option state; nil on exit.
-    public var drop: ((_ payload: DropPayload, _ point: CGPoint) -> Bool)?
+    /// Promised files arrive after the drop, so the closure can be called
+    /// once the source has written them.
+    public var drop: ((_ payload: DropPayload, _ point: CGPoint) -> Bool)? {
+        didSet {
+            #if os(macOS)
+            if drop != nil { acceptRichDrops() }
+            #endif
+        }
+    }
     public var dropHover: ((_ point: CGPoint?, _ payload: DropPayload) -> Void)?
 
     #if os(macOS)
+    /// WKWebView registers the drag types a web *page* needs; these are the
+    /// ones an editor needs on top. Added, never replaced, so ordinary
+    /// dragging into a page keeps working exactly as before.
+    private func acceptRichDrops() {
+        var types = registeredDraggedTypes
+        var extra = NSFilePromiseReceiver.readableDraggedTypes.map { NSPasteboard.PasteboardType($0) }
+        extra += [.fileURL, .tiff, .png, .string, .URL]
+        for type in extra where !types.contains(type) { types.append(type) }
+        registerForDraggedTypes(types)
+    }
+
     private func payload(_ sender: NSDraggingInfo) -> DropPayload {
         var p = DropPayload()
         let pb = sender.draggingPasteboard
         let all = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? []
         p.files = all.filter(\.isFileURL)
         p.urls = all.filter { !$0.isFileURL && $0.scheme != nil }
-        if p.files.isEmpty, p.urls.isEmpty, let s = pb.string(forType: .string), !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if p.files.isEmpty {
+            // Detection only. Promises are received, and bytes written, once
+            // on the drop itself — never on every hover.
+            let receivers = pb.readObjects(forClasses: [NSFilePromiseReceiver.self], options: nil) as? [NSFilePromiseReceiver]
+            p.promised = receivers?.count ?? 0
+            if let type = receivers?.first?.fileTypes.first, let ut = UTType(type) {
+                p.promisedExtension = ut.preferredFilenameExtension ?? ""
+            }
+            if p.promised == 0, pb.availableType(from: [.png, .tiff]) != nil { p.imageData = true }
+        }
+        if p.isEmpty, let s = pb.string(forType: .string), !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if let u = URL(string: s.trimmingCharacters(in: .whitespacesAndNewlines)), let scheme = u.scheme, ["http", "https", "mailto"].contains(scheme) { p.urls = [u] } else { p.text = s }
         }
         p.asLink = NSEvent.modifierFlags.contains(.option)
         return p
+    }
+
+    /// Image bytes with no file behind them, written once so the rest of
+    /// Tim can treat the drop like any other file.
+    private func writeDroppedImage(from pb: NSPasteboard) -> URL? {
+        var png = pb.data(forType: .png)
+        if png == nil, let tiff = pb.data(forType: .tiff), let rep = NSBitmapImageRep(data: tiff) {
+            png = rep.representation(using: .png, properties: [:])
+        }
+        guard let png else { return nil }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dropped-\(UUID().uuidString.prefix(6).lowercased()).png")
+        do { try png.write(to: url) } catch { return nil }
+        return url
     }
     private func pagePoint(_ sender: NSDraggingInfo) -> CGPoint {
         let p = convert(sender.draggingLocation, from: nil)
@@ -3503,11 +3556,44 @@ public final class TimWebView: WKWebView {
     }
     public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         dropHover?(nil, DropPayload())
-        if let drop {
-            let p = payload(sender)
-            if !p.isEmpty, drop(p, pagePoint(sender)) { return true }
+        guard let drop else { return super.performDragOperation(sender) }
+        var p = payload(sender)
+        guard !p.isEmpty else { return super.performDragOperation(sender) }
+        let point = pagePoint(sender)
+        let pb = sender.draggingPasteboard
+
+        // A promise is only kept once the drop is accepted: say yes now,
+        // and place the files when the source has finished writing them.
+        if p.files.isEmpty, p.promised > 0,
+           let receivers = pb.readObjects(forClasses: [NSFilePromiseReceiver.self], options: nil) as? [NSFilePromiseReceiver],
+           !receivers.isEmpty {
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("tim-drop-\(UUID().uuidString.prefix(8))")
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let queue = OperationQueue()
+            let group = DispatchGroup()
+            let lock = NSLock()
+            var landed: [URL] = []
+            for receiver in receivers {
+                group.enter()
+                receiver.receivePromisedFiles(atDestination: dir, options: [:], operationQueue: queue) { url, error in
+                    if error == nil { lock.lock(); landed.append(url); lock.unlock() }
+                    group.leave()
+                }
+            }
+            group.notify(queue: .main) {
+                guard !landed.isEmpty else { return }
+                var settled = p
+                settled.files = landed.sorted { $0.lastPathComponent < $1.lastPathComponent }
+                _ = drop(settled, point)
+            }
+            return true
         }
-        return super.performDragOperation(sender)
+
+        if p.files.isEmpty, p.imageData, let written = writeDroppedImage(from: pb) {
+            p.files = [written]
+        }
+        return drop(p, point) ? true : super.performDragOperation(sender)
     }
 
     public override func becomeFirstResponder() -> Bool {
