@@ -2638,10 +2638,25 @@ struct EditingToolbar: View {
     private func registerDrops() {
         guard let view = tab.webView as? TimWebView else { return }
         view.dropHover = { point, payload in
-            tab.showDropHover(at: point, colSpan: 8, rowSpan: 8, label: Self.dropLabel(for: payload))
+            tab.showDropHover(at: point, colSpan: 8, rowSpan: 8,
+                              label: Self.dropLabel(for: payload),
+                              canReplace: Self.replaceCandidate(payload))
         }
         view.drop = { payload, point in
             guard tab.isEditing else { return false }
+            // One picture, dropped on the swap target of another: the only
+            // reading of that gesture is "use this one instead".
+            if Self.replaceCandidate(payload), let file = payload.files.first {
+                let replaceID = UUID().uuidString
+                tab.markMedia(at: point, id: replaceID) { marked in
+                    if marked {
+                        runReplace(fileURL: file, kind: MediaKind.of(fileExtension: file.pathExtension), replaceID: replaceID)
+                    } else {
+                        insertDropped(file: file, at: point, asLink: false)
+                    }
+                }
+                return true
+            }
             var y = point.y
             for url in payload.files {
                 insertDropped(file: url, at: CGPoint(x: point.x, y: y), asLink: payload.asLink)
@@ -2664,6 +2679,22 @@ struct EditingToolbar: View {
         guard let view = tab.webView as? TimWebView else { return }
         view.drop = nil
         view.dropHover = nil
+    }
+
+    /// A single image or video, arriving on its own — the only drop where
+    /// replacing an existing one is a sensible offer.
+    static func replaceCandidate(_ p: TimWebView.DropPayload) -> Bool {
+        guard !p.asLink else { return false }
+        func isVisual(_ ext: String) -> Bool {
+            switch MediaKind.of(fileExtension: ext) {
+            case .image, .video: return true
+            default: return false
+            }
+        }
+        if p.files.count == 1 { return isVisual(p.files[0].pathExtension) }
+        if p.files.isEmpty, p.promised == 1 { return isVisual(p.promisedExtension) }
+        if p.files.isEmpty, p.imageData { return true }
+        return false
     }
 
     static func dropLabel(for p: TimWebView.DropPayload) -> String {
@@ -2747,6 +2778,8 @@ struct EditingToolbar: View {
                     publishURL = try MediaOptimizer.transcode(fileURL: fileURL, kind: kind)
                     if let s = resolvedSite { MediaOptimizer.stashOriginal(fileURL, mirror: s.localProjectPath) }
                 }
+                // Location never travels with a published file.
+                publishURL = MediaOptimizer.withoutLocation(publishURL, kind: kind)
                 let publishName = publishURL.lastPathComponent
                 var src = try Self.stage(fileURL: publishURL, site: resolvedSite, pageURL: pageURL, upload: false)
                 // Relative to the current page, so it works under any base
@@ -2841,45 +2874,54 @@ struct EditingToolbar: View {
                 statusMessage = "Select an image, video, or audio object first."
                 return
             }
-            let resolvedSite = site
-            let pageURL = tab.webView.url
-            isWorking = true
-            statusMessage = "Adding \(name)…"
-            DispatchQueue.global(qos: .userInitiated).async {
-                var activity = ActivityCenter.shared.begin("Adding \(name)…")
-                do {
-                    var publishURL = fileURL
-                    if case .transcode = MediaOptimizer.plan(fileURL: fileURL, kind: kind) {
-                        ActivityCenter.shared.end(activity)
-                        activity = ActivityCenter.shared.begin("Optimizing \(name) for the web…")
-                        DispatchQueue.main.async { statusMessage = "Optimizing \(name)…" }
-                        publishURL = try MediaOptimizer.transcode(fileURL: fileURL, kind: kind)
-                        if let s = resolvedSite { MediaOptimizer.stashOriginal(fileURL, mirror: s.localProjectPath) }
-                    }
-                    let publishName = publishURL.lastPathComponent
-                    var src = try Self.stage(fileURL: publishURL, site: resolvedSite, pageURL: pageURL, upload: false)
-                    if let resolvedSite, let pageURL {
-                        let rel = resolvedSite.relativePagePath(for: pageURL)
-                        let depth = max(0, rel.split(separator: "/").count - 1)
-                        src = String(repeating: "../", count: depth) + src
-                    }
+            runReplace(fileURL: fileURL, kind: kind, replaceID: replaceID)
+        }
+    }
+
+    /// The replace pipeline itself, after something has been marked —
+    /// whether that was the selection or the picture a photo was dropped on.
+    private func runReplace(fileURL: URL, kind: MediaKind, replaceID: String) {
+        let name = fileURL.lastPathComponent
+        let resolvedSite = site
+        let pageURL = tab.webView.url
+        isWorking = true
+        statusMessage = "Adding \(name)…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            var activity = ActivityCenter.shared.begin("Adding \(name)…")
+            do {
+                var publishURL = fileURL
+                if case .transcode = MediaOptimizer.plan(fileURL: fileURL, kind: kind) {
                     ActivityCenter.shared.end(activity)
-                    activity = ActivityCenter.shared.begin("Uploading \(publishName)…")
-                    DispatchQueue.main.async { statusMessage = "Uploading \(publishName)…" }
-                    try Self.uploadStagedMedia(site: resolvedSite, name: publishName)
-                    DispatchQueue.main.async {
-                        ActivityCenter.shared.end(activity)
-                        isWorking = false
-                        statusMessage = nil
-                        tab.replaceMedia(id: replaceID, html: Self.mediaHTML(kind: kind, src: src, name: publishName))
-                    }
-                } catch {
-                    DispatchQueue.main.async {
-                        ActivityCenter.shared.end(activity)
-                        isWorking = false
-                        statusMessage = "Couldn’t replace with \(name): \(error.localizedDescription)"
-                        tab.unmarkMedia(id: replaceID)
-                    }
+                    activity = ActivityCenter.shared.begin("Optimizing \(name) for the web…")
+                    DispatchQueue.main.async { statusMessage = "Optimizing \(name)…" }
+                    publishURL = try MediaOptimizer.transcode(fileURL: fileURL, kind: kind)
+                    if let s = resolvedSite { MediaOptimizer.stashOriginal(fileURL, mirror: s.localProjectPath) }
+                }
+                // Location never travels with a published file.
+                publishURL = MediaOptimizer.withoutLocation(publishURL, kind: kind)
+                let publishName = publishURL.lastPathComponent
+                var src = try Self.stage(fileURL: publishURL, site: resolvedSite, pageURL: pageURL, upload: false)
+                if let resolvedSite, let pageURL {
+                    let rel = resolvedSite.relativePagePath(for: pageURL)
+                    let depth = max(0, rel.split(separator: "/").count - 1)
+                    src = String(repeating: "../", count: depth) + src
+                }
+                ActivityCenter.shared.end(activity)
+                activity = ActivityCenter.shared.begin("Uploading \(publishName)…")
+                DispatchQueue.main.async { statusMessage = "Uploading \(publishName)…" }
+                try Self.uploadStagedMedia(site: resolvedSite, name: publishName)
+                DispatchQueue.main.async {
+                    ActivityCenter.shared.end(activity)
+                    isWorking = false
+                    statusMessage = nil
+                    tab.replaceMedia(id: replaceID, html: Self.mediaHTML(kind: kind, src: src, name: publishName))
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    ActivityCenter.shared.end(activity)
+                    isWorking = false
+                    statusMessage = "Couldn’t replace with \(name): \(error.localizedDescription)"
+                    tab.unmarkMedia(id: replaceID)
                 }
             }
         }

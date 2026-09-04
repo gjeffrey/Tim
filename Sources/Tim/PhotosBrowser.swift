@@ -30,6 +30,9 @@ enum PhotosBrowser {
         config.preferredAssetRepresentationMode = .current
 
         let picker = PHPickerViewController(configuration: config)
+        // A sheet with no stated size opens at the view controller's
+        // minimum, which for the picker is a postage stamp.
+        picker.preferredContentSize = NSSize(width: 820, height: 600)
         let delegate = Delegate(completion: completion)
         picker.delegate = delegate
         retained = delegate

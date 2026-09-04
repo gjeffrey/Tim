@@ -47,6 +47,100 @@ public enum MediaOptimizer {
         }
     }
 
+    /// Where a photo was taken is nobody's business but the author's.
+    /// Every image and video Tim publishes has its location removed first
+    /// — however it was chosen: opened, picked from Photos, or dropped.
+    /// Images are rewritten losslessly (the encoded pixels are copied, not
+    /// re-compressed); videos have their metadata dropped in a passthrough
+    /// export. The untouched original still goes to media/originals/.
+    /// Anything that can't be rewritten is returned unchanged.
+    public static func withoutLocation(_ url: URL, kind: MediaKind) -> URL {
+        switch kind {
+        case .image: return strippedImage(url) ?? url
+        case .video: return strippedVideo(url) ?? url
+        default: return url
+        }
+    }
+
+    static func strippedImage(_ url: URL) -> URL? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let type = CGImageSourceGetType(source),
+              CGImageSourceGetCount(source) > 0
+        else { return nil }
+        let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        // Nothing to do is worth knowing: no GPS means no rewrite at all.
+        guard props?[kCGImagePropertyGPSDictionary] != nil else { return nil }
+        let orientation = props?[kCGImagePropertyOrientation]
+
+        // Excluding GPS also clears the orientation flag, and ImageIO
+        // refuses to set both in one pass — so this is two passes, each
+        // of which copies the encoded pixels rather than re-compressing
+        // them. A portrait photo has to stay portrait.
+        guard let stripped = copyingImage(source, type: type, options: [kCGImageMetadataShouldExcludeGPS: true]) else {
+            return reencodedWithoutLocation(source, type: type, like: url)
+        }
+        guard let orientation,
+              let restoredSource = CGImageSourceCreateWithURL(stripped as CFURL, nil),
+              let restored = copyingImage(restoredSource, type: type, options: [kCGImageDestinationOrientation: orientation])
+        else { return stripped }
+        return restored
+    }
+
+    /// One lossless rewrite: same encoded image, different metadata.
+    static func copyingImage(_ source: CGImageSource, type: CFString, options: [CFString: Any]) -> URL? {
+        guard let out = try? scratchFile(named: "nogps-\(UUID().uuidString.prefix(6)).\(fileExtension(for: type))"),
+              let dest = CGImageDestinationCreateWithURL(out as CFURL, type, CGImageSourceGetCount(source), nil)
+        else { return nil }
+        var error: Unmanaged<CFError>?
+        guard CGImageDestinationCopyImageSource(dest, source, options as CFDictionary, &error), error == nil else { return nil }
+        return out
+    }
+
+    /// The last resort, for formats that refuse a metadata-only copy: the
+    /// image is re-encoded, which costs a little quality but keeps the
+    /// promise that location never ships.
+    static func reencodedWithoutLocation(_ source: CGImageSource, type: CFString, like url: URL) -> URL? {
+        guard let out = try? scratchFile(named: "nogps-\(UUID().uuidString.prefix(6)).\(fileExtension(for: type))"),
+              let dest = CGImageDestinationCreateWithURL(out as CFURL, type, 1, nil)
+        else { return nil }
+        CGImageDestinationAddImageFromSource(
+            dest, source, 0, [kCGImagePropertyGPSDictionary: kCFNull as Any] as CFDictionary
+        )
+        return CGImageDestinationFinalize(dest) ? out : nil
+    }
+
+    static func fileExtension(for type: CFString) -> String {
+        UTType(type as String)?.preferredFilenameExtension ?? "jpg"
+    }
+
+    static func strippedVideo(_ url: URL) -> URL? {
+        let asset = AVURLAsset(url: url)
+        let existing = (try? awaitMetadata(asset)) ?? []
+        if existing.isEmpty { return nil }
+        guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough),
+              let out = try? scratchFile(named: url.lastPathComponent)
+        else { return nil }
+        session.outputURL = out
+        session.outputFileType = url.pathExtension.lowercased() == "mov" ? .mov : .mp4
+        session.metadata = []
+        let done = DispatchSemaphore(value: 0)
+        session.exportAsynchronously { done.signal() }
+        done.wait()
+        return session.status == .completed ? out : nil
+    }
+
+    /// The asset's own metadata, read synchronously off the main thread.
+    static func awaitMetadata(_ asset: AVURLAsset) throws -> [AVMetadataItem] {
+        let done = DispatchSemaphore(value: 0)
+        var items: [AVMetadataItem] = []
+        Task {
+            items = (try? await asset.load(.metadata)) ?? []
+            done.signal()
+        }
+        done.wait()
+        return items
+    }
+
     /// The untouched original, kept locally beside the site (never uploaded).
     public static func stashOriginal(_ url: URL, mirror: String) {
         guard !mirror.isEmpty else { return }
@@ -88,6 +182,7 @@ public enum MediaOptimizer {
         session.outputURL = out
         session.outputFileType = .mp4
         session.shouldOptimizeForNetworkUse = true
+        session.metadata = []   // location and camera details stay home
         let done = DispatchSemaphore(value: 0)
         session.exportAsynchronously { done.signal() }
         done.wait()

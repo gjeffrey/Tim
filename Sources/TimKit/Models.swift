@@ -597,10 +597,21 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     /// Page motion modes ("reveal", "fade", both, or "") — stored on the
     /// body, emitted as style+script at save by PageMotion.
     /// Drop target preview while files hover over the page (nil hides it).
-    public func showDropHover(at point: CGPoint?, colSpan: Int = 8, rowSpan: Int = 8, label: String = "") {
-        let js = point.map { "window.__timDropHover && window.__timDropHover(\(Int($0.x)), \(Int($0.y)), \(colSpan), \(rowSpan), \(Self.jsLiteral(label)));" }
-            ?? "window.__timDropHover && window.__timDropHover(-1, -1, 0, 0, '');"
+    /// `canReplace` offers the swap-this-picture target under the pointer.
+    public func showDropHover(at point: CGPoint?, colSpan: Int = 8, rowSpan: Int = 8, label: String = "", canReplace: Bool = false) {
+        let js = point.map { "window.__timDropHover && window.__timDropHover(\(Int($0.x)), \(Int($0.y)), \(colSpan), \(rowSpan), \(Self.jsLiteral(label)), \(canReplace));" }
+            ?? "window.__timDropHover && window.__timDropHover(-1, -1, 0, 0, '', false);"
         webView.evaluateJavaScript(js, completionHandler: nil)
+    }
+
+    /// Marks the picture under a dropped point for replacement — true only
+    /// when the pointer was inside its swap target.
+    public func markMedia(at point: CGPoint, id: String, _ completion: @escaping (Bool) -> Void) {
+        webView.evaluateJavaScript(
+            "window.__timMarkMediaAt ? window.__timMarkMediaAt(\(Int(point.x)), \(Int(point.y)), \(Self.jsLiteral(id))) : false"
+        ) { result, _ in
+            completion(result as? Bool ?? false)
+        }
     }
 
     /// Rewrites the selected navigation object from its model (NavKit).
@@ -1204,9 +1215,62 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       var dropLabel = doc.createElement('div');
       dropLabel.style.cssText = 'position:absolute;left:8px;top:8px;background:#0a84ff;color:#fff;font:11px -apple-system,sans-serif;padding:3px 8px;border-radius:5px;white-space:nowrap;';
       dropBox.appendChild(dropLabel);
-      window.__timDropHover = function (x, y, colSpan, rowSpan, label) {
+      // Dropping a photo ONTO a photo is ambiguous — add another, or swap
+      // this one? The answer is where you let go: a small target appears
+      // over the picture under the pointer, and only that target replaces.
+      var replaceBox = doc.createElement('div');
+      replaceBox.style.cssText = 'position:absolute;display:none;pointer-events:none;box-sizing:border-box;'
+        + 'border-radius:999px;border:2px solid #0a84ff;font:600 12px -apple-system,sans-serif;'
+        + 'text-align:center;white-space:nowrap;overflow:hidden;'
+        + 'box-shadow:0 2px 12px rgba(0,0,0,0.22);transition:background .12s,color .12s;';
+      overlay.appendChild(replaceBox);
+      function mediaUnder(x, y) {
+        var el = doc.elementFromPoint(x, y);
+        if (!el || !el.closest) { return null; }
+        var obj = el.closest('.tim-object');
+        if (!obj) { return null; }
+        return (obj.matches && obj.matches('img,video')) ? obj : obj.querySelector('img,video');
+      }
+      // The target lives inside the picture, never larger than it.
+      function replaceRect(media) {
+        var r = media.getBoundingClientRect();
+        if (r.width < 60 || r.height < 26) { return null; }
+        var w = Math.max(56, Math.min(116, r.width - 8));
+        var h = Math.max(22, Math.min(34, r.height - 8));
+        return { x: r.left + (r.width - w) / 2, y: r.top + (r.height - h) / 2, w: w, h: h };
+      }
+      function inRect(rect, x, y) {
+        return x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h;
+      }
+      window.__timMarkMediaAt = function (x, y, id) {
+        var media = mediaUnder(x, y);
+        if (!media) { return false; }
+        var rect = replaceRect(media);
+        if (!rect || !inRect(rect, x, y)) { return false; }
+        media.setAttribute('data-tim-replace', id);
+        media.classList.add('tim-media-replacing');
+        return true;
+      };
+      window.__timDropHover = function (x, y, colSpan, rowSpan, label, canReplace) {
         var canvas = doc.querySelector('[data-tim-canvas]');
-        if (x < 0 || !canvas) { dropBox.style.display = 'none'; return; }
+        if (x < 0 || !canvas) { dropBox.style.display = 'none'; replaceBox.style.display = 'none'; return; }
+        var media = canReplace ? mediaUnder(x, y) : null;
+        var rect = media ? replaceRect(media) : null;
+        if (rect) {
+          var active = inRect(rect, x, y);
+          replaceBox.style.display = 'block';
+          replaceBox.style.left = (rect.x + window.scrollX) + 'px';
+          replaceBox.style.top = (rect.y + window.scrollY) + 'px';
+          replaceBox.style.width = rect.w + 'px';
+          replaceBox.style.height = rect.h + 'px';
+          replaceBox.style.lineHeight = (rect.h - 4) + 'px';
+          replaceBox.textContent = rect.w >= 80 ? 'Replace' : '⇄';
+          replaceBox.style.background = active ? '#0a84ff' : 'rgba(255,255,255,0.94)';
+          replaceBox.style.color = active ? '#fff' : '#0a84ff';
+          if (active) { dropBox.style.display = 'none'; return; }
+        } else {
+          replaceBox.style.display = 'none';
+        }
         dropLabel.textContent = label || '';
         dropLabel.style.display = label ? 'block' : 'none';
         var cell = cellAt(canvas, x, y);
