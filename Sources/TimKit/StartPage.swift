@@ -1,8 +1,17 @@
 import Foundation
 
-/// The new-tab page. Deliberately editable — it's the first thing
-/// people should try ⌘E on.
-enum StartPage {
+public extension Notification.Name {
+    /// A link on the start page the app should act on rather than follow.
+    static let timHomeAction = Notification.Name("tim.homeAction")
+}
+
+/// The new-tab page — Tim's home. The app fills in `contentProvider` at
+/// launch so this shows your sites and your pages; on its own, before any
+/// of that exists, it's the plain welcome below.
+public enum StartPage {
+    public static var contentProvider: (() -> String)?
+    static var current: String { contentProvider?() ?? html }
+
     static let html = """
     <!DOCTYPE html>
     <html lang="en">

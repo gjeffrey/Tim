@@ -334,6 +334,7 @@ struct ActivityIndicator: View {
 
 struct BrowserWindow: View {
     @EnvironmentObject var store: BrowserStore
+    @EnvironmentObject var siteStore: SiteStore
     @State private var columns = NavigationSplitViewVisibility.all
 
     // The system sidebar structure is what buys the Tahoe look: the
@@ -350,6 +351,19 @@ struct BrowserWindow: View {
             } else {
                 Color.clear
             }
+        }
+        .onAppear { refreshHome() }
+        // A site added or renamed changes what home should show.
+        .onChange(of: siteStore.sites) { _, _ in refreshHome() }
+        .onReceive(NotificationCenter.default.publisher(for: DraftStore.changed)) { _ in refreshHome() }
+    }
+
+    /// The start page is built from your sites, so it is rebuilt whenever
+    /// they change — and any tab sitting on it is refreshed in place.
+    private func refreshHome() {
+        StartPage.contentProvider = { HomePage.html(sites: siteStore.sites) }
+        for tab in store.tabs where tab.webView.url == nil && !tab.isEditing {
+            tab.loadStartPage()
         }
     }
 }
@@ -1429,6 +1443,15 @@ struct TabContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .timResumeDraft)) { _ in
             if store.selectedTab === tab, tab.hasDraft, !tab.isEditing { askAboutDraft() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .timHomeAction)) { note in
+            guard store.selectedTab === tab, let action = note.userInfo?["action"] as? String else { return }
+            switch action {
+            case "new-local": LocalPages.createAndOpen(in: tab)
+            case "open": openLocalPage()
+            case "connect": showConnectSheet = true
+            default: break
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .timRestackMobile)) { _ in
             guard store.selectedTab === tab, tab.isEditing else { return }
@@ -7532,7 +7555,14 @@ struct AddressBar: View {
     /// www gone — and the full URL appears the moment you click in. Done
     /// by changing what the ONE field shows, not by stacking a label over
     /// a transparent field.
+    /// A page that lives only on this Mac. It has no address anyone else
+    /// could use, so the field shows its name and a badge says the rest.
+    private var isLocalPage: Bool { URL(string: tab.urlString)?.isFileURL == true }
+
     private var restText: String {
+        if isLocalPage, let url = URL(string: tab.urlString) {
+            return url.deletingPathExtension().lastPathComponent
+        }
         guard cleanAddresses, let url = URL(string: tab.urlString), let host = url.host() else {
             return tab.urlString
         }
@@ -7543,9 +7573,9 @@ struct AddressBar: View {
 
     var body: some View {
         HStack(spacing: 7) {
-            Image(systemName: isEditable ? "pencil.circle.fill" : "globe")
+            Image(systemName: isLocalPage ? "internaldrive.fill" : (isEditable ? "pencil.circle.fill" : "globe"))
                 .font(.system(size: 13, weight: .medium))
-                .symbolRenderingMode(isEditable ? .palette : .monochrome)
+                .symbolRenderingMode(isEditable && !isLocalPage ? .palette : .monochrome)
                 .foregroundStyle(
                     isEditable ? AnyShapeStyle(Color.black) : AnyShapeStyle(.tertiary),
                     AnyShapeStyle(timYellow)
@@ -7587,6 +7617,19 @@ struct AddressBar: View {
             .opacity(tab.hasDraft && !tab.isEditing ? 1 : 0)
             .allowsHitTesting(tab.hasDraft && !tab.isEditing)
             .help("An unpublished draft of this page is saved on this Mac — continue it, or discard it.")
+
+            // A local page has no address anyone else can reach. Saying so
+            // permanently, right where the address would be, is kinder
+            // than letting someone discover it at the wrong moment.
+            Text("On This Mac")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 7)
+                .frame(height: 18)
+                .background(Capsule().strokeBorder(Color.primary.opacity(0.25), lineWidth: 1))
+                .opacity(isLocalPage && !editing ? 1 : 0)
+                .allowsHitTesting(false)
+                .help("This page is a file on your Mac. Nobody else can see it until you publish it to a site.")
 
             TextField("Search or enter address", text: $text, onEditingChanged: { began in
                 // begin-editing re-fires on keystrokes (the trace showed five

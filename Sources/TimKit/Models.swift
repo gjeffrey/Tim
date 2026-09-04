@@ -141,7 +141,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
 
     public func loadStartPage() {
         title = "Start"
-        webView.loadHTMLString(StartPage.html, baseURL: nil)
+        webView.loadHTMLString(StartPage.current, baseURL: nil)
     }
 
     /// Interprets the address bar text as a URL, a bare domain, or a search.
@@ -3400,6 +3400,14 @@ extension Tab: WKNavigationDelegate {
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
     ) {
+        // The home page asks the app for things a web page cannot do —
+        // make a local page, connect a site — through tim: links.
+        if let url = navigationAction.request.url, url.scheme == "tim" {
+            decisionHandler(.cancel)
+            let action = String(url.absoluteString.dropFirst("tim:".count))
+            NotificationCenter.default.post(name: .timHomeAction, object: nil, userInfo: ["action": action])
+            return
+        }
         if isEditing, navigationAction.targetFrame?.isMainFrame != false {
             // A stray click on a link (a nav object, say) stays inert while
             // editing — links go live again the moment editing ends.
