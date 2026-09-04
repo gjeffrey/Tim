@@ -574,13 +574,28 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     }
 
     /// The page's template and its options (background, colors, layout).
+    /// The page as the editor sees it. The engine is injected
+    /// asynchronously, so this can be asked before there is anything to
+    /// answer — and an empty answer is worse than a slow one: every field
+    /// in Page Options would quietly fall back to its default, which is
+    /// how a plainly gradient page came up reading "Color".
     public func pageInfo(_ completion: @escaping ([String: Any]) -> Void) {
-        webView.evaluateJavaScript("window.__timPageInfo ? window.__timPageInfo() : ''") { result, _ in
-            guard let json = result as? String, !json.isEmpty,
-                  let data = json.data(using: .utf8),
-                  let info = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-            else { completion([:]); return }
-            completion(info)
+        pageInfo(attemptsLeft: 12, completion)
+    }
+
+    private func pageInfo(attemptsLeft: Int, _ completion: @escaping ([String: Any]) -> Void) {
+        webView.evaluateJavaScript("window.__timPageInfo ? window.__timPageInfo() : ''") { [weak self] result, _ in
+            if let json = result as? String, !json.isEmpty,
+               let data = json.data(using: .utf8),
+               let info = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+               info["template"] != nil {
+                completion(info)
+                return
+            }
+            guard let self, attemptsLeft > 0 else { completion([:]); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                self.pageInfo(attemptsLeft: attemptsLeft - 1, completion)
+            }
         }
     }
 

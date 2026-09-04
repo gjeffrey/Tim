@@ -5811,7 +5811,9 @@ struct PageOptionsPane: View {
 
     var body: some View {
         Group {
-            if let info {
+            // An answer without a template is no answer: rendering it would
+            // show every option at its default rather than at the page's.
+            if let info, info["template"] != nil {
                 PageOptionsControls(tab: tab, info: info, reload: reload)
                     .id(loadCount)
             } else {
@@ -5822,6 +5824,9 @@ struct PageOptionsPane: View {
             }
         }
         .onAppear { reload() }
+        // Editing a different page means different options.
+        .onChange(of: tab.urlString) { _, _ in reload() }
+        .onChange(of: tab.isEditing) { _, editing in if editing { reload() } }
     }
 
     private func reload() {
