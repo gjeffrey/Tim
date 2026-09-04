@@ -41,6 +41,11 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     /// One-shot: the next page load must not auto-resume a draft (set
     /// while showing a version preview, which loads over the same URL).
     public var suppressDraftResume = false
+    /// Set when TIM asks to go somewhere — the address bar, the sidebar,
+    /// back, forward, reload. A navigation while editing that nobody asked
+    /// for is a page acting on its own, and is not a reason to close the
+    /// editor and stash a draft.
+    private var deliberateNavigation = false
     /// An unpublished draft of this page exists on this Mac.
     @Published public var hasDraft = false
     /// A non-empty text selection inside the text being edited: viewport
@@ -148,6 +153,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     public func navigate(to input: String) {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        deliberateNavigation = true
 
         let url: URL?
         if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") || trimmed.hasPrefix("file://") {
@@ -169,6 +175,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
             webView.load(URLRequest(url: url))
         }
     }
+
+    public func goBack() { deliberateNavigation = true; webView.goBack() }
+    public func goForward() { deliberateNavigation = true; webView.goForward() }
+    public func reloadPage() { deliberateNavigation = true; webView.reload() }
 
     /// One edit mode: the canvas. Objects select, move, and resize on the
     /// grid; any text — box or flowing paragraph — edits on double-click.
@@ -1195,6 +1205,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         // a third of a screen of empty rows under its last object, so
         // there is always somewhere to drop, drag, and grab handles.
         'html.tim-editing .tim-canvas:not(.tim-container){padding-bottom:36vh !important}' +
+        // Links look exactly as they will, and do nothing at all. A live
+        // link while editing is a trapdoor: press one to drag the nav and
+        // WebKit starts dragging the LINK, or follows it on release.
+        'html.tim-editing a{-webkit-user-drag:none !important}' +
         'html.tim-editing [data-tim-offpage]{opacity:0.4;filter:saturate(0.5);outline:1.5px dashed rgba(127,127,127,0.55);outline-offset:2px}' +
         'html.tim-editing [data-tim-review]{outline:2px solid rgba(255,159,10,0.85) !important;outline-offset:3px;animation:timReviewPulse 1.6s ease-in-out infinite}' +
         '@keyframes timReviewPulse{50%{outline-color:rgba(255,159,10,0.25)}}';
@@ -2217,6 +2231,16 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         window.webkit.messageHandlers.timText.postMessage(payload);
       }
       function scheduleTextSel() { clearTimeout(textSelTimer); textSelTimer = setTimeout(postTextSel, 160); }
+      // Capture phase: the click is stopped before the page, a script, or
+      // WebKit's own link handling can do anything with it.
+      doc.addEventListener('click', function (e) {
+        if (!active) { return; }
+        if (e.target && e.target.closest && e.target.closest('a[href]')) { e.preventDefault(); }
+      }, true);
+      doc.addEventListener('dragstart', function (e) {
+        if (!active) { return; }
+        if (e.target && e.target.closest && e.target.closest('a[href]')) { e.preventDefault(); }
+      }, true);
       doc.addEventListener('selectionchange', scheduleTextSel);
       window.addEventListener('scroll', scheduleTextSel, true);
       window.addEventListener('resize', scheduleTextSel);
@@ -3462,6 +3486,7 @@ extension Tab: WKNavigationDelegate {
     }
 
     public func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        deliberateNavigation = false
         #if os(iOS)
         if addressEditing { webView.evaluateJavaScript("window.__timAddressEditing = true;", completionHandler: nil) }
         #endif
@@ -3554,6 +3579,14 @@ extension Tab: WKNavigationDelegate {
                 decisionHandler(.cancel)
                 return
             }
+            // A synthetic or script-driven follow of a link arrives as
+            // .other, which used to read as a deliberate move and threw
+            // the editor away. If Tim didn't ask, nothing happens.
+            if !deliberateNavigation {
+                decisionHandler(.cancel)
+                return
+            }
+            deliberateNavigation = false
             // A deliberate navigation (URL bar, sidebar, back/forward):
             // stash the session as a draft first, then let it through.
             // Opening the page again resumes editing right where it was.

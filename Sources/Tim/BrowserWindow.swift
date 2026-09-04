@@ -1259,7 +1259,7 @@ struct SiteSection: View {
                     _ = try GitHubPagesPublisher.publish(repo: s.localProjectPath, message: "Roll back \(rel)")
                 }
                 SiteWorkspace.snapshot(s.localProjectPath, message: "Roll back \(rel) to \(sha)")
-                DispatchQueue.main.async { tab.webView.reload() }
+                DispatchQueue.main.async { tab.reloadPage() }
             } catch {
                 DispatchQueue.main.async {
                     let alert = NSAlert()
@@ -1860,7 +1860,7 @@ struct TabContentView: View {
                             DispatchQueue.main.async {
                                 DraftStore.clear(for: url.absoluteString)
                                 PageRegistry.record(url: url.absoluteString, title: tab.title)
-                                tab.webView.reload()
+                                tab.reloadPage()
                             }
                         } catch {
                             DispatchQueue.main.async { publishAlert(error) }
@@ -2000,7 +2000,7 @@ struct TabContentView: View {
                     // The restored version is the page now — an old draft
                     // must not resurrect over it.
                     DraftStore.clear(for: url.absoluteString)
-                    tab.webView.reload()
+                    tab.reloadPage()
                 }
             } catch {
                 DispatchQueue.main.async { publishAlert(error) }
@@ -2156,7 +2156,7 @@ struct TabContentView: View {
     private func exitVersionPreview() {
         previewSha = nil
         previewHTML = ""
-        tab.webView.reload()
+        tab.reloadPage()
     }
 
     private func restorePreviewedVersion() {
@@ -2278,7 +2278,7 @@ struct TabContentView: View {
                 }
                 DispatchQueue.main.async {
                     PageRegistry.record(url: url.absoluteString, title: name)
-                    tab.webView.reload()
+                    tab.reloadPage()
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -2420,14 +2420,14 @@ struct TabContentView: View {
         ToolbarItem(placement: .principal) {
             HStack(spacing: 12) {
                 HStack(spacing: 6) {
-                    Button { tab.webView.goBack() } label: {
+                    Button { tab.goBack() } label: {
                         Image(systemName: "chevron.left")
                             .frame(width: 24, height: 22)
                             .contentShape(Rectangle())
                     }
                     .disabled(!tab.canGoBack)
                     .help("Back (⌘[)")
-                    Button { tab.webView.goForward() } label: {
+                    Button { tab.goForward() } label: {
                         Image(systemName: "chevron.right")
                             .frame(width: 24, height: 22)
                             .contentShape(Rectangle())
@@ -3287,7 +3287,7 @@ struct EditingToolbar: View {
                 DispatchQueue.main.async {
                     isWorking = false
                     statusMessage = "\(component.name) inserted — edit its placeholder text inline."
-                    tab.webView.reload()
+                    tab.reloadPage()
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -3688,7 +3688,7 @@ struct ThemePanel: View {
                 DispatchQueue.main.async {
                     isApplying = false
                     status = summary
-                    tab.webView.reload()
+                    tab.reloadPage()
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -4190,7 +4190,7 @@ struct PublishSheet: View {
                             PageRegistry.record(url: pageURL.absoluteString, title: tab.title)
                         }
                         tab.setEditing(false)
-                        tab.webView.reload()
+                        tab.reloadPage()
                         if result.skipped.isEmpty {
                             DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { dismiss() }
                         }
@@ -8215,7 +8215,7 @@ struct AddressBar: View {
                 .help("This page is a file on your Mac. Nobody else can see it until you publish it to a site.")
 
             Button {
-                if tab.isLoading { tab.webView.stopLoading() } else { tab.webView.reload() }
+                if tab.isLoading { tab.webView.stopLoading() } else { tab.reloadPage() }
             } label: {
                 Image(systemName: tab.isLoading ? "xmark" : "arrow.clockwise")
                     .font(.system(size: 10, weight: .semibold))

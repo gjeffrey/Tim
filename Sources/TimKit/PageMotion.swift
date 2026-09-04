@@ -21,8 +21,11 @@ public enum PageMotion {
     public static func ensure(in html: String) -> String {
         var out = html
         // Always strip the previous emission, then re-emit for the current modes.
-        out = out.replacingOccurrences(of: "<style data-tim-motion>[\\s\\S]*?</style>\\n?", with: "", options: .regularExpression)
-        out = out.replacingOccurrences(of: "<script data-tim-motion>[\\s\\S]*?</script>\\n?", with: "", options: .regularExpression)
+        // The DOM serialises a bare attribute as data-tim-motion="", which
+        // the old pattern did not match — so nothing was ever stripped and
+        // a fresh copy was appended on every save. Holland had six.
+        out = out.replacingOccurrences(of: "<style data-tim-motion[^>]*>[\\s\\S]*?</style>\\n?", with: "", options: .regularExpression)
+        out = out.replacingOccurrences(of: "<script data-tim-motion[^>]*>[\\s\\S]*?</script>\\n?", with: "", options: .regularExpression)
         let modes = modes(in: out)
         guard !modes.isEmpty else { return out }
         if let head = out.range(of: "</head>") {
@@ -46,13 +49,19 @@ public enum PageMotion {
 
     static let script = """
     <script data-tim-motion>
-    (function(){var h=document.documentElement;if(h.classList.contains('tim-editing'))return;
+    (function(){var h=document.documentElement;
+    // Asked per click, never once at load: a page opened normally and then
+    // put into edit mode would otherwise still follow links out from under
+    // the editor.
+    function editing(){return h.classList.contains('tim-editing')}
+    if(editing())return;
     if(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches)return;
     var m=document.body.getAttribute('data-tim-motion')||'';
     if(m.indexOf('fade')>=0){h.classList.add('tim-fade');
       requestAnimationFrame(function(){requestAnimationFrame(function(){h.classList.add('tim-ready')})});
       window.addEventListener('pageshow',function(ev){if(ev.persisted)h.classList.add('tim-ready')});
       document.addEventListener('click',function(e){
+        if(editing())return;
         if(e.defaultPrevented||e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
         var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;
         if(!a||(a.target&&a.target!=='_self')||a.hasAttribute('download'))return;

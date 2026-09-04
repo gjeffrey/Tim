@@ -54,8 +54,11 @@ public enum NavKit {
     /// fallback is a visible list.
     public static func ensure(in html: String) -> String {
         var out = html
-        out = out.replacingOccurrences(of: "<style data-tim-nav>[\\s\\S]*?</style>\\n?", with: "", options: .regularExpression)
-        out = out.replacingOccurrences(of: "<script data-tim-nav>[\\s\\S]*?</script>\\n?", with: "", options: .regularExpression)
+        // Same trap as the motion block: a bare attribute serialises as
+        // data-tim-nav="", so the old pattern matched nothing and every
+        // save added another copy. Holland had thirteen.
+        out = out.replacingOccurrences(of: "<style data-tim-nav[^>]*>[\\s\\S]*?</style>\\n?", with: "", options: .regularExpression)
+        out = out.replacingOccurrences(of: "<script data-tim-nav[^>]*>[\\s\\S]*?</script>\\n?", with: "", options: .regularExpression)
         guard out.contains("tim-nav") else { return out }
         out = out.replacingOccurrences(of: " aria-current=\"page\"", with: "")
         out = out.replacingOccurrences(of: " tim-nav-open", with: "")

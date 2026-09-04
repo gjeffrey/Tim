@@ -185,7 +185,7 @@ struct TimApp: App {
                 }
                 .keyboardShortcut("r", modifiers: [.control, .command])
                 .disabled(!(store.selectedTab?.isEditing ?? false))
-                Button("Reload") { store.selectedTab?.webView.reload() }
+                Button("Reload") { store.selectedTab?.reloadPage() }
                     .keyboardShortcut("r", modifiers: .command)
                 Divider()
                 Button("Submit to Showcase…") { NotificationCenter.default.post(name: .timSubmitShowcase, object: nil) }
@@ -216,9 +216,9 @@ struct TimApp: App {
                 }
                 .keyboardShortcut("0", modifiers: [.command, .option])
                 Divider()
-                Button("Back") { store.selectedTab?.webView.goBack() }
+                Button("Back") { store.selectedTab?.goBack() }
                     .keyboardShortcut("[", modifiers: .command)
-                Button("Forward") { store.selectedTab?.webView.goForward() }
+                Button("Forward") { store.selectedTab?.goForward() }
                     .keyboardShortcut("]", modifiers: .command)
             }
         }
