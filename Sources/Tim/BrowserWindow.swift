@@ -3451,6 +3451,27 @@ struct SelectionBar: View {
     }
 }
 
+/// The mark between two gradient colours is also how you swap them.
+/// Direction is the Angle control's job; this is the gesture people
+/// actually reach for when a gradient runs the wrong way round.
+struct SwapColors: View {
+    let swap: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: swap) {
+            Image(systemName: "arrow.left.arrow.right")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(hovering ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
+                .frame(width: 15, height: 15)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help("Swap the two colors")
+    }
+}
+
 struct FormatButton: View {
     let symbol: String
     let action: () -> Void
@@ -5596,9 +5617,7 @@ struct InspectorControls: View {
                     .labelsHidden()
                     .onChange(of: fillColor) { _, _ in applyFill() }
                 if fillIsGradient {
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 8))
-                        .foregroundStyle(.tertiary)
+                    SwapColors { let first = fillColor; fillColor = fillEndColor; fillEndColor = first }
                     ColorPicker("", selection: $fillEndColor)
                         .labelsHidden()
                         .onChange(of: fillEndColor) { _, _ in applyFill() }
@@ -5881,9 +5900,7 @@ struct PageOptionsControls: View {
                         ColorPicker("", selection: $bg, supportsOpacity: false)
                             .labelsHidden()
                             .onChange(of: bg) { _, _ in applyPageGradient() }
-                        Image(systemName: "arrow.right")
-                            .font(.system(size: 8))
-                            .foregroundStyle(.tertiary)
+                        SwapColors { let first = bg; bg = bgEnd; bgEnd = first }
                         ColorPicker("", selection: $bgEnd, supportsOpacity: false)
                             .labelsHidden()
                             .onChange(of: bgEnd) { _, _ in applyPageGradient() }
