@@ -74,20 +74,76 @@ extension View {
 /// nothing else; tools and selection stay blue so they read anywhere.
 let timYellow = Color(red: 0.996, green: 0.929, blue: 0)
 
-/// Parses "linear-gradient(140deg, <c1>, <c2>)" back into its parts —
-/// colors may be hex or rgb(), whatever Color(cssColor:) reads.
+/// Reads a CSS linear-gradient back into its parts. Forgiving on
+/// purpose: the angle is optional in CSS (no angle means "to bottom"),
+/// it may be a keyword rather than degrees, and the colours may be hex,
+/// rgb(), or carry a position — all of which appear in pages Tim did not
+/// write. Returning nil here is what makes the Background picker open on
+/// the wrong tab, so it pays to understand as much as possible.
 func parseLinearGradient(_ value: String) -> (angle: Double, start: String, end: String)? {
-    guard value.contains("linear-gradient"),
-          let regex = try? NSRegularExpression(
-            pattern: "linear-gradient\\(\\s*([0-9.]+)deg\\s*,\\s*(#[0-9a-fA-F]+|rgba?\\([^)]*\\))\\s*,\\s*(#[0-9a-fA-F]+|rgba?\\([^)]*\\))"
-          ),
-          let match = regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)),
-          let a = Range(match.range(at: 1), in: value),
-          let s = Range(match.range(at: 2), in: value),
-          let e = Range(match.range(at: 3), in: value),
-          let angle = Double(value[a])
-    else { return nil }
-    return (angle, String(value[s]), String(value[e]))
+    guard let open = value.range(of: "linear-gradient(") else { return nil }
+    // The matching close paren, counting nesting so rgb(…) doesn't end it.
+    var depth = 0
+    var inside = ""
+    for ch in value[open.upperBound...] {
+        if ch == "(" { depth += 1 }
+        if ch == ")" {
+            if depth == 0 { break }
+            depth -= 1
+        }
+        inside.append(ch)
+    }
+    guard !inside.isEmpty else { return nil }
+
+    // Top-level commas only: rgb(1, 2, 3) is one part, not three.
+    var parts: [String] = []
+    var current = ""
+    depth = 0
+    for ch in inside {
+        if ch == "(" { depth += 1 }
+        if ch == ")" { depth -= 1 }
+        if ch == ",", depth == 0 {
+            parts.append(current.trimmingCharacters(in: .whitespaces))
+            current = ""
+        } else {
+            current.append(ch)
+        }
+    }
+    parts.append(current.trimmingCharacters(in: .whitespaces))
+    guard parts.count >= 2 else { return nil }
+
+    var angle: Double = 180   // CSS default: to bottom
+    var stops = parts
+    let first = parts[0].lowercased()
+    if first.hasSuffix("deg"), let d = Double(first.dropLast(3)) {
+        angle = d
+        stops = Array(parts.dropFirst())
+    } else if first.hasPrefix("to ") {
+        switch first {
+        case "to top": angle = 0
+        case "to right": angle = 90
+        case "to bottom": angle = 180
+        case "to left": angle = 270
+        case "to top right", "to right top": angle = 45
+        case "to bottom right", "to right bottom": angle = 135
+        case "to bottom left", "to left bottom": angle = 225
+        case "to top left", "to left top": angle = 315
+        default: angle = 180
+        }
+        stops = Array(parts.dropFirst())
+    }
+    guard stops.count >= 2 else { return nil }
+
+    // A stop may carry a position: "#fff 20%".
+    func colorOnly(_ stop: String) -> String {
+        if stop.hasPrefix("#") || stop.lowercased().hasPrefix("rgb") || stop.lowercased().hasPrefix("hsl") {
+            if let space = stop.range(of: " "), !stop.contains("(") { return String(stop[..<space.lowerBound]) }
+            if stop.contains("("), let close = stop.range(of: ")") { return String(stop[..<close.upperBound]) }
+            return stop
+        }
+        return stop.split(separator: " ").first.map(String.init) ?? stop
+    }
+    return (angle, colorOnly(stops.first!), colorOnly(stops.last!))
 }
 
 /// The social card, by default and hands-off: after every publish, the

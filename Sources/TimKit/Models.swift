@@ -3049,7 +3049,11 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           template: name,
           motion: doc.body.getAttribute('data-tim-motion') || '',
           title: doc.title || '',
-          bg: p.bg || cs.backgroundColor,
+          // A gradient lives in background-IMAGE; backgroundColor reads
+          // transparent for it, which used to make Page Options open on
+          // the Color tab for a page that plainly has a gradient.
+          bg: p.bg || (String(cs.backgroundImage || '').indexOf('gradient') >= 0
+                        ? cs.backgroundImage : cs.backgroundColor),
           bgVideo: (function () {
             var v = doc.querySelector('video.tim-page-background');
             return v ? (v.getAttribute('src') || '') : '';
