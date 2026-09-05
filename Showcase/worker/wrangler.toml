@@ -13,7 +13,14 @@ routes = [
 binding = "SHOWCASE"
 id = "30fafd93bef94b95b813fc3e7d11a9e4"
 
+[vars]
+# The public half of the VAPID pair. Public by design: the browser needs it
+# to subscribe, and it's in the review page's HTML.
+VAPID_PUBLIC = "BGWHhqpg5xBTaayETARF-m4pZO4gMITQ_jQb8-Ycy-wmx_EL4ZUT37NW5g2D-iFYBBu3Ij3wEb-Ii38u-mi-m_Y"
+VAPID_SUBJECT = "https://gabrieljeffrey.com/tim"
+
 # Secrets (set once, never in this file):
-#   wrangler secret put ADMIN_TOKEN     — unlocks /tim/showcase/admin?token=…
+#   wrangler secret put ADMIN_TOKEN        — unlocks /tim/showcase/admin?token=…
+#   wrangler secret put VAPID_PRIVATE_JWK  — signs push notifications
 # Optional vars:
 #   NOTIFY_URL — a webhook POSTed on every new submission (ntfy, Slack, Shortcuts…)

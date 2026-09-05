@@ -5,14 +5,21 @@
 // POST /tim/showcase/submit       {url, name, note, agree} — from Tim's Submit to Showcase…
 // GET  /tim/showcase/admin?token= review pending entries
 // POST /tim/showcase/review       token, id, action (approve | reject | remove)
+// GET  /tim/showcase/sw.js        service worker, for review-page notifications
+// GET  /tim/showcase/pending.json token= — what is waiting (read by the worker)
+// POST /tim/showcase/subscribe    token, subscription — turn notifications on
+// POST /tim/showcase/unsubscribe  token, subscription — turn them off
 //
 // Storage (KV): pending:<id> → entry (90-day TTL); approved → JSON array;
-// sub:<urlhash> → "1" (one submission per URL); rl:<ip> → count (daily).
+// sub:<urlhash> → "1" (one submission per URL); rl:<ip> → count (daily);
+// push:<id> → a browser subscribed to notifications.
+
+import { pushReady, saveSubscription, dropSubscription, notifyAll, serviceWorker } from "./push.js";
 
 const BASE = "/tim/showcase";
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     let path = url.pathname;
     if (path.startsWith(BASE)) path = path.slice(BASE.length) || "/";
@@ -20,10 +27,14 @@ export default {
     try {
       if (request.method === "GET" && path === "/") return gallery(env);
       if (request.method === "GET" && path === "/feed.json") return feed(env);
-      if (request.method === "POST" && path === "/submit") return submit(request, env);
+      if (request.method === "POST" && path === "/submit") return submit(request, env, ctx);
       if (request.method === "OPTIONS" && path === "/submit") return new Response(null, { headers: cors() });
       if (request.method === "GET" && path === "/admin") return admin(url, env);
       if (request.method === "POST" && path === "/review") return review(request, env);
+      if (request.method === "GET" && path === "/sw.js") return serviceWorker(BASE);
+      if (request.method === "GET" && path === "/pending.json") return pendingJSON(url, env);
+      if (request.method === "POST" && path === "/subscribe") return subscribe(request, env, true);
+      if (request.method === "POST" && path === "/unsubscribe") return subscribe(request, env, false);
     } catch (e) {
       return json({ error: "Something went wrong on our side." }, 500);
     }
@@ -33,7 +44,7 @@ export default {
 
 // ---------- submit ----------
 
-async function submit(request, env) {
+async function submit(request, env, ctx) {
   let body;
   try { body = await request.json(); } catch { return json({ error: "Send JSON." }, 400, cors()); }
   const name = clean(body.name, 60);
@@ -72,6 +83,11 @@ async function submit(request, env) {
   await env.SHOWCASE.put("pending:" + id, JSON.stringify(entry), { expirationTtl: 90 * 86400 });
   await env.SHOWCASE.put("sub:" + urlHash, id, { expirationTtl: 365 * 86400 });
   await env.SHOWCASE.put(rlKey, String(count + 1), { expirationTtl: 86400 });
+  // Don't make the submitter wait on our notifications.
+  const tell = async () => {
+    await notifyAll(env);
+  };
+  if (ctx && ctx.waitUntil) ctx.waitUntil(tell()); else await tell();
   if (env.NOTIFY_URL) {
     try {
       await fetch(env.NOTIFY_URL, { method: "POST", headers: { "content-type": "application/json" },
@@ -210,12 +226,78 @@ async function admin(url, env) {
       <form method="post" action="${BASE}/review"><input type="hidden" name="token" value="${esc(token)}"><input type="hidden" name="id" value="${esc(e.id)}">${actions}</form>
     </div></li>`;
   const html = `<!doctype html><meta charset="utf-8"><title>Showcase review</title>
-<style>body{font:15px -apple-system,system-ui,sans-serif;max-width:900px;margin:40px auto;padding:0 20px;color:#111}ul{list-style:none;padding:0}li{display:flex;gap:16px;padding:16px 0;border-bottom:1px solid #eee}img{width:200px;aspect-ratio:1200/630;object-fit:cover;background:#eee;border-radius:6px;flex:none}button{margin:8px 8px 0 0;padding:5px 12px;border-radius:6px;border:1px solid #ccc;background:#fff}button.go{background:#ffd60a;border-color:#e6c000;font-weight:600}h2{margin-top:40px}</style>
+<style>body{font:15px -apple-system,system-ui,sans-serif;max-width:900px;margin:40px auto;padding:0 20px;color:#111}ul{list-style:none;padding:0}li{display:flex;gap:16px;padding:16px 0;border-bottom:1px solid #eee}img{width:200px;aspect-ratio:1200/630;object-fit:cover;background:#eee;border-radius:6px;flex:none}button{margin:8px 8px 0 0;padding:5px 12px;border-radius:6px;border:1px solid #ccc;background:#fff}button.go{background:#ffd60a;border-color:#e6c000;font-weight:600}h2{margin-top:40px}.notify{background:#faf9f6;border:1px solid #eee;border-radius:8px;padding:12px 14px;margin:0 0 8px}.notify i{color:#a00;font-style:normal}</style>
 <h1>Showcase review</h1>
+<p class="notify" id="notify">…</p>
 <h2>Pending (${pending.length})</h2>
 <ul>${pending.map(e => row(e, `<button class="go" name="action" value="approve">Approve</button><button name="action" value="reject">Reject</button>`)).join("") || "<li>Nothing waiting.</li>"}</ul>
 <h2>Live (${live.length})</h2>
-<ul>${live.map(e => row(e, `<button name="action" value="remove">Remove</button>`)).join("") || "<li>Nothing live.</li>"}</ul>`;
+<ul>${live.map(e => row(e, `<button name="action" value="remove">Remove</button>`)).join("") || "<li>Nothing live.</li>"}</ul>
+<script>
+(function(){
+  var BASE=${JSON.stringify(BASE)}, TOKEN=${JSON.stringify(token)},
+      PUB=${JSON.stringify(env.VAPID_PUBLIC || "")}, READY=${pushReady(env)};
+  var el=document.getElementById("notify");
+  function say(h){ el.innerHTML=h; }
+  if(!READY){ say("Notifications aren't set up on this server yet."); return; }
+  if(!("serviceWorker" in navigator)||!("PushManager" in window)||!("Notification" in window)){
+    say("This browser can't show notifications."); return; }
+  if(location.protocol!=="https:"){ say("Notifications need a secure connection."); return; }
+
+  function key(b64){
+    var pad="====".slice(0,(4-b64.length%4)%4);
+    var raw=atob((b64+pad).replace(/-/g,"+").replace(/_/g,"/"));
+    var out=new Uint8Array(raw.length);
+    for(var i=0;i<raw.length;i++) out[i]=raw.charCodeAt(i);
+    return out;
+  }
+  async function existing(){
+    try{ var r=await navigator.serviceWorker.getRegistration(BASE+"/");
+      return r ? await r.pushManager.getSubscription() : null; }catch(e){ return null; }
+  }
+  async function on(){
+    say("Asking your browser…");
+    try{
+      if(await Notification.requestPermission()!=="granted"){
+        render(null,"Your browser is blocking notifications for this site."); return; }
+      await navigator.serviceWorker.register(BASE+"/sw.js",{scope:BASE+"/"});
+      var r=await navigator.serviceWorker.ready;
+      var sub=await r.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:key(PUB)});
+      var res=await fetch(BASE+"/subscribe",{method:"POST",
+        headers:{"content-type":"application/json"},
+        body:JSON.stringify({token:TOKEN,subscription:sub})});
+      if(!res.ok) throw 0;
+      var c=await caches.open("tim-showcase");
+      await c.put("/__token",new Response(TOKEN));
+      render(sub);
+    }catch(e){ render(null,"Couldn't turn them on."); }
+  }
+  async function off(){
+    say("…");
+    try{
+      var sub=await existing();
+      if(sub){
+        await fetch(BASE+"/unsubscribe",{method:"POST",
+          headers:{"content-type":"application/json"},
+          body:JSON.stringify({token:TOKEN,subscription:sub})});
+        await sub.unsubscribe();
+      }
+      render(null);
+    }catch(e){ render(null,"Couldn't turn them off."); }
+  }
+  function render(sub,err){
+    var msg = err ? " <i>"+err+"</i>" : "";
+    if(sub){
+      say("Notifications are on in this browser. <button id=nb>Turn off</button>"+msg);
+      document.getElementById("nb").onclick=off;
+    } else {
+      say("<button id=nb class=go>Notify me of new submissions</button>"+msg);
+      document.getElementById("nb").onclick=on;
+    }
+  }
+  existing().then(function(s){ render(s); });
+})();
+<\/script>`;
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
 }
 
@@ -244,6 +326,38 @@ async function review(request, env) {
     if (entry) await env.SHOWCASE.delete("sub:" + await sha(entry.url));
   }
   return Response.redirect(new URL(`${BASE}/admin?token=${encodeURIComponent(token)}`, request.url).href, 303);
+}
+
+// ---------- notifications ----------
+
+// What the service worker asks for when a push wakes it. Same token as the
+// review page: a notification is a view of pending work, so it needs the
+// same key that unlocks the work itself.
+async function pendingJSON(url, env) {
+  if (!authorized(url.searchParams.get("token"), env)) return json({ error: "Nope." }, 403);
+  const list = await env.SHOWCASE.list({ prefix: "pending:" });
+  const entries = [];
+  for (const k of list.keys) {
+    const v = await env.SHOWCASE.get(k.name);
+    if (v) entries.push(JSON.parse(v));
+  }
+  entries.sort((a, b) => a.submitted < b.submitted ? 1 : -1);
+  const latest = entries[0];
+  return json({
+    count: entries.length,
+    latest: latest ? { name: latest.name, title: latest.title, url: latest.url } : null,
+  }, 200, { "cache-control": "no-store" });
+}
+
+async function subscribe(request, env, on) {
+  if (!pushReady(env)) return json({ error: "Notifications aren't set up on this server yet." }, 503);
+  let body;
+  try { body = await request.json(); } catch { return json({ error: "Send JSON." }, 400); }
+  if (!authorized(body.token, env)) return json({ error: "Nope." }, 403);
+  const ok = on ? await saveSubscription(body.subscription, env)
+                : await dropSubscription(body.subscription, env);
+  if (!ok) return json({ error: "That isn't a push subscription." }, 400);
+  return json({ ok: true });
 }
 
 // ---------- utils ----------
