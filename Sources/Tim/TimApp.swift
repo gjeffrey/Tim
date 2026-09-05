@@ -49,8 +49,10 @@ struct ExperimentalSettings: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Make It Mine", isOn: $makeItMine)
-                Text("Copy a page you're viewing — images, styles, fonts — onto your own site, ready to edit. Shows as a yellow button in the address bar on pages that aren't yours. Experimental: imports are frozen snapshots and linked pages aren't followed.")
+                // The stored key still says makeItMine; renaming it would
+                // lose the setting for anyone who has already turned it on.
+                Toggle("Adopt a Page", isOn: $makeItMine)
+                Text("Copy a page you're looking at onto your own site, and keep publishing it. Its words and pictures become yours to change; its layout stays as its author built it. Shows as a yellow button in the address bar on pages that aren't yours.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } header: {

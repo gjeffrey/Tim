@@ -327,8 +327,20 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           for (var c = 0; c < chrome.length; c++) { chrome[c].remove(); }
           var pending = clone.querySelectorAll('[data-tim-placeholder]');
           for (var p = 0; p < pending.length; p++) { pending[p].remove(); }
-          var replacing = clone.querySelectorAll('[data-tim-replace]');
-          for (var q = 0; q < replacing.length; q++) { replacing[q].removeAttribute('data-tim-replace'); }
+          var replacing = clone.querySelectorAll('[data-tim-replace], .tim-media-replacing');
+          for (var q = 0; q < replacing.length; q++) {
+            replacing[q].removeAttribute('data-tim-replace');
+            replacing[q].classList.remove('tim-media-replacing');
+          }
+          // Classes the page puts on ITSELF while it is being looked at —
+          // an object revealed by scrolling, a menu left open, the fade
+          // marked ready. They describe a moment, not the page, and a
+          // saved copy that carries them starts life already half-played.
+          var runtime = clone.querySelectorAll('.tim-in, .tim-nav-open');
+          for (var t = 0; t < runtime.length; t++) {
+            runtime[t].classList.remove('tim-in', 'tim-nav-open');
+          }
+          clone.classList.remove('tim-ready', 'tim-reveal', 'tim-fade');
           var reviewing = clone.querySelectorAll('[data-tim-review]');
           for (var v = 0; v < reviewing.length; v++) { reviewing[v].removeAttribute('data-tim-review'); }
           var offpage = clone.querySelectorAll('[data-tim-offpage]');
@@ -1343,6 +1355,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (!media) { return false; }
         var rect = replaceRect(media);
         if (!rect || !inRect(rect, x, y)) { return false; }
+        checkpoint('media');
         media.setAttribute('data-tim-replace', id);
         media.classList.add('tim-media-replacing');
         return true;
@@ -2546,6 +2559,13 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         hide();
         lastCkptTag = '';
         c.innerHTML = snap.c;
+        // A snapshot may have been taken mid-flight. Restoring one must
+        // not bring back a picture marked as being replaced: no upload is
+        // coming for it, so it would pulse for ever.
+        Array.prototype.forEach.call(c.querySelectorAll('[data-tim-replace], .tim-media-replacing'), function (stale) {
+          stale.removeAttribute('data-tim-replace');
+          stale.classList.remove('tim-media-replacing');
+        });
         try { templateProps = JSON.parse(snap.p) || {}; } catch (e) { templateProps = {}; }
         try { mobileLayout = JSON.parse(snap.m || '{}') || {}; } catch (e2) { mobileLayout = {}; }
         mobileLayoutMode = snap.mm === 'stack' ? 'stack' : 'custom';
@@ -2867,6 +2887,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         var target = (sel.matches && sel.matches('img,video,audio'))
           ? sel : (sel.querySelector ? sel.querySelector('img,video,audio') : null);
         if (!target) { return false; }
+        checkpoint('media');
         target.setAttribute('data-tim-replace', id);
         target.classList.add('tim-media-replacing');
         return true;
@@ -2884,7 +2905,6 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         tmp.innerHTML = html;
         var el = tmp.firstElementChild;
         if (!el) { target.removeAttribute('data-tim-replace'); target.classList.remove('tim-media-replacing'); return; }
-        checkpoint('media');
         target.classList.remove('tim-media-replacing');
         if (target.className) { el.className = target.className; }
         if (target.style && target.style.cssText) { el.style.cssText = target.style.cssText; }

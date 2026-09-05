@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 
-/// "Make It Mine": the page you're looking at becomes a page you own —
+/// "Adopt This Page": the page you're looking at becomes a page you own —
 /// a faithful frozen copy with every asset localized, published to your
 /// server at a path you choose. Tier 1 semantics, promised honestly:
 /// text, media, links, and metadata become editable; the layout stays

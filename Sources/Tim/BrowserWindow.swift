@@ -7451,7 +7451,7 @@ struct WebViewContainer: NSViewRepresentable {
     func updateNSView(_ nsView: WKWebView, context: Context) {}
 }
 
-// MARK: - "Make It Mine": the page in the tab becomes a page on your
+// MARK: - "Adopt This Page": the page in the tab becomes a page on your
 // site — assets localized, copy published, pencil lit.
 
 /// Construction-site tape: yellow with black diagonals. The sign that a
@@ -7963,11 +7963,19 @@ struct ImportSheet: View {
         VStack(spacing: 0) {
             Form {
                 Section {
-                    Text("Tim copies this page — its images, styles, fonts, and icons — onto your site. The copy is yours: edit its text and media, set its title and icons, publish changes like any page. The layout stays exactly as its author built it.")
+                    Text("Tim copies this page onto your site — its text, pictures, styles and fonts. From then on it is yours to keep publishing.")
                         .font(.system(size: 11.5))
                         .foregroundStyle(.secondary)
+                    Label("Yours to change: the words, the pictures, the links, the title and icons — and you can add a strip of your own at the top for a nav or a header.", systemImage: "pencil")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Label("Stays as it is: the layout. Somebody else built this page, and Tim keeps their design rather than guessing at a rebuild — so you cannot move or resize what is on it.", systemImage: "lock")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 } header: {
-                    Text("Make It Mine")
+                    Text("Adopt This Page")
                 }
                 Section("Destination") {
                     Picker("Site", selection: Binding(get: { site?.id }, set: { siteID = $0 })) {
@@ -7979,7 +7987,7 @@ struct ImportSheet: View {
                         .font(.system(size: 11, design: .monospaced))
                 }
                 Section {
-                    Text("Honest limits: the copy is a snapshot. Scripts and forms keep pointing at the original site, and linked pages aren't imported — their links lead back to the original.")
+                    Text("The copy is a snapshot, taken now. Scripts and forms still point at the original site, and linked pages aren't copied — those links lead back to where this came from.")
                         .font(.system(size: 10))
                         .foregroundStyle(.tertiary)
                 }
@@ -8002,7 +8010,7 @@ struct ImportSheet: View {
                     if working {
                         ProgressView().controlSize(.small)
                     } else {
-                        Text("Make It Mine")
+                        Text("Adopt Page")
                     }
                 }
                 .keyboardShortcut(.defaultAction)
@@ -8224,7 +8232,7 @@ struct AddressBar: View {
                   ? "Put it online — copy this page, and its pictures, to a site you own."
                   : (canCreate
                      ? "This page doesn't exist on your site yet — create and publish it at this address."
-                     : "Make It Mine — copy this page, with its images, styles, and fonts, onto your own site, ready to edit."))
+                     : "Adopt this page — copy it onto your own site, where its words and pictures become yours to change."))
 
             TextField("Search or enter address", text: $text, onEditingChanged: { began in
                 // begin-editing re-fires on keystrokes (the trace showed five
