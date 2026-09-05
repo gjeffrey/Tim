@@ -639,6 +639,14 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
     }
 
+    /// A page Tim laid out has a canvas; an imported snapshot does not,
+    /// and a shared object has nowhere to live on one.
+    public func hasCanvas(_ completion: @escaping (Bool) -> Void) {
+        webView.evaluateJavaScript("!!document.querySelector('[data-tim-canvas]')") { result, _ in
+            completion((result as? Bool) ?? false)
+        }
+    }
+
     /// Which shared objects this page has, which it keeps its own copy
     /// of, and which it has sent away.
     public func componentState(_ completion: @escaping ([String: Any]) -> Void) {
@@ -653,6 +661,13 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     public func setComponentOwn(_ name: String, _ own: Bool) {
         webView.evaluateJavaScript(
             "window.__timSetComponentOwn && window.__timSetComponentOwn(\(Self.jsLiteral(name)), \(own));",
+            completionHandler: nil
+        )
+    }
+
+    public func deleteComponent(_ name: String) {
+        webView.evaluateJavaScript(
+            "window.__timDeleteComponent && window.__timDeleteComponent(\(Self.jsLiteral(name)));",
             completionHandler: nil
         )
     }
@@ -2291,6 +2306,19 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (!wrap) { return; }
         checkpoint('component');
         if (own) { wrap.setAttribute('data-tim-own', ''); } else { wrap.removeAttribute('data-tim-own'); }
+        notifySel(true);
+      };
+      // Gone from this page with no opt-out recorded — the site-wide
+      // delete has already removed it everywhere else.
+      window.__timDeleteComponent = function (name) {
+        checkpoint('component');
+        var wrap = doc.querySelector('[data-tim-component="' + name + '"]');
+        if (wrap) {
+          if (sel && wrap.contains(sel)) { sel = null; }
+          wrap.remove();
+        }
+        setOmitList(omitList().filter(function (n) { return n !== name; }));
+        layout();
         notifySel(true);
       };
       window.__timRemoveComponent = function (name) {

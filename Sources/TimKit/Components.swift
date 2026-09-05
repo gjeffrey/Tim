@@ -138,6 +138,55 @@ public enum PageComponents {
         return nil
     }
 
+    /// Gone, everywhere: the region comes out of every page, the page's
+    /// opt-out is forgotten too (there is nothing left to opt out of), and
+    /// the master is deleted so nothing re-injects it. Returns the pages
+    /// that changed, for republishing.
+    @discardableResult
+    public static func deleteEverywhere(name: String, in folder: String) -> [String] {
+        var changed: [String] = []
+        if let subpaths = try? FileManager.default.subpathsOfDirectory(atPath: folder) {
+            for rel in subpaths where rel.hasSuffix(".html") {
+                if rel.hasPrefix("components/") || rel.contains(".git") || rel.contains("node_modules") { continue }
+                let path = (folder as NSString).appendingPathComponent(rel)
+                guard var pageHTML = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
+                let before = pageHTML
+                while let attr = pageHTML.range(of: "data-tim-component=\"\(name)\""),
+                      let open = pageHTML.range(of: "<", options: .backwards, range: pageHTML.startIndex..<attr.lowerBound),
+                      let region = regionBounds(in: pageHTML, attrEnd: attr.upperBound) {
+                    pageHTML.removeSubrange(open.lowerBound..<region.outerEnd)
+                }
+                pageHTML = forgetting(name, in: pageHTML)
+                if pageHTML != before {
+                    try? pageHTML.write(toFile: path, atomically: true, encoding: .utf8)
+                    changed.append(rel)
+                }
+            }
+        }
+        try? FileManager.default.removeItem(
+            atPath: (dir(folder) as NSString).appendingPathComponent(name + ".html")
+        )
+        return changed
+    }
+
+    /// Drops one name from a page's data-tim-omit list.
+    static func forgetting(_ name: String, in pageHTML: String) -> String {
+        guard let attr = pageHTML.range(of: "data-tim-omit=\""),
+              let end = pageHTML.range(of: "\"", range: attr.upperBound..<pageHTML.endIndex)
+        else { return pageHTML }
+        let remaining = pageHTML[attr.upperBound..<end.lowerBound]
+            .split(separator: " ").map(String.init).filter { $0 != name }
+        var out = pageHTML
+        if remaining.isEmpty {
+            // Take the whole attribute, and the space before it.
+            let start = pageHTML.range(of: " data-tim-omit=\"") ?? attr
+            out.replaceSubrange(start.lowerBound..<end.upperBound, with: "")
+        } else {
+            out.replaceSubrange(attr.upperBound..<end.lowerBound, with: remaining.joined(separator: " "))
+        }
+        return out
+    }
+
     /// A page may keep its OWN copy of a shared object: marked
     /// data-tim-own, the master stops overwriting it and its edits stop
     /// becoming the master. Everything else still follows the master, so

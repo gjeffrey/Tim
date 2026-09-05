@@ -3512,6 +3512,43 @@ struct SelectionBar: View {
     }
 }
 
+/// Deleting a shared object is a site-wide act: it comes out of every
+/// page, the master goes, and the pages that changed are republished.
+enum SharedObjects {
+    static func confirmDelete(_ label: String, site: Site, name: String, tab: Tab) {
+        let alert = NSAlert()
+        alert.messageText = "Delete “\(label)” from every page?"
+        alert.informativeText = "It is removed from every page on \(URL(string: site.origin)?.host() ?? site.origin), and the shared copy is thrown away. Pages that had it are republished. This can't be undone."
+        alert.addButton(withTitle: "Delete Everywhere")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.hasDestructiveAction = true
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        tab.deleteComponent(name)
+        let activity = ActivityCenter.shared.begin("Removing \(label) from every page…")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let changed = PageComponents.deleteEverywhere(name: name, in: site.localProjectPath)
+            let root = site.remoteRoot.hasSuffix("/") ? String(site.remoteRoot.dropLast()) : site.remoteRoot
+            switch site.target {
+            case .sftp:
+                for rel in changed {
+                    let path = (site.localProjectPath as NSString).appendingPathComponent(rel)
+                    if let html = try? String(contentsOfFile: path, encoding: .utf8) {
+                        _ = try? SFTP.upload(html: html, to: root + "/" + rel,
+                                             host: site.host, username: site.username, port: site.port)
+                    }
+                }
+            case .cloudflare:
+                _ = try? CloudflarePublisher.publish(site: site, folder: site.localProjectPath)
+            case .githubPages:
+                _ = try? GitHubPagesPublisher.publish(repo: site.localProjectPath, message: "Remove \(name)")
+            }
+            SiteWorkspace.snapshot(site.localProjectPath, message: "Remove \(name)")
+            DispatchQueue.main.async { ActivityCenter.shared.end(activity) }
+        }
+    }
+}
+
 /// The mark between two gradient colours is also how you swap them.
 /// Direction is the Angle control's job; this is the gesture people
 /// actually reach for when a gradient runs the wrong way round.
@@ -5278,6 +5315,11 @@ struct InspectorControls: View {
     }
 
     private var componentName: String { info["templateComponent"] as? String ?? "" }
+    private var componentLabel: String {
+        guard let site else { return "this object" }
+        return PageComponents.shared(in: site.localProjectPath)
+            .first { $0.name == componentName }?.label ?? "this object"
+    }
     private var componentIsOwn: Bool { (info["templateOwn"] as? Int) == 1 }
 
     private var templateCard: some View {
@@ -5334,6 +5376,13 @@ struct InspectorControls: View {
                         .help("Leaves it out of this page only. Page Options can put it back.")
                 }
                 .controlSize(.small)
+                if let site {
+                    Button("Delete from Every Page…", role: .destructive) {
+                        SharedObjects.confirmDelete(componentLabel, site: site, name: componentName, tab: tab)
+                    }
+                    .controlSize(.small)
+                    .help("Removes it from the whole site, not just this page.")
+                }
             }
         }
     }
@@ -5911,6 +5960,7 @@ struct PageOptionsControls: View {
     @State private var sharedObjects: [(name: String, label: String)] = []
     @State private var presentComponents: Set<String> = []
     @State private var ownComponents: Set<String> = []
+    @State private var pageHasCanvas = true
 
     init(tab: Tab, info: [String: Any], reload: @escaping () -> Void) {
         self.tab = tab
@@ -6084,6 +6134,12 @@ struct PageOptionsControls: View {
 
             if !sharedObjects.isEmpty {
                 card("On Every Page") {
+                    if !pageHasCanvas {
+                        Text("This page came from somewhere else, so it has no Tim layout to put shared objects in. Pages you make in Tim can carry them.")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     ForEach(sharedObjects, id: \.name) { object in
                         VStack(alignment: .leading, spacing: 3) {
                             Toggle(object.label, isOn: Binding(
@@ -6091,6 +6147,15 @@ struct PageOptionsControls: View {
                                 set: { on in setShared(object.name, on: on) }
                             ))
                             .font(.system(size: 12))
+                            .disabled(!pageHasCanvas)
+                            .contextMenu {
+                                if let site = currentSite {
+                                    Button("Delete from Every Page…", role: .destructive) {
+                                        SharedObjects.confirmDelete(object.label, site: site, name: object.name, tab: tab)
+                                        sharedObjects.removeAll { $0.name == object.name }
+                                    }
+                                }
+                            }
                             if presentComponents.contains(object.name), ownComponents.contains(object.name) {
                                 HStack(spacing: 6) {
                                     Text("This page keeps its own copy")
@@ -6369,6 +6434,7 @@ struct PageOptionsControls: View {
             return
         }
         let found = PageComponents.shared(in: site.localProjectPath)
+        tab.hasCanvas { pageHasCanvas = $0 }
         tab.componentState { state in
             let present = (state["present"] as? [[String: Any]]) ?? []
             sharedObjects = found
