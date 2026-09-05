@@ -6135,10 +6135,19 @@ struct PageOptionsControls: View {
             if !sharedObjects.isEmpty {
                 card("On Every Page") {
                     if !pageHasCanvas {
-                        Text("This page came from somewhere else, so it has no Tim layout to put shared objects in. Pages you make in Tim can carry them.")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("This page came from somewhere else, so it has no layout of Tim's for shared objects to live in. Tim can add a strip at the top — the page itself carries on underneath, exactly as its author built it.")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Button("Add a Strip at the Top") {
+                                tab.addCanvasBand { added in
+                                    if added { loadSharedObjects() }
+                                }
+                            }
+                            .controlSize(.small)
+                        }
+                        .padding(.bottom, 2)
                     }
                     ForEach(sharedObjects, id: \.name) { object in
                         VStack(alignment: .leading, spacing: 3) {

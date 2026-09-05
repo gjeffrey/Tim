@@ -639,6 +639,14 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
     }
 
+    /// Gives an imported page a strip of its own at the top, so shared
+    /// objects have somewhere to live. Answers whether one was added.
+    public func addCanvasBand(_ completion: @escaping (Bool) -> Void) {
+        webView.evaluateJavaScript("window.__timAddCanvasBand ? window.__timAddCanvasBand() : false") { result, _ in
+            completion((result as? Bool) ?? false)
+        }
+    }
+
     /// A page Tim laid out has a canvas; an imported snapshot does not,
     /// and a shared object has nowhere to live on one.
     public func hasCanvas(_ completion: @escaping (Bool) -> Void) {
@@ -1219,7 +1227,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         // The bottom is a pasteboard too: while editing, the canvas keeps
         // a third of a screen of empty rows under its last object, so
         // there is always somewhere to drop, drag, and grab handles.
-        'html.tim-editing .tim-canvas:not(.tim-container){padding-bottom:36vh !important}' +
+        'html.tim-editing .tim-canvas:not(.tim-container):not(.tim-band){padding-bottom:36vh !important}' +
         // Links look exactly as they will, and do nothing at all. A live
         // link while editing is a trapdoor: press one to drag the nav and
         // WebKit starts dragging the LINK, or follows it on release.
@@ -2308,6 +2316,38 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (own) { wrap.setAttribute('data-tim-own', ''); } else { wrap.removeAttribute('data-tim-own'); }
         notifySel(true);
       };
+      // An imported page is somebody else's HTML: their markup, their
+      // stylesheets, no Tim layout anywhere in it. Rather than wrap their
+      // page in a canvas and wreck it, this puts a narrow one ABOVE it —
+      // a strip your own objects can live in, with their page flowing on
+      // underneath exactly as its author built it. Every measurement is
+      // inline, so whatever stylesheet the page carries cannot reach it.
+      window.__timAddCanvasBand = function () {
+        if (doc.querySelector('[data-tim-canvas]')) { return false; }
+        checkpoint('band');
+        var band = doc.createElement('div');
+        band.className = 'tim-canvas tim-band';
+        band.setAttribute('data-tim-canvas', '');
+        band.setAttribute('style', [
+          'display:grid',
+          'grid-template-columns:repeat(24, 1fr)',
+          'grid-auto-rows:32px',
+          'gap:16px',
+          'align-items:start',
+          'box-sizing:border-box',
+          'width:100%',
+          'margin:0',
+          'padding:0 max(16px, calc(50vw - 660px))',
+          'min-height:0',
+          'position:relative',
+          'z-index:9999'
+        ].join(';'));
+        doc.body.insertBefore(band, doc.body.firstChild);
+        layout();
+        notifySel(true);
+        return true;
+      };
+
       // Gone from this page with no opt-out recorded — the site-wide
       // delete has already removed it everywhere else.
       window.__timDeleteComponent = function (name) {
