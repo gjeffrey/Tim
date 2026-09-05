@@ -651,6 +651,17 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         }
     }
 
+    /// Reads the page as material for a NEW page — palette, fonts,
+    /// writing, photographs — without needing the editor loaded.
+    public func pageSeed(_ completion: @escaping ([String: Any]) -> Void) {
+        webView.evaluateJavaScript(PageSeed.gatherJS) { result, _ in
+            guard let json = result as? String, let data = json.data(using: .utf8),
+                  let seed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            else { completion([:]); return }
+            completion(seed)
+        }
+    }
+
     /// Gives an imported page a strip of its own at the top, so shared
     /// objects have somewhere to live. Answers whether one was added.
     public func addCanvasBand(_ completion: @escaping (Bool) -> Void) {

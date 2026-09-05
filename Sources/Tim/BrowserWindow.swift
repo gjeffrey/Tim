@@ -7952,8 +7952,21 @@ struct ImportSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var siteID: UUID?
     @State private var path = ""
+    @State private var mode = "adopt"
     @State private var working = false
     @State private var status: String?
+
+    /// A seed is a page of your own, so it does not belong under
+    /// imported/ with somebody else's name on the folder.
+    private func defaultPath(for url: URL) -> String {
+        guard mode == "seed" else { return PageImporter.defaultPath(for: url) }
+        let slug = (url.host() ?? "page")
+            .replacingOccurrences(of: "www.", with: "")
+            .map { $0.isLetter || $0.isNumber ? String($0) : "-" }
+            .joined()
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return "\(slug.isEmpty ? "new" : slug)/index.html"
+    }
 
     private var site: Site? {
         siteStore.sites.first(where: { $0.id == siteID }) ?? siteStore.sites.first
@@ -7963,19 +7976,40 @@ struct ImportSheet: View {
         VStack(spacing: 0) {
             Form {
                 Section {
-                    Text("Tim copies this page onto your site — its text, pictures, styles and fonts. From then on it is yours to keep publishing.")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
-                    Label("Yours to change: the words, the pictures, the links, the title and icons — and you can add a strip of your own at the top for a nav or a header.", systemImage: "pencil")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Label("Stays as it is: the layout. Somebody else built this page, and Tim keeps their design rather than guessing at a rebuild — so you cannot move or resize what is on it.", systemImage: "lock")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Picker("", selection: $mode) {
+                        Text("Adopt this page").tag("adopt")
+                        Text("Start a new page from it").tag("seed")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+
+                    if mode == "adopt" {
+                        Text("Tim copies this page onto your site — its text, pictures, styles and fonts. From then on it is yours to keep publishing.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.secondary)
+                        Label("Yours to change: the words, the pictures, the links, the title and icons — and you can add a strip of your own at the top for a nav or a header.", systemImage: "pencil")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Label("Stays as it is: the layout. Somebody else built this page, and Tim keeps their design rather than guessing at a rebuild — so you cannot move or resize what is on it.", systemImage: "lock")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text("Tim takes this page's colours, its fonts, its writing and its photographs, and composes a new page out of them — on Tim's own grid.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.secondary)
+                        Label("Yours entirely: everything moves, resizes, restacks for phones and carries your shared objects, exactly like a page you made yourself.", systemImage: "square.grid.2x2")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Label("Not a copy: the arrangement is Tim's, not theirs. This is a starting point — expect to move things around.", systemImage: "wand.and.stars")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 } header: {
-                    Text("Adopt This Page")
+                    Text(mode == "adopt" ? "Adopt This Page" : "Start From This Page")
                 }
                 Section("Destination") {
                     Picker("Site", selection: Binding(get: { site?.id }, set: { siteID = $0 })) {
@@ -7986,10 +8020,12 @@ struct ImportSheet: View {
                     TextField("Path", text: $path)
                         .font(.system(size: 11, design: .monospaced))
                 }
-                Section {
-                    Text("The copy is a snapshot, taken now. Scripts and forms still point at the original site, and linked pages aren't copied — those links lead back to where this came from.")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
+                if mode == "adopt" {
+                    Section {
+                        Text("The copy is a snapshot, taken now. Scripts and forms still point at the original site, and linked pages aren't copied — those links lead back to where this came from.")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                    }
                 }
                 if let status {
                     Section {
@@ -8005,12 +8041,12 @@ struct ImportSheet: View {
                 Button("Cancel") { dismiss() }
                 Spacer()
                 Button {
-                    runImport()
+                    if mode == "adopt" { runImport() } else { runSeed() }
                 } label: {
                     if working {
                         ProgressView().controlSize(.small)
                     } else {
-                        Text("Adopt Page")
+                        Text(mode == "adopt" ? "Adopt Page" : "Create Page")
                     }
                 }
                 .keyboardShortcut(.defaultAction)
@@ -8019,8 +8055,11 @@ struct ImportSheet: View {
             .padding(12)
         }
         .frame(width: 470, height: 440)
+        .onChange(of: mode) { _, _ in
+            if let url = tab.webView.url { path = defaultPath(for: url) }
+        }
         .onAppear {
-            if let url = tab.webView.url { path = PageImporter.defaultPath(for: url) }
+            if let url = tab.webView.url { path = defaultPath(for: url) }
         }
     }
 
@@ -8051,58 +8090,99 @@ struct ImportSheet: View {
             status = resources.isEmpty ? "Copying the page…" : "Fetching \(resources.count) assets…"
             Task {
                 let page = await PageImporter.localize(html: html, resources: resources, pageURL: pageURL)
-                do {
-                    // Mirror first, then the server.
-                    try PageWriter.write(html: page.html, folder: siteCopy.localProjectPath, relativePath: rel)
-                    let relDir = (rel as NSString).deletingLastPathComponent
-                    let assetsDirLocal = URL(fileURLWithPath: siteCopy.localProjectPath)
-                        .appendingPathComponent(relDir.isEmpty ? "assets" : relDir + "/assets")
-                    try FileManager.default.createDirectory(at: assetsDirLocal, withIntermediateDirectories: true)
-                    for asset in page.assets {
-                        try asset.data.write(to: assetsDirLocal.appendingPathComponent(asset.name))
-                    }
-                    await MainActor.run { status = "Publishing…" }
-                    switch siteCopy.target {
-                    case .sftp:
-                        let root = siteCopy.remoteRoot.hasSuffix("/") ? String(siteCopy.remoteRoot.dropLast()) : siteCopy.remoteRoot
-                        var batch = ""
-                        var dir = root
-                        for seg in relDir.split(separator: "/") {
-                            dir += "/" + seg
-                            batch += "-mkdir \"\(dir)\"\n"
-                        }
-                        let pageLocal = URL(fileURLWithPath: siteCopy.localProjectPath).appendingPathComponent(rel).path
-                        batch += "put \"\(pageLocal)\" \"\(root)/\(rel)\"\n"
-                        if !page.assets.isEmpty {
-                            let remoteAssets = relDir.isEmpty ? "\(root)/assets" : "\(root)/\(relDir)/assets"
-                            batch += "-mkdir \"\(remoteAssets)\"\n"
-                            for asset in page.assets {
-                                batch += "put \"\(assetsDirLocal.appendingPathComponent(asset.name).path)\" \"\(remoteAssets)/\(asset.name)\"\n"
-                            }
-                        }
-                        _ = try SFTP.run(batch: batch, host: siteCopy.host, username: siteCopy.username, port: siteCopy.port)
-                    case .cloudflare:
-                        _ = try CloudflarePublisher.publish(site: siteCopy)
-                    case .githubPages:
-                        _ = try GitHubPagesPublisher.publish(repo: siteCopy.localProjectPath, message: "Imported \(pageURL.host() ?? "page") with Tim")
-                    }
-                    await MainActor.run {
-                        working = false
-                        let origin = siteCopy.origin.hasSuffix("/") ? String(siteCopy.origin.dropLast()) : siteCopy.origin
-                        let newURL = origin + "/" + rel
-                        PageRegistry.record(url: newURL, title: (rel as NSString).lastPathComponent)
-                        dismiss()
-                        tab.navigate(to: newURL)
-                    }
-                } catch {
-                    await MainActor.run {
-                        working = false
-                        status = "Couldn’t publish: \(error.localizedDescription)"
-                    }
-                }
+                await publish(page, rel: rel, site: siteCopy,
+                              note: "Imported \(pageURL.host() ?? "page") with Tim")
             }
         }
     }
+
+    /// Reads the page as material and composes a new one from it.
+    private func runSeed() {
+        guard let chosen = site, let pageURL = tab.webView.url else { return }
+        working = true
+        status = "Reading the page…"
+        tab.pageSeed { seed in
+            guard !seed.isEmpty else {
+                working = false
+                status = "Couldn’t read the page."
+                return
+            }
+            var rel = path
+            while rel.hasPrefix("/") { rel.removeFirst() }
+            var resolved = chosen
+            if resolved.localProjectPath.isEmpty {
+                resolved.localProjectPath = SiteWorkspace.defaultFolder(for: resolved.name.isEmpty ? resolved.origin : resolved.name)
+                siteStore.upsert(resolved)
+            }
+            SiteWorkspace.ensure(resolved.localProjectPath)
+            let siteCopy = resolved
+            let composed = PageSeed.compose(seed)
+            status = composed.resources.isEmpty ? "Composing the page…" : "Fetching \(composed.resources.count) pictures…"
+            Task {
+                let page = await PageImporter.localize(
+                    html: composed.html, resources: composed.resources, pageURL: pageURL
+                )
+                await publish(page, rel: rel, site: siteCopy,
+                              note: "New page from \(pageURL.host() ?? "a page") with Tim")
+            }
+        }
+    }
+
+    /// Writes the page into the mirror with its assets, publishes it, and
+    /// opens it — the same last mile whether the page was adopted whole or
+    /// composed fresh from what another page is made of.
+    private func publish(_ page: PageImporter.ImportedPage, rel: String, site siteCopy: Site, note: String) async {
+do {
+                // Mirror first, then the server.
+                try PageWriter.write(html: page.html, folder: siteCopy.localProjectPath, relativePath: rel)
+                let relDir = (rel as NSString).deletingLastPathComponent
+                let assetsDirLocal = URL(fileURLWithPath: siteCopy.localProjectPath)
+                    .appendingPathComponent(relDir.isEmpty ? "assets" : relDir + "/assets")
+                try FileManager.default.createDirectory(at: assetsDirLocal, withIntermediateDirectories: true)
+                for asset in page.assets {
+                    try asset.data.write(to: assetsDirLocal.appendingPathComponent(asset.name))
+                }
+                await MainActor.run { status = "Publishing…" }
+                switch siteCopy.target {
+                case .sftp:
+                    let root = siteCopy.remoteRoot.hasSuffix("/") ? String(siteCopy.remoteRoot.dropLast()) : siteCopy.remoteRoot
+                    var batch = ""
+                    var dir = root
+                    for seg in relDir.split(separator: "/") {
+                        dir += "/" + seg
+                        batch += "-mkdir \"\(dir)\"\n"
+                    }
+                    let pageLocal = URL(fileURLWithPath: siteCopy.localProjectPath).appendingPathComponent(rel).path
+                    batch += "put \"\(pageLocal)\" \"\(root)/\(rel)\"\n"
+                    if !page.assets.isEmpty {
+                        let remoteAssets = relDir.isEmpty ? "\(root)/assets" : "\(root)/\(relDir)/assets"
+                        batch += "-mkdir \"\(remoteAssets)\"\n"
+                        for asset in page.assets {
+                            batch += "put \"\(assetsDirLocal.appendingPathComponent(asset.name).path)\" \"\(remoteAssets)/\(asset.name)\"\n"
+                        }
+                    }
+                    _ = try SFTP.run(batch: batch, host: siteCopy.host, username: siteCopy.username, port: siteCopy.port)
+                case .cloudflare:
+                    _ = try CloudflarePublisher.publish(site: siteCopy)
+                case .githubPages:
+                    _ = try GitHubPagesPublisher.publish(repo: siteCopy.localProjectPath, message: note)
+                }
+                await MainActor.run {
+                    working = false
+                    let origin = siteCopy.origin.hasSuffix("/") ? String(siteCopy.origin.dropLast()) : siteCopy.origin
+                    let newURL = origin + "/" + rel
+                    PageRegistry.record(url: newURL, title: (rel as NSString).lastPathComponent)
+                    dismiss()
+                    tab.navigate(to: newURL)
+                }
+            } catch {
+                await MainActor.run {
+                    working = false
+                    status = "Couldn’t publish: \(error.localizedDescription)"
+                }
+            }
+    }
+
 }
 
 
