@@ -1364,6 +1364,7 @@ struct TabContentView: View {
     @State private var previewHTML = ""
     @State private var viewMode: Int = 0  // 0 desktop · 1 both · 2 iPhone
     @State private var showImportSheet = false
+    @State private var importMode = "adopt"
     @State private var showShowcaseSheet = false
     @State private var showMoveSheet = false
     @State private var moveSourceSite: Site?
@@ -1381,6 +1382,7 @@ struct TabContentView: View {
         return siteStore.derivedSite(for: url)
     }
     private var isPageEditable: Bool { siteStore.isEditable(pageURL, timAuthored: tab.isTimPage) }
+    private var canEditNow: Bool { tab.isEditing || (isPageEditable && previewSha == nil) }
 
     /// Tim's signature: a thin yellow frame on the page's own edge when
     /// the page is yours, a touch stronger while you're editing it.
@@ -1571,7 +1573,7 @@ struct TabContentView: View {
             if store.selectedTab === tab { showShowcaseSheet = true }
         }
         .sheet(isPresented: $showImportSheet) {
-            ImportSheet(tab: tab)
+            ImportSheet(tab: tab, initialMode: importMode)
         }
         .onChange(of: tab.isLoading) { _, loading in
             // Thumbnails fall out of browsing: snapshot owned pages on
@@ -1719,7 +1721,7 @@ struct TabContentView: View {
     private var addressCapsule: some View {
         AddressBar(tab: tab,
                    onCreate: { createMissingPage() },
-                   onClaim: { showImportSheet = true },
+                   onClaim: { mode in importMode = mode; showImportSheet = true },
                    onDraft: { askAboutDraft() },
                    onAddress: { NotificationCenter.default.post(name: .timMovePage, object: nil) })
     }
@@ -2534,13 +2536,20 @@ struct TabContentView: View {
                       systemImage: tab.isEditing ? "checkmark" : "pencil")
                     .labelStyle(.titleAndIcon)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.black)
+                    // Brand yellow with black on it is the button you can
+                    // press. Wearing that while doing nothing is how a
+                    // disabled control reads as a broken one.
+                    .foregroundStyle(canEditNow ? Color.black : Color.secondary)
                     .padding(.horizontal, 3)
             }
             .buttonStyle(.borderedProminent)
-            .tint(timYellow)
-            .disabled(!tab.isEditing && (!isPageEditable || previewSha != nil))
-            .help(tab.isEditing ? "Done (⌘E) — your changes are saved" : "Edit This Page (⌘E)")
+            .tint(canEditNow ? timYellow : Color.secondary.opacity(0.16))
+            .disabled(!canEditNow)
+            .help(tab.isEditing
+                  ? "Done (⌘E) — your changes are saved"
+                  : (canEditNow
+                     ? "Edit This Page (⌘E)"
+                     : "This page isn't yours to edit. Connect the site it lives on, or use the menu at the start of the address to start a page of your own from it."))
 
             Menu {
                 ForEach(siteStore.sites) { site in
@@ -7948,6 +7957,7 @@ struct ShowcaseSheet: View {
 
 struct ImportSheet: View {
     @ObservedObject var tab: Tab
+    var initialMode: String = "adopt"
     @EnvironmentObject var siteStore: SiteStore
     @Environment(\.dismiss) private var dismiss
     @State private var siteID: UUID?
@@ -8059,6 +8069,7 @@ struct ImportSheet: View {
             if let url = tab.webView.url { path = defaultPath(for: url) }
         }
         .onAppear {
+            mode = initialMode
             if let url = tab.webView.url { path = defaultPath(for: url) }
         }
     }
@@ -8196,7 +8207,9 @@ do {
 struct AddressBar: View {
     @ObservedObject var tab: Tab
     let onCreate: () -> Void
-    let onClaim: () -> Void
+    /// Carries which of the two the menu asked for: adopt it whole, or
+    /// compose a new page from what it's made of.
+    let onClaim: (String) -> Void
     var onDraft: () -> Void = {}
     /// Put a local page online, or change a published page's address —
     /// the same sheet, because they are the same question.
@@ -8269,8 +8282,12 @@ struct AddressBar: View {
                 } else if isEditable {
                     Button("Change Address…") { onAddress() }.disabled(tab.isEditing)
                     Button("Duplicate…") { NotificationCenter.default.post(name: .timDuplicatePage, object: nil) }
+                } else if canClaim {
+                    // Someone else's page: the two honest things to do with it.
+                    Button("Adopt This Page…") { onClaim("adopt") }
+                    Button("Start a New Page From This…") { onClaim("seed") }
                 }
-                if isEditable || isLocalPage { Divider() }
+                if isEditable || isLocalPage || canClaim { Divider() }
                 Button("Copy Link") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(tab.urlString, forType: .string)
@@ -8294,7 +8311,7 @@ struct AddressBar: View {
             // Always in the layout, shown by opacity — a structural change
             // beside the field would restart its editing session.
             Button {
-                if canPublish { onAddress() } else if canCreate { onCreate() } else if canClaim { onClaim() }
+                if canPublish { onAddress() } else if canCreate { onCreate() } else if canClaim { onClaim("adopt") }
             } label: {
                 Image(systemName: canPublish ? "arrow.up.circle.fill" : (canCreate ? "plus.circle.fill" : "arrow.down.circle.fill"))
                     .font(.system(size: 13, weight: .medium))
