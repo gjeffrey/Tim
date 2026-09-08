@@ -16,7 +16,10 @@ enum PhotosBrowser {
     /// assets are copied out into a temporary folder, so everything after
     /// this point is Tim's ordinary media pipeline.
     static func pick(multiple: Bool, completion: @escaping ([URL]) -> Void) {
-        guard let host = (NSApp.keyWindow ?? NSApp.mainWindow)?.contentViewController else {
+        // One picker at a time. A second request while one is up is the
+        // same request heard twice, not a second wish.
+        guard retained == nil else { return }
+        guard let hostWindow = NSApp.keyWindow ?? NSApp.mainWindow else {
             completion([])
             return
         }
@@ -30,13 +33,17 @@ enum PhotosBrowser {
         config.preferredAssetRepresentationMode = .current
 
         let picker = PHPickerViewController(configuration: config)
-        // A sheet with no stated size opens at the view controller's
-        // minimum, which for the picker is a postage stamp.
-        picker.preferredContentSize = NSSize(width: 820, height: 600)
-        let delegate = Delegate(completion: completion)
+        // The picker ignores preferredContentSize when presented as a view
+        // controller sheet and opens at its minimum — a postage stamp. In
+        // its own window, the window's size is the size.
+        let sheet = NSWindow(contentViewController: picker)
+        sheet.styleMask = [.titled, .closable, .resizable]
+        sheet.setContentSize(NSSize(width: 860, height: 620))
+        sheet.minSize = NSSize(width: 560, height: 420)
+        let delegate = Delegate(host: hostWindow, sheet: sheet, completion: completion)
         picker.delegate = delegate
         retained = delegate
-        host.presentAsSheet(picker)
+        hostWindow.beginSheet(sheet)
     }
 
     /// The picker's delegate is not retained by the picker.
@@ -44,10 +51,17 @@ enum PhotosBrowser {
 
     private final class Delegate: NSObject, PHPickerViewControllerDelegate {
         private let completion: ([URL]) -> Void
-        init(completion: @escaping ([URL]) -> Void) { self.completion = completion }
+        private let host: NSWindow
+        private let sheet: NSWindow
+        init(host: NSWindow, sheet: NSWindow, completion: @escaping ([URL]) -> Void) {
+            self.host = host
+            self.sheet = sheet
+            self.completion = completion
+        }
 
         func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
-            picker.dismiss(nil)
+            host.endSheet(sheet)
+            sheet.orderOut(nil)
             guard !results.isEmpty else { finish([]); return }
             let dir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("tim-photos-\(UUID().uuidString.prefix(8))")

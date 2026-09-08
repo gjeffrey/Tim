@@ -2781,7 +2781,10 @@ struct EditingToolbar: View {
             if let src = note.userInfo?["src"] as? String { upscaleSelectedMedia(src: src) }
         }
         .onReceive(NotificationCenter.default.publisher(for: .timReplaceFromPhotos)) { _ in
-            replaceFromPhotos()
+            // Every open tab hears this. Only the one being edited answers —
+            // thirteen tabs once meant thirteen pickers, twelve of them with
+            // no one listening for Cancel.
+            if tab.isEditing { replaceFromPhotos() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .timReplaceMedia)) { _ in
             if tab.isEditing { replaceSelectedMedia() }
@@ -5047,6 +5050,7 @@ struct InspectorControls: View {
     @State private var columnCount: Int = 1
     @State private var rotation: Double = 0
     @State private var showOnMobile: Bool = true
+    @State private var wrap: String = "none"
     @State private var fillIsGradient: Bool = false
     @State private var fillEndColor: Color = .blue
     @State private var fillAngle: Double = 180
@@ -5102,6 +5106,7 @@ struct InspectorControls: View {
         _columnCount = State(initialValue: min(4, max(1, info["columns"] as? Int ?? 1)))
         _rotation = State(initialValue: info["rotation"] as? Double ?? 0)
         _showOnMobile = State(initialValue: (info["mobileHidden"] as? Int) != 1)
+        _wrap = State(initialValue: info["wrap"] as? String ?? "none")
         let video = info["video"] as? [String: Any] ?? [:]
         _videoAutoplay = State(initialValue: (video["autoplay"] as? Int) == 1)
         _videoRepeat = State(initialValue: (video["bounce"] as? Int) == 1
@@ -5877,6 +5882,22 @@ struct InspectorControls: View {
                 .onChange(of: rotation) { _, value in
                     tab.setSelectionStyle("transform", value == 0 ? "" : "rotate(\(String(format: "%g", value))deg)")
                 }
+            if !isText {
+                HStack(spacing: 8) {
+                    rowLabel("Text Wrap")
+                    Picker("", selection: $wrap) {
+                        Text("Automatic").tag("auto")
+                        Text("Around").tag("around")
+                        Text("Above and Below").tag("above-below")
+                        Text("None").tag("none")
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .onChange(of: wrap) { _, mode in tab.setSelectionWrap(mode) }
+                    .help("How text boxes that overlap this object treat it. Around flows text beside it; Above and Below steps over it; Automatic picks by width. On phones nothing overlaps, so this shapes the desktop.")
+                }
+            }
             Toggle("Show on iPhone", isOn: $showOnMobile)
                 .font(.system(size: 11))
                 .onChange(of: showOnMobile) { _, on in

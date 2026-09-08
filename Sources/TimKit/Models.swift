@@ -802,6 +802,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
 
     /// Live styling from the Inspector: sets one CSS property on the
     /// selected element (design vocabulary in the UI, CSS underneath).
+    /// How text treats the selected object: "auto", "around", "above-below", or "none".
+    public func setSelectionWrap(_ mode: String) {
+        webView.evaluateJavaScript("window.__timSetWrap && window.__timSetWrap(\(Self.jsLiteral(mode)));", completionHandler: nil)
+    }
     public func setSelectionStyle(_ property: String, _ value: String) {
         webView.evaluateJavaScript(
             "window.__timSetStyle && window.__timSetStyle(\(Self.jsLiteral(property)), \(Self.jsLiteral(value)));",
@@ -1724,9 +1728,100 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           }
         });
       }
+      // Text wrap, the Pages way: an object says how text should treat it —
+      // flow Around it, stay Above and Below it, or ignore it — and every
+      // text box it overlaps obeys. CSS has no way to make one box's text
+      // flow around a sibling, so each overlapping text box gets an
+      // invisible float the size of the overlap, sitting where the object
+      // sits. Widths are written in grid units so the wrap holds at any
+      // desktop width; heights are rows, which never change. The floats
+      // are part of the page (a published page needs no script), and
+      // phones hide them — nothing overlaps in a stack.
+      var WRAP_GAP = 12;
+      function wrapMode(el) { return (el.getAttribute && el.getAttribute('data-tim-wrap')) || 'none'; }
+      function updateWraps() {
+        var canvas = canvasEl();
+        if (!canvas) { return; }
+        var texts = Array.prototype.filter.call(canvas.children, function (c) {
+          return c.classList && c.classList.contains('tim-text') && !c.classList.contains('tim-nav');
+        });
+        var wrappers = Array.prototype.filter.call(canvas.querySelectorAll('[data-tim-wrap]'), function (el) {
+          return wrapMode(el) !== 'none' && desktopPlacement(el);
+        });
+        texts.forEach(function (t) {
+          Array.prototype.forEach.call(t.querySelectorAll('.tim-wrap-spacer'), function (sp) { sp.remove(); });
+          var tp = desktopPlacement(t);
+          if (!tp || !wrappers.length) { return; }
+          var tCols = tp.ce - tp.cs;
+          var specs = [];
+          wrappers.forEach(function (w) {
+            if (w === t || w.contains(t) || t.contains(w)) { return; }
+            var wp = desktopPlacement(w);
+            var cs = Math.max(tp.cs, wp.cs), ce = Math.min(tp.ce, wp.ce);
+            var rs = Math.max(tp.rs, wp.rs), re = Math.min(tp.re, wp.re);
+            if (ce <= cs || re <= rs) { return; }
+            var mode = wrapMode(w);
+            // Automatic: a narrow object is wrapped around; a wide one is
+            // stepped over.
+            if (mode === 'auto') { mode = ((wp.ce - wp.cs) <= tCols * 0.55) ? 'around' : 'above-below'; }
+            var side = 'left';
+            if (mode === 'around') { side = ((wp.cs + wp.ce) / 2 <= (tp.cs + tp.ce) / 2) ? 'left' : 'right'; }
+            var kCols = side === 'left' ? (ce - tp.cs) : (tp.ce - cs);
+            if (mode === 'around' && kCols >= tCols) { mode = 'above-below'; }
+            specs.push({ mode: mode, side: side, kCols: kCols, rows: re - rs, offset: rs - tp.rs });
+          });
+          if (!specs.length) { return; }
+          specs.sort(function (a, b) { return a.offset - b.offset; });
+          var padTop = parseFloat(getComputedStyle(t).paddingTop) || 0;
+          var frag = doc.createDocumentFragment();
+          // Floats can't be told where to start — a top margin becomes part
+          // of the box text avoids, and a full-width one walls off the whole
+          // column. So each spacer is two floats: a zero-width one whose
+          // height is the distance down to the object, and the real one,
+          // which clears it and lands exactly at the object's top. Left,
+          // right and full-width spacers each keep their own running bottom.
+          var bottom = { left: 0, right: 0 };
+          function spacer(side, clear, width, height) {
+            var el = doc.createElement('span');
+            el.className = 'tim-wrap-spacer';
+            el.setAttribute('contenteditable', 'false');
+            el.setAttribute('aria-hidden', 'true');
+            el.style.cssText = 'float:' + side + ';clear:' + clear + ';width:' + width + ';height:' + height + 'px;pointer-events:none;';
+            frag.appendChild(el);
+          }
+          specs.forEach(function (sp) {
+            var full = sp.mode !== 'around';
+            var side = full ? 'left' : sp.side;
+            var clear = full ? 'both' : side;
+            var top = Math.max(0, sp.offset * 48 - WRAP_GAP - padTop);
+            var height = sp.rows * 48 - 16 + 2 * WRAP_GAP;
+            var from = full ? Math.max(bottom.left, bottom.right) : bottom[side];
+            if (top > from) { spacer(side, clear, '0px', top - from); from = top; }
+            // One column of this text box = (its width − the gaps) / its columns.
+            var width = full ? '100%'
+              : 'calc((100% - ' + ((tCols - 1) * 16) + 'px) / ' + tCols + ' * ' + sp.kCols + ' + ' + ((sp.kCols - 1) * 16 + WRAP_GAP) + 'px)';
+            spacer(side, clear, width, height);
+            if (full) { bottom.left = bottom.right = from + height; } else { bottom[side] = from + height; }
+          });
+          t.insertBefore(frag, t.firstChild);
+        });
+      }
+      window.__timUpdateWraps = updateWraps;
+      window.__timSetWrap = function (mode) {
+        if (!sel) { return; }
+        checkpoint('wrap');
+        groupAll().forEach(function (member) {
+          if (!mode || mode === 'none') { member.removeAttribute('data-tim-wrap'); }
+          else { member.setAttribute('data-tim-wrap', mode); }
+        });
+        layout();
+        notifySel(true);
+      };
+
       function layout() {
         pinPageColumns();
         markOffPage();
+        updateWraps();
         if (!sel || !doc.contains(sel)) { hide(); return; }
         var r = rectOf(sel);
         // The selection box matches the object's own frame — a rotated
@@ -3027,6 +3122,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
               tag: sel.tagName.toLowerCase(),
               timStyle: timStyle,
               isText: (sel.classList && (sel.classList.contains('tim-text') || sel.classList.contains('tim-nav'))) ? 1 : 0,
+              wrap: wrapMode(sel),
               fontSize: parseFloat(cs.fontSize) || 16,
               fontWeight: parseInt(cs.fontWeight, 10) || 400,
               align: cs.textAlign,
@@ -3695,6 +3791,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       window.__timCanvasLayer = true;
       window.__timCanvasOn = function () {
         active = true;
+        updateWraps();
         overlay.style.display = 'block';
         doc.documentElement.classList.add('tim-editing');
         doc.documentElement.classList.remove('tim-reveal', 'tim-fade');
