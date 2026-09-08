@@ -178,8 +178,9 @@ struct TimApp: App {
             CommandMenu("Page") {
                 Button("Toggle Edit Mode") { NotificationCenter.default.post(name: .timToggleEdit, object: nil) }
                     .keyboardShortcut("e", modifiers: .command)
+                // Not gated on editing: the menu wouldn't notice the tab
+                // starting to edit, and the handler starts editing itself.
                 Button("Change Theme…") { NotificationCenter.default.post(name: .timChangeTheme, object: nil) }
-                    .disabled(!(store.selectedTab?.isEditing ?? false))
                 Button("Toggle Mobile Preview") {
                     if let tab = store.selectedTab { tab.setMobilePreview(!tab.isMobilePreview) }
                 }

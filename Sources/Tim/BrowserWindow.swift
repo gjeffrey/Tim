@@ -1358,6 +1358,7 @@ struct TabContentView: View {
     @State private var addressText: String = ""
     @State private var showPublishSheet = false
     @State private var showConnectSheet = false
+    @State private var showChangeTheme = false
     @State private var editingSite: Site?
     @State private var newPageSite: Site?
     @State private var previewSha: String?
@@ -1596,6 +1597,14 @@ struct TabContentView: View {
         }
         .sheet(isPresented: $showPublishSheet) {
             PublishSheet(tab: tab, site: matchedSite)
+        }
+        .sheet(isPresented: $showChangeTheme) {
+            ChangeThemeSheet(tab: tab)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .timChangeTheme)) { _ in
+            guard store.selectedTab === tab, isPageEditable else { NSSound.beep(); return }
+            if !tab.isEditing { tab.setEditing(true) }
+            showChangeTheme = true
         }
         .sheet(isPresented: $showConnectSheet) {
             SiteEditorSheet(site: nil, prefillOrigin: originString(from: pageURL))
@@ -2618,7 +2627,6 @@ struct EditingToolbar: View {
     @State private var showLinkPopover = false
     @State private var showThemePanel = false
     @State private var showNewPageSheet = false
-    @State private var showChangeTheme = false
     @State private var navBuilderSite: Site?
     @State private var statusMessage: String?
     @State private var isWorking = false
@@ -2767,12 +2775,6 @@ struct EditingToolbar: View {
         .overlay(alignment: .bottom) {
             // The editing strip carries the ownership color, quietly.
             Rectangle().fill(timYellow.opacity(0.55)).frame(height: 1)
-        }
-        .sheet(isPresented: $showChangeTheme) {
-            ChangeThemeSheet(tab: tab)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .timChangeTheme)) { _ in
-            if tab.isEditing { showChangeTheme = true }
         }
         .sheet(isPresented: $showNewPageSheet) {
             NewPageSheet(site: site, tab: tab)
@@ -6372,6 +6374,11 @@ struct PageOptionsControls: View {
                         .font(.system(size: 10))
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
+                    Button("Change Theme…") {
+                        NotificationCenter.default.post(name: .timChangeTheme, object: nil)
+                    }
+                    .controlSize(.small)
+                    .help("The look of the whole site — type, colors, spacing, the pieces. Objects stay where they are.")
                     if currentSite != nil {
                         Toggle("Changes here stay on this page", isOn: $ownTheme)
                             .font(.system(size: 10))
