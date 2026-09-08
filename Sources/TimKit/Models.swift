@@ -46,6 +46,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     /// for is a page acting on its own, and is not a reason to close the
     /// editor and stash a draft.
     private var deliberateNavigation = false
+    /// The address to retry from the load-failure page.
+    public var pendingRetryURL: String = ""
     /// An unpublished draft of this page exists on this Mac.
     @Published public var hasDraft = false
     /// A non-empty text selection inside the text being edited: viewport
@@ -619,6 +621,25 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
                 self.pageInfo(attemptsLeft: attemptsLeft - 1, completion)
             }
         }
+    }
+
+    /// Swaps the page's look for a theme's: styles, named styles, templates
+    /// and fonts. Objects stay where they are. Undoable; the previous look
+    /// is kept for the session so it can be restored.
+    public func applyTheme(styles: String, overrides: [String: String], templates: [String: [String: Any]], fonts: String, defaultTemplate: String) {
+        let o = (try? JSONSerialization.data(withJSONObject: overrides)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+        let t = (try? JSONSerialization.data(withJSONObject: templates)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+        webView.evaluateJavaScript(
+            "window.__timApplyTheme && window.__timApplyTheme(\(Self.jsLiteral(styles)), \(Self.jsLiteral(o)), \(Self.jsLiteral(t)), \(Self.jsLiteral(fonts)), \(Self.jsLiteral(defaultTemplate)));",
+            completionHandler: nil
+        )
+    }
+    public func restoreTheme() {
+        webView.evaluateJavaScript("window.__timRestoreTheme && window.__timRestoreTheme();", completionHandler: nil)
+    }
+    /// Replaces the page's own objects with a layout's. Shared objects stay.
+    public func replaceObjects(html: String) {
+        webView.evaluateJavaScript("window.__timReplaceObjects && window.__timReplaceObjects(\(Self.jsLiteral(html)));", completionHandler: nil)
     }
 
     /// Edits a page option — applied to the page's template, so every page
@@ -2546,9 +2567,13 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       function takeSnapshot() {
         var c = canvasEl();
         if (!c) { return null; }
-        return { c: c.innerHTML, p: JSON.stringify(templateProps), m: JSON.stringify(mobileLayout), mm: mobileLayoutMode, t: JSON.stringify(mobileType) };
+        var stylesEl = doc.querySelector('style[data-tim-styles]');
+        // The look rides along too — a theme or a named-style edit undoes
+        // like anything else.
+        return { c: c.innerHTML, p: JSON.stringify(templateProps), m: JSON.stringify(mobileLayout), mm: mobileLayoutMode, t: JSON.stringify(mobileType),
+                 s: stylesEl ? stylesEl.outerHTML : '', o: JSON.stringify(styleRules), tn: doc.body.getAttribute('data-tim-template') || 'default' };
       }
-      function sameSnapshot(a, b) { return !!a && !!b && a.c === b.c && a.p === b.p && a.m === b.m && a.mm === b.mm && a.t === b.t; }
+      function sameSnapshot(a, b) { return !!a && !!b && a.c === b.c && a.p === b.p && a.m === b.m && a.mm === b.mm && a.t === b.t && a.s === b.s && a.o === b.o && a.tn === b.tn; }
       function checkpoint(tag) {
         var snap = takeSnapshot();
         if (!snap) { return; }
@@ -2578,6 +2603,18 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           stale.classList.remove('tim-media-replacing');
         });
         try { templateProps = JSON.parse(snap.p) || {}; } catch (e) { templateProps = {}; }
+        if (snap.s) {
+          var curStyles = doc.querySelector('style[data-tim-styles]');
+          if (!curStyles || curStyles.outerHTML !== snap.s) {
+            var holder = doc.createElement('div');
+            holder.innerHTML = snap.s;
+            if (holder.firstElementChild) {
+              if (curStyles) { curStyles.replaceWith(holder.firstElementChild); } else { doc.head.appendChild(holder.firstElementChild); }
+            }
+          }
+        }
+        if (snap.o) { try { styleRules = JSON.parse(snap.o) || {}; writeOverrides(); } catch (e4) {} }
+        if (snap.tn) { doc.body.setAttribute('data-tim-template', snap.tn); }
         try { mobileLayout = JSON.parse(snap.m || '{}') || {}; } catch (e2) { mobileLayout = {}; }
         mobileLayoutMode = snap.mm === 'stack' ? 'stack' : 'custom';
         try { mobileType = JSON.parse(snap.t || '{}') || {}; } catch (e3) { mobileType = {}; }
@@ -3330,6 +3367,95 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (p && p.catch) { p.catch(function () {}); }
       };
 
+      // A theme is a head: canvas styles, named styles, templates, fonts.
+      // Applying one swaps them in — the page's objects don't move.
+      // The head it replaced is kept for the session, so "this site's
+      // own" can come back; undo covers it too.
+      window.__timApplyTheme = function (stylesHTML, overridesJSON, templatesJSON, fontsHTML, defaultTemplate) {
+        checkpoint('theme');
+        var old = doc.querySelector('style[data-tim-styles]');
+        if (!window.__timPreviousTheme) {
+          window.__timPreviousTheme = { s: old ? old.outerHTML : '', o: JSON.stringify(styleRules),
+                                        p: JSON.stringify(templateProps), tn: doc.body.getAttribute('data-tim-template') || 'default' };
+        }
+        var holder = doc.createElement('div');
+        holder.innerHTML = stylesHTML;
+        var fresh = holder.firstElementChild;
+        if (fresh) { if (old) { old.replaceWith(fresh); } else { doc.head.appendChild(fresh); } }
+        holder.innerHTML = fontsHTML || '';
+        Array.prototype.slice.call(holder.children).forEach(function (link) {
+          var fam = link.getAttribute('data-tim-font');
+          if (fam && !doc.querySelector('link[data-tim-font="' + fam + '"]')) {
+            var anchor = doc.querySelector('style[data-tim-styles]');
+            if (anchor) { doc.head.insertBefore(link, anchor); } else { doc.head.appendChild(link); }
+          }
+        });
+        // Edits to the five built-in styles belonged to the look that's
+        // leaving; the theme's own take them over. Styles the author
+        // named stay. (Undo brings the edits back.)
+        ['tim-style-title', 'tim-style-heading', 'tim-style-subheading', 'tim-style-body', 'tim-style-caption']
+          .forEach(function (k) { delete styleRules[k]; });
+        try { var o = JSON.parse(overridesJSON || '{}'); for (var k in o) { styleRules[k] = o[k]; } } catch (e1) {}
+        writeOverrides();
+        try { var t = JSON.parse(templatesJSON || '{}'); for (var n in t) { templateProps[n] = t[n]; } } catch (e2) {}
+        // A page on "default", or on a template the theme doesn't know,
+        // moves to the theme's everyday template; a page already on one
+        // of the theme's own keeps it.
+        var cur = doc.body.getAttribute('data-tim-template') || 'default';
+        var known = {};
+        try { known = JSON.parse(templatesJSON || '{}'); } catch (e3) {}
+        if (defaultTemplate && (cur === 'default' || !known[cur])) {
+          doc.body.setAttribute('data-tim-template', defaultTemplate);
+        }
+        writeTemplates();
+        layout();
+        notifySel(true);
+      };
+      window.__timRestoreTheme = function () {
+        var prev = window.__timPreviousTheme;
+        if (!prev) { return; }
+        checkpoint('theme');
+        var cur = doc.querySelector('style[data-tim-styles]');
+        if (prev.s) {
+          var holder = doc.createElement('div');
+          holder.innerHTML = prev.s;
+          if (holder.firstElementChild) { if (cur) { cur.replaceWith(holder.firstElementChild); } else { doc.head.appendChild(holder.firstElementChild); } }
+        }
+        try { styleRules = JSON.parse(prev.o) || {}; } catch (e1) { styleRules = {}; }
+        writeOverrides();
+        try { templateProps = JSON.parse(prev.p) || {}; } catch (e2) { templateProps = {}; }
+        doc.body.setAttribute('data-tim-template', prev.tn || 'default');
+        writeTemplates();
+        window.__timPreviousTheme = null;
+        layout();
+        notifySel(true);
+      };
+      // A layout is a starting arrangement of objects. Choosing one
+      // replaces the page's own objects; shared objects stay put; the
+      // phone goes back to stacking in reading order. One undo step.
+      window.__timReplaceObjects = function (html) {
+        var canvas = canvasEl();
+        if (!canvas) { return; }
+        checkpoint('layout');
+        stopTextEditing();
+        sel = null;
+        hide();
+        Array.prototype.slice.call(canvas.children).forEach(function (child) {
+          if (!(child.getAttribute && child.getAttribute('data-tim-component'))) { child.remove(); }
+        });
+        var holder = doc.createElement('div');
+        holder.innerHTML = html;
+        while (holder.firstElementChild) { canvas.appendChild(holder.firstElementChild); }
+        mobileLayout = {};
+        mobileLayoutMode = 'stack';
+        var oldMobile = doc.querySelector('style[data-tim-mobile-layout]');
+        if (oldMobile) { oldMobile.remove(); }
+        syncMobileModeClass();
+        resort(canvas);
+        layout();
+        notifySel();
+      };
+
       window.__timPageInfo = function () {
         var name = doc.body.getAttribute('data-tim-template') || 'default';
         var p = templateProps[name] || {};
@@ -3354,6 +3480,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           bodyFont: p.bodyFont || '',
           templates: Object.keys(templateProps),
           ownTheme: doc.body.hasAttribute('data-tim-own-theme') ? 1 : 0,
+          theme: (function () { var st = doc.querySelector('style[data-tim-styles]'); return st ? (st.getAttribute('data-tim-theme') || '') : ''; })(),
+          canRestoreTheme: window.__timPreviousTheme ? 1 : 0,
           contentW: p.contentW != null ? p.contentW : 1320,
           marginX: p.marginX != null ? p.marginX : 32,
           padY: p.padY != null ? p.padY : 48,
@@ -3628,6 +3756,52 @@ extension Tab: WKNavigationDelegate {
         #endif
     }
 
+    /// WebKit ends a tab's web process whenever it likes — memory pressure,
+    /// too many tabs, a long time in the background — and leaves the view
+    /// blank white, with no error and nothing in our log. Safari reloads;
+    /// so do we. An edit in progress is already in the draft, which the
+    /// address bar offers back once the page returns.
+    public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        if isEditing { isEditing = false }
+        deliberateNavigation = true
+        // A full load, not reload(): with the process gone, reload can be
+        // a silent no-op — which is how a tab stayed white through Reload
+        // and came back only when the address was entered again.
+        if let url = webView.url ?? URL(string: urlString) {
+            webView.load(URLRequest(url: url))
+        }
+    }
+
+    /// A load that never started or gave up partway: say so in the page,
+    /// with a way to try again — a white pane says nothing.
+    public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        showLoadFailure(error)
+    }
+    public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        showLoadFailure(error)
+    }
+    private func showLoadFailure(_ error: Error) {
+        let e = error as NSError
+        // Cancellations are ours (a newer navigation, an edit-mode guard,
+        // a download) — not failures.
+        if e.domain == NSURLErrorDomain && e.code == NSURLErrorCancelled { return }
+        if e.domain == "WebKitErrorDomain" && (e.code == 102 || e.code == 204) { return }
+        let failed = (e.userInfo[NSURLErrorFailingURLStringErrorKey] as? String) ?? urlString
+        let message = e.localizedDescription
+            .replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
+        let shown = failed.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
+        let html = """
+        <!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Can’t Open the Page</title>
+        <style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:-apple-system,ui-sans-serif,system-ui,sans-serif;background:#fbfbfd;color:#1d1d1f}
+        @media (prefers-color-scheme:dark){body{background:#161617;color:#f5f5f7}}main{max-width:30rem;padding:2rem;text-align:center}
+        h1{font-size:1.4rem;font-weight:600;margin:0 0 .5rem}p{color:#6e6e73;line-height:1.5;margin:0 0 1.4rem;overflow-wrap:anywhere}
+        a{display:inline-block;background:#ffd60a;color:#111;font-weight:600;padding:.6rem 1.15rem;border-radius:999px;text-decoration:none}</style></head>
+        <body><main><h1>Tim can’t open the page.</h1><p>\(message)<br><small>\(shown)</small></p>
+        <a href="tim:retry">Try Again</a></main></body></html>
+        """
+        pendingRetryURL = failed
+        webView.loadHTMLString(html, baseURL: URL(string: failed))
+    }
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         #if os(iOS)
         if addressEditing { webView.evaluateJavaScript("window.__timAddressEditing = true;", completionHandler: nil) }

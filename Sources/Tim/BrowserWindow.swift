@@ -1625,6 +1625,7 @@ struct TabContentView: View {
             guard store.selectedTab === tab, let action = note.userInfo?["action"] as? String else { return }
             switch action {
             case "new-local": LocalPages.createAndOpen(in: tab)
+            case "retry": if !tab.pendingRetryURL.isEmpty { tab.navigate(to: tab.pendingRetryURL) }
             case "open": openLocalPage()
             case "connect": showConnectSheet = true
             default: break
@@ -6097,6 +6098,8 @@ struct PageOptionsControls: View {
     @State private var fontTarget: PageFontTarget?
     @State private var templateNames: [String]
     @State private var ownTheme: Bool
+    @State private var theme: String
+    @State private var canRestoreTheme: Bool
     @State private var contentW: Double
     @State private var marginX: Double
     @State private var padY: Double
@@ -6157,6 +6160,8 @@ struct PageOptionsControls: View {
             return a < b
         })
         _ownTheme = State(initialValue: (info["ownTheme"] as? Int) == 1)
+        _theme = State(initialValue: info["theme"] as? String ?? "")
+        _canRestoreTheme = State(initialValue: (info["canRestoreTheme"] as? Int) == 1)
         _contentW = State(initialValue: min(1680, max(560, info["contentW"] as? Double ?? 1320)))
         _marginX = State(initialValue: min(120, max(0, info["marginX"] as? Double ?? 32)))
         _padY = State(initialValue: min(200, max(0, info["padY"] as? Double ?? 48)))
@@ -6223,6 +6228,16 @@ struct PageOptionsControls: View {
         return first.trimmingCharacters(in: CharacterSet(charactersIn: " '\""))
     }
 
+    private func confirmLayout(_ t: Paper.Template) {
+        let alert = NSAlert()
+        alert.messageText = "Start this page from the \(t.title) layout?"
+        alert.informativeText = "Its objects replace the ones on this page. Objects that appear on every page stay. Undo brings everything back."
+        alert.addButton(withTitle: "Replace")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        tab.replaceObjects(html: Paper.objects(for: t, title: title.isEmpty ? t.title : title))
+    }
+
     private func promptNewTemplate() {
         let alert = NSAlert()
         alert.messageText = "New Template"
@@ -6284,6 +6299,61 @@ struct PageOptionsControls: View {
                     }
                 }
 
+                card("Theme") {
+                    HStack(spacing: 8) {
+                        rowLabel("Look")
+                        Picker("", selection: $theme) {
+                            Text("This site's own").tag("")
+                            Text(Paper.name).tag("paper")
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .controlSize(.small)
+                        .onChange(of: theme) { old, new in
+                            guard old != new else { return }
+                            if new == "paper" {
+                                tab.applyTheme(styles: Paper.styles, overrides: Paper.overrideRules, templates: Paper.templateProps,
+                                               fonts: Paper.fontLinks, defaultTemplate: "page")
+                            } else if canRestoreTheme {
+                                tab.restoreTheme()
+                            } else {
+                                theme = old
+                                return
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { reload() }
+                        }
+                        .help(theme.isEmpty || canRestoreTheme
+                              ? "The look: type, colors, spacing, and a theme's own pieces. Objects stay where they are."
+                              : "This page's own look was set before this session, so there's nothing to switch back to here — Undo goes back one step.")
+                    }
+                    HStack(spacing: 8) {
+                        rowLabel("Layout")
+                        Menu {
+                            ForEach(Paper.Template.allCases) { t in
+                                Button(t.title) { confirmLayout(t) }
+                            }
+                        } label: {
+                            HStack {
+                                Text("Start From…")
+                                    .font(.system(size: 12))
+                                Spacer()
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.system(size: 8, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 5)
+                            .padding(.horizontal, 8)
+                            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(0.06)))
+                            .contentShape(Rectangle())
+                        }
+                        .menuIndicator(.hidden)
+                        .buttonStyle(.plain)
+                    }
+                    Text("A layout is a starting arrangement of objects — Home, About, Work and so on. Choosing one replaces what's on this page; Undo brings it back. Objects on every page stay.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 card("Page") {
                     HStack(spacing: 8) {
                         rowLabel("Title")

@@ -86,13 +86,13 @@ public enum Paper {
         ]
     }
 
-    static let fontLinks = """
+    public static let fontLinks = """
     <link data-tim-font="Fraunces" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,400;0,500;0,600;1,400&amp;display=swap" rel="stylesheet">
     <link data-tim-font="Manrope" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
     """
 
-    static let styles = """
-    <style data-tim-styles>
+    public static let styles = """
+    <style data-tim-styles data-tim-theme="paper">
       :root {
         color-scheme: light;
         --tim-font-heading: \(headingFont);
@@ -250,7 +250,7 @@ public enum Paper {
 
     // MARK: Objects
 
-    static func objects(for template: Template, title: String) -> String {
+    public static func objects(for template: Template, title: String) -> String {
         switch template {
         case .blank:
             return text("tim-style-title", esc(title), 4, 1, 7, 15)
