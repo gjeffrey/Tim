@@ -124,6 +124,16 @@ public enum GoogleFonts {
     /// Downloads (once, cached on disk) and registers the family with
     /// CoreText so SwiftUI can render it via Font.custom.
     public static func registerForPreview(_ family: Family, _ completion: @escaping (Bool) -> Void) {
+        // `registered` and `waiters` are plain static collections. Every
+        // caller lands here on the main queue, so they are only ever touched
+        // from one thread. Three sites refreshing at once after launch used
+        // to reach this from three utility threads — and a dictionary of
+        // arrays appended to concurrently is memory corruption, which showed
+        // up as the app freezing and then aborting inside Array.append.
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { registerForPreview(family, completion) }
+            return
+        }
         let key = family.family
         if registered.contains(key) {
             completion(true)
