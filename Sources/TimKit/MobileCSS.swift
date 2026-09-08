@@ -14,6 +14,9 @@ public enum MobileCSS {
             "[data-tim-mobile-hidden]{display:none !important}",
             // Text wrap is a desktop arrangement; in a stack nothing overlaps.
             ".tim-wrap-spacer{display:none !important}",
+            // A cropped picture is a frame with the picture inside; its
+            // aspect ratio is inline, so it sizes like a picture would.
+            ".tim-canvas .tim-crop{height:auto !important;align-self:start}",
             // Multi-column text reads as one column on phones.
             // A word is never broken in half. A headline that outgrows the
             // screen overflows it — visibly wrong, and obviously fixable —

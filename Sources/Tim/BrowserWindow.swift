@@ -5127,6 +5127,7 @@ struct InspectorControls: View {
     @State private var rotation: Double = 0
     @State private var showOnMobile: Bool = true
     @State private var wrap: String = "none"
+    @State private var cropScale: Double = 100
     @State private var fillIsGradient: Bool = false
     @State private var fillEndColor: Color = .blue
     @State private var fillAngle: Double = 180
@@ -5183,6 +5184,7 @@ struct InspectorControls: View {
         _rotation = State(initialValue: info["rotation"] as? Double ?? 0)
         _showOnMobile = State(initialValue: (info["mobileHidden"] as? Int) != 1)
         _wrap = State(initialValue: info["wrap"] as? String ?? "none")
+        _cropScale = State(initialValue: ((info["crop"] as? [String: Any])?["s"] as? Double) ?? 100)
         let video = info["video"] as? [String: Any] ?? [:]
         _videoAutoplay = State(initialValue: (video["autoplay"] as? Int) == 1)
         _videoRepeat = State(initialValue: (video["bounce"] as? Int) == 1
@@ -5464,7 +5466,32 @@ struct InspectorControls: View {
                 .font(.system(size: 9.5))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
+            if let crop = info["crop"] as? [String: Any] {
+                Divider()
+                HStack(spacing: 8) {
+                    Button(cropActive ? "Done Cropping" : "Edit Crop") { tab.setCropping(!cropActive) }
+                    if (crop["wrapped"] as? Int) == 1 {
+                        Button("Reset Crop") { tab.resetCrop() }
+                    }
+                }
+                .controlSize(.small)
+                if cropActive {
+                    sliderRow("Size", $cropScale, cropMin...400, 1, "\(Int(cropScale))%")
+                        .onChange(of: cropScale) { _, v in tab.setCropScale(v) }
+                }
+                Text(cropActive
+                     ? "Drag the picture to move it inside its frame. Drag the frame's handles to change the crop; the picture stays put. Double-click the picture when you're done."
+                     : "Double-click a picture to edit its crop — the whole image shows, faded where the frame doesn't reach.")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
+    }
+    private var cropActive: Bool { ((info["crop"] as? [String: Any])?["active"] as? Int) == 1 }
+    private var cropMin: Double {
+        let m = ((info["crop"] as? [String: Any])?["min"] as? Double) ?? 100
+        return min(380, max(20, m))
     }
     private var hasOverrides: Bool { (info["overrides"] as? Int) == 1 }
     private var selectionCount: Int { info["selCount"] as? Int ?? 1 }

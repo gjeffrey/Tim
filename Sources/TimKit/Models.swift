@@ -809,6 +809,16 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
 
     /// Live styling from the Inspector: sets one CSS property on the
     /// selected element (design vocabulary in the UI, CSS underneath).
+    /// Crop editing for the selected picture, the way Keynote edits a mask.
+    public func setCropping(_ on: Bool) {
+        webView.evaluateJavaScript("window.__timCropSel && window.__timCropSel(\(on ? "true" : "false"));", completionHandler: nil)
+    }
+    public func setCropScale(_ percent: Double) {
+        webView.evaluateJavaScript("window.__timSetCropScale && window.__timSetCropScale(\(Int(percent)));", completionHandler: nil)
+    }
+    public func resetCrop() {
+        webView.evaluateJavaScript("window.__timResetCrop && window.__timResetCrop();", completionHandler: nil)
+    }
     /// How text treats the selected object: "auto", "around", "above-below", or "none".
     public func setSelectionWrap(_ mode: String) {
         webView.evaluateJavaScript("window.__timSetWrap && window.__timSetWrap(\(Self.jsLiteral(mode)));", completionHandler: nil)
@@ -1678,6 +1688,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
 
       function hide() {
         box.style.display = badge.style.display = 'none';
+        if (typeof ghost !== 'undefined') { ghost.style.display = 'none'; cropHud.style.display = 'none'; }
         extentBox.style.display = 'none';
         groupBox.innerHTML = '';
         hideGrid();
@@ -1744,6 +1755,199 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       // desktop width; heights are rows, which never change. The floats
       // are part of the page (a published page needs no script), and
       // phones hide them — nothing overlaps in a stack.
+      // ---- Crop, the Keynote way (Edit Mask) ----
+      // A picture you never crop is a plain <img>. The first crop turns it
+      // into a frame — a div that keeps the object's classes, placement
+      // and styling — with the picture positioned inside. The picture's
+      // size and offset are written in container-query units (cqw/cqh),
+      // so the same crop holds at any width, on phones, with no script.
+      // data-tim-crop = "scale x y ratio": scale is picture width over
+      // frame width; x and y run 0..1 from one edge of the frame to the
+      // other; ratio is the picture's own height over width.
+      var cropping = null;
+      function mediaOf(el) {
+        if (!el) { return null; }
+        if (el.matches && el.matches('img,video')) { return el; }
+        return el.querySelector ? el.querySelector('img,video') : null;
+      }
+      function cropWrap(el) { return (el && el.classList && el.classList.contains('tim-crop')) ? el : null; }
+      function readCrop(w) {
+        var m = String(w.getAttribute('data-tim-crop') || '').split(/\\s+/).map(parseFloat);
+        return { s: m[0] > 0 ? m[0] : 1, x: isFinite(m[1]) ? m[1] : 0.5, y: isFinite(m[2]) ? m[2] : 0.5, r: m[3] > 0 ? m[3] : 1 };
+      }
+      function writeCrop(w, c) {
+        w.setAttribute('data-tim-crop', c.s.toFixed(4) + ' ' + c.x.toFixed(4) + ' ' + c.y.toFixed(4) + ' ' + c.r.toFixed(5));
+        var img = mediaOf(w);
+        if (!img) { return; }
+        var pw = (c.s * 100).toFixed(3), ph = (c.s * c.r * 100).toFixed(3);
+        img.style.cssText = 'position:absolute;display:block;max-width:none;height:auto;width:' + pw + 'cqw;'
+          + 'left:calc((100cqw - ' + pw + 'cqw) * ' + c.x.toFixed(4) + ');'
+          + 'top:calc((100cqh - ' + ph + 'cqw) * ' + c.y.toFixed(4) + ');';
+      }
+      // The picture's rectangle on the page, from the frame and the crop.
+      function cropGeometry(w) {
+        var f = rectOf(w), c = readCrop(w);
+        var pw = c.s * f.w, ph = pw * c.r;
+        return { f: f, c: c, pic: { x: f.x + (f.w - pw) * c.x, y: f.y + (f.h - ph) * c.y, w: pw, h: ph } };
+      }
+      // The smallest scale at which the picture still covers the frame.
+      function coverScale(w) {
+        var f = rectOf(w), c = readCrop(w);
+        return f.w > 0 ? Math.max(1, (f.h / f.w) / c.r) : 1;
+      }
+      function setCrop(w, c) {
+        c.s = Math.max(0.2, Math.min(6, c.s));
+        c.x = Math.max(0, Math.min(1, c.x));
+        c.y = Math.max(0, Math.min(1, c.y));
+        writeCrop(w, c);
+      }
+      function ensureCropWrapper(el) {
+        if (cropWrap(el)) { return el; }
+        var img = mediaOf(el);
+        if (!img || img.tagName !== 'IMG' || img !== el) { return null; }
+        var w = doc.createElement('div');
+        // The frame takes over as the object: classes, placement, styling.
+        w.className = img.className;
+        w.classList.add('tim-crop');
+        w.style.cssText = img.style.cssText;
+        var radius = getComputedStyle(img).borderRadius;
+        if (radius && radius !== '0px') { w.style.borderRadius = radius; }
+        w.style.position = 'relative';
+        w.style.overflow = 'hidden';
+        w.style.containerType = 'size';
+        ['data-tim-id', 'data-tim-wrap', 'data-tim-mobile-hidden', 'id', 'data-tim-review'].forEach(function (a) {
+          if (img.hasAttribute(a)) { w.setAttribute(a, img.getAttribute(a)); img.removeAttribute(a); }
+        });
+        var natW = img.naturalWidth || img.offsetWidth || 1, natH = img.naturalHeight || img.offsetHeight || 1;
+        img.className = '';
+        img.style.cssText = '';
+        img.parentNode.insertBefore(w, img);
+        w.appendChild(img);
+        var f = rectOf(w);
+        if (f.w > 0 && f.h > 0) { w.style.aspectRatio = f.w.toFixed(2) + ' / ' + f.h.toFixed(2); }
+        var r = natH / natW;
+        writeCrop(w, { s: f.w > 0 ? Math.max(1, (f.h / f.w) / r) : 1, x: 0.5, y: 0.5, r: r });
+        return w;
+      }
+      function unwrapCrop(w) {
+        var img = mediaOf(w);
+        if (!img) { return w; }
+        img.className = w.className.replace(/\\btim-crop\\b/, '').replace(/\\s+/g, ' ').trim();
+        img.style.cssText = w.style.cssText;
+        img.style.position = ''; img.style.overflow = ''; img.style.containerType = ''; img.style.aspectRatio = '';
+        ['data-tim-id', 'data-tim-wrap', 'data-tim-mobile-hidden', 'id'].forEach(function (a) {
+          if (w.hasAttribute(a)) { img.setAttribute(a, w.getAttribute(a)); }
+        });
+        w.parentNode.insertBefore(img, w);
+        w.remove();
+        return img;
+      }
+      // The frame's edges moved; the picture didn't. Read the crop back.
+      function recrop(w, pic) {
+        var f = rectOf(w), c = readCrop(w);
+        if (f.w <= 0) { return; }
+        c.s = pic.w / f.w;
+        var spanX = pic.w - f.w, spanY = pic.h - f.h;
+        c.x = Math.abs(spanX) > 1 ? (f.x - pic.x) / spanX : 0.5;
+        c.y = Math.abs(spanY) > 1 ? (f.y - pic.y) / spanY : 0.5;
+        setCrop(w, c);
+        w.style.aspectRatio = f.w.toFixed(2) + ' / ' + f.h.toFixed(2);
+      }
+      // Editing chrome: the whole picture, faded where the frame doesn't
+      // show it, and a small bar beneath the frame with a Size slider.
+      var ghost = doc.createElement('img');
+      ghost.id = '__tim-cropghost';
+      ghost.setAttribute('alt', '');
+      ghost.style.cssText = 'position:absolute;display:none;opacity:0.4;pointer-events:none;max-width:none;';
+      overlay.insertBefore(ghost, overlay.firstChild);
+      var cropHud = doc.createElement('div');
+      cropHud.id = '__tim-crophud';
+      cropHud.style.cssText = 'position:absolute;display:none;align-items:center;gap:10px;padding:8px 12px;border-radius:10px;'
+        + 'background:rgba(28,28,30,0.92);color:#fff;font:12px -apple-system,system-ui,sans-serif;pointer-events:auto;'
+        + 'box-shadow:0 6px 24px rgba(0,0,0,0.25);white-space:nowrap;';
+      cropHud.innerHTML = '<span>Size</span><input type="range" min="100" max="400" step="1" style="width:150px">'
+        + '<span data-crop-val style="min-width:38px;text-align:right;font-variant-numeric:tabular-nums">100%</span>'
+        + '<button type="button" style="margin-left:4px;padding:3px 10px;border-radius:6px;border:0;background:#ffd60a;color:#111;font-weight:600;font:inherit;cursor:pointer">Done</button>';
+      overlay.appendChild(cropHud);
+      var cropRange = cropHud.querySelector('input');
+      cropRange.addEventListener('input', function () {
+        var w = cropWrap(sel);
+        if (!w) { return; }
+        var c = readCrop(w);
+        c.s = parseFloat(cropRange.value) / 100;
+        setCrop(w, c);
+        layout();
+        notifySel();
+      });
+      cropRange.addEventListener('pointerdown', function () { checkpoint('crop'); });
+      cropHud.querySelector('button').addEventListener('click', function (e) { e.stopPropagation(); exitCrop(); });
+      function inHud(t) { return !!(t && t.closest && t.closest('#__tim-crophud')); }
+      function updateCropChrome() {
+        if (cropping && (sel !== cropping || !doc.contains(cropping))) { cropping = null; }
+        if (!cropping) { ghost.style.display = 'none'; cropHud.style.display = 'none'; return; }
+        var img = mediaOf(cropping);
+        var geo = cropGeometry(cropping);
+        if (img && ghost.getAttribute('src') !== (img.currentSrc || img.getAttribute('src'))) {
+          ghost.src = img.currentSrc || img.getAttribute('src') || '';
+        }
+        ghost.style.left = geo.pic.x + 'px'; ghost.style.top = geo.pic.y + 'px';
+        ghost.style.width = geo.pic.w + 'px'; ghost.style.height = geo.pic.h + 'px';
+        // Cut the frame out of the ghost, so what the frame shows stays crisp.
+        var fx = geo.f.x - geo.pic.x, fy = geo.f.y - geo.pic.y;
+        ghost.style.clipPath = 'path(evenodd, "M0 0H' + geo.pic.w.toFixed(1) + 'V' + geo.pic.h.toFixed(1) + 'H0Z'
+          + 'M' + fx.toFixed(1) + ' ' + fy.toFixed(1) + 'H' + (fx + geo.f.w).toFixed(1) + 'V' + (fy + geo.f.h).toFixed(1) + 'H' + fx.toFixed(1) + 'Z")';
+        ghost.style.display = 'block';
+        cropRange.min = String(Math.round(Math.min(380, coverScale(cropping) * 100)));
+        cropRange.value = String(Math.round(geo.c.s * 100));
+        cropHud.querySelector('[data-crop-val]').textContent = Math.round(geo.c.s * 100) + '%';
+        cropHud.style.display = 'flex';
+        var hw = cropHud.offsetWidth || 300;
+        cropHud.style.left = Math.max(8, geo.f.x + geo.f.w / 2 - hw / 2) + 'px';
+        cropHud.style.top = (geo.f.y + geo.f.h + 12) + 'px';
+      }
+      function enterCrop(el) {
+        var w = cropWrap(el) || ensureCropWrapper(el);
+        if (!w) { return false; }
+        stopTextEditing();
+        clearGroup();
+        sel = w;
+        cropping = w;
+        layout();
+        notifySel(true);
+        return true;
+      }
+      function exitCrop() {
+        if (!cropping) { return; }
+        cropping = null;
+        layout();
+        notifySel(true);
+      }
+      window.__timCropSel = function (on) {
+        if (!sel) { return; }
+        if (on === false) { exitCrop(); return; }
+        checkpoint('crop');
+        enterCrop(sel);
+      };
+      window.__timSetCropScale = function (pct) {
+        var w = cropWrap(sel);
+        if (!w) { return; }
+        checkpoint('crop');
+        var c = readCrop(w);
+        c.s = parseFloat(pct) / 100;
+        setCrop(w, c);
+        layout();
+        notifySel();
+      };
+      window.__timResetCrop = function () {
+        var w = cropWrap(sel);
+        if (!w) { return; }
+        checkpoint('crop');
+        cropping = null;
+        sel = unwrapCrop(w);
+        layout();
+        notifySel(true);
+      };
+
       var WRAP_GAP = 12;
       function wrapMode(el) { return (el.getAttribute && el.getAttribute('data-tim-wrap')) || 'none'; }
       function updateWraps() {
@@ -1830,6 +2034,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         markOffPage();
         updateWraps();
         if (!sel || !doc.contains(sel)) { hide(); return; }
+        updateCropChrome();
         var r = rectOf(sel);
         // The selection box matches the object's own frame — a rotated
         // object gets a rotated box, Keynote-style, not the upright
@@ -1912,7 +2117,18 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
 
       function onDown(e) {
         if (collapsed() && !mobileActive()) { return; }
+        if (inHud(e.target)) { return; }
         var k = e.target && e.target.getAttribute ? e.target.getAttribute('data-tim-handle') : null;
+        if (!k && cropping && sel === cropping && !mobileActive()) {
+          // Inside the picture: drag moves it within its frame.
+          var geo = cropGeometry(cropping);
+          if (e.pageX >= geo.pic.x && e.pageX <= geo.pic.x + geo.pic.w && e.pageY >= geo.pic.y && e.pageY <= geo.pic.y + geo.pic.h) {
+            checkpoint('crop');
+            drag = { mode: 'crop-pan', sx: e.pageX, sy: e.pageY, c0: geo.c, geo: geo, moved: false };
+            e.preventDefault(); e.stopPropagation();
+            return;
+          }
+        }
         if (k && sel && isObject(sel)) {
           // The rotate knob turns; option-drag on any handle does too.
           if (e.altKey || k === 'rotate') {
@@ -1944,6 +2160,8 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
               : (sel.offsetHeight > 0 ? sel.offsetWidth / sel.offsetHeight : 0);
           }
           drag = { mode: k, canvas: canvas, sx: e.pageX, sy: e.pageY, p0: p0, angle: effectiveAngle(sel), ratio: ratio, moved: false };
+          // Editing a crop: the frame moves, the picture stays where it is.
+          if (cropping === sel && k !== 'move') { drag.picRect = cropGeometry(sel).pic; }
           showGrid(canvas);
           e.preventDefault(); e.stopPropagation();
           return;
@@ -1981,6 +2199,16 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       function onMove(e) {
         if (!drag || !sel) { return; }
         e.preventDefault();
+        if (drag.mode === 'crop-pan') {
+          var g0 = drag.geo, c = { s: drag.c0.s, x: drag.c0.x, y: drag.c0.y, r: drag.c0.r };
+          var spanX = g0.pic.w - g0.f.w, spanY = g0.pic.h - g0.f.h;
+          if (Math.abs(spanX) > 1) { c.x = drag.c0.x - (e.pageX - drag.sx) / spanX; }
+          if (Math.abs(spanY) > 1) { c.y = drag.c0.y - (e.pageY - drag.sy) / spanY; }
+          drag.moved = true;
+          setCrop(sel, c);
+          layout();
+          return;
+        }
         if (drag.mode === 'rotate') {
           var a = Math.atan2(e.pageY - drag.cy, e.pageX - drag.cx) * 180 / Math.PI;
           var next = drag.r0 + (a - drag.a0);
@@ -2071,6 +2299,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
             }
           }
         }
+        if (drag.picRect && cropping === sel) { recrop(sel, drag.picRect); }
         var np = placement(sel);
         badge.textContent = drag.mode === 'move'
           ? 'row ' + np.rs + ' · col ' + np.cs
@@ -2081,11 +2310,25 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       var lastDragMoved = false;
       function onUp() {
         if (!drag) { return; }
+        if (drag.mode === 'crop-pan') {
+          lastDragMoved = !!drag.moved;
+          drag = null;
+          layout();
+          notifySel();
+          return;
+        }
         var canvas = drag.canvas;
         var moved = drag.moved;
         lastDragMoved = !!moved;
         var wasRotate = drag.mode === 'rotate';
         drag = null;
+        // A cropped picture whose frame changed outside crop editing keeps
+        // covering it — no gaps at the edges — and remembers its shape.
+        if (sel && cropWrap(sel) && !wasRotate && moved) {
+          var cw = sel, cc = readCrop(cw), need = coverScale(cw), fr = rectOf(cw);
+          if (cc.s < need) { cc.s = need; setCrop(cw, cc); }
+          if (fr.w > 0 && fr.h > 0) { cw.style.aspectRatio = fr.w.toFixed(2) + ' / ' + fr.h.toFixed(2); }
+        }
         hideGrid();
         if (sel && !wasRotate) { fitSpan(sel); }
         // DOM order belongs to the desktop layout — mobile placements are
@@ -2099,6 +2342,12 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       function onClick(e) {
         if (!active || drag) { return; }
         if (e.target && e.target.getAttribute && e.target.getAttribute('data-tim-handle')) { return; }
+        if (inHud(e.target)) { e.preventDefault(); e.stopPropagation(); return; }
+        if (cropping) {
+          var clickedObj = e.target && e.target.closest ? e.target.closest('.tim-object') : null;
+          if (clickedObj === cropping) { e.preventDefault(); e.stopPropagation(); return; }
+          exitCrop();
+        }
         if (editingEl && editingEl.contains(e.target)) {
           // Text editing inside a link (a nav item, say): the caret works,
           // but the link must not fire and navigate the tab away.
@@ -2146,7 +2395,15 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
 
       function onDblClick(e) {
         if (!active) { return; }
+        if (inHud(e.target)) { return; }
         var obj = e.target && e.target.closest ? e.target.closest('.tim-object') : null;
+        // A picture: double-click edits its crop; double-click again, done.
+        if (obj && (cropWrap(obj) || (obj.tagName === 'IMG'))) {
+          e.preventDefault(); e.stopPropagation();
+          if (cropping === obj) { exitCrop(); }
+          else { checkpoint('crop'); enterCrop(obj); }
+          return;
+        }
         // Double-clicking a group enters it: the child under the cursor
         // becomes selectable and editable until you click outside.
         var resolved = selectionTarget(obj);
@@ -2210,6 +2467,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           }
         }
         if (e.key === 'Escape') {
+          if (cropping) { exitCrop(); return; }
           stopTextEditing();
           sel = null;
           hide();
@@ -2694,6 +2952,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         stopTextEditing();
         clearGroup();
         sel = null;
+        cropping = null;
         hide();
         lastCkptTag = '';
         c.innerHTML = snap.c;
@@ -3060,6 +3319,18 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (target.style && target.style.cssText) { el.style.cssText = target.style.cssText; }
         target.parentNode.replaceChild(el, target);
         if (sel === target) { sel = el; }
+        // A new picture in a cropped frame: its own proportions, covering.
+        var frame = el.parentNode && cropWrap(el.parentNode);
+        if (frame) {
+          var refit = function () {
+            var c = readCrop(frame);
+            if (el.naturalWidth > 0) { c.r = el.naturalHeight / el.naturalWidth; }
+            c.s = Math.max(c.s, coverScale(frame));
+            writeCrop(frame, c);
+            layout();
+          };
+          if (el.complete && el.naturalWidth) { refit(); } else { el.addEventListener('load', refit); }
+        }
         layout();
         notifySel(true);
       };
@@ -3071,6 +3342,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       // is named by its style (Title, Body, a custom name), media by what
       // it is, components by their name — and nothing is ever a "div".
       function labelFor(el) {
+        if (el.classList && el.classList.contains('tim-crop')) { return 'Image'; }
         if (el.classList && el.classList.contains('tim-container')) { return 'Group'; }
         if (el.hasAttribute && el.hasAttribute('data-tim-canvas')) { return 'Canvas'; }
         function titleCase(text) {
@@ -3138,12 +3410,21 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
               opacity: parseFloat(cs.opacity) || 1,
               padding: parseFloat(sel.style.padding) || 0,
               margin: parseFloat(sel.style.margin) || 0,
-              media: (sel.tagName === 'IMG' || sel.tagName === 'VIDEO') ? {
-                natW: sel.naturalWidth || sel.videoWidth || 0,
-                natH: sel.naturalHeight || sel.videoHeight || 0,
-                shownW: Math.round(sel.getBoundingClientRect().width),
-                src: sel.currentSrc || sel.getAttribute('src') || ''
-              } : 0,
+              media: (function () {
+                var m = (sel.tagName === 'IMG' || sel.tagName === 'VIDEO') ? sel : (cropWrap(sel) ? mediaOf(sel) : null);
+                return m ? {
+                  natW: m.naturalWidth || m.videoWidth || 0,
+                  natH: m.naturalHeight || m.videoHeight || 0,
+                  shownW: Math.round(sel.getBoundingClientRect().width),
+                  src: m.currentSrc || m.getAttribute('src') || ''
+                } : 0;
+              })(),
+              crop: (function () {
+                var w = cropWrap(sel);
+                if (!w) { return sel.tagName === 'IMG' ? { s: 100, min: 100, active: 0, wrapped: 0 } : 0; }
+                var c = readCrop(w);
+                return { s: Math.round(c.s * 100), min: Math.round(Math.min(380, coverScale(w) * 100)), active: cropping === w ? 1 : 0, wrapped: 1 };
+              })(),
               area: (function () { var pp = placement(sel); return pp ? [pp.rs, pp.cs, pp.re, pp.ce] : null; })(),
               maxCols: colCount(),
               hasShadow: sel.style.boxShadow ? 1 : 0,
@@ -3809,6 +4090,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
       };
       window.__timCanvasOff = function () {
         active = false;
+        cropping = null;
         stopTextEditing();
         sel = null; drag = null;
         hide();
