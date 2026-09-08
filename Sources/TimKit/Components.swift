@@ -30,6 +30,32 @@ public enum PageComponents {
         )
     }
 
+    /// The desktop row an element starts on, from its inline placement.
+    public static func startRow(of html: String) -> Int? {
+        for pattern in ["grid-area:\\s*(\\d+)", "grid-row-start:\\s*(\\d+)"] {
+            if let regex = try? NSRegularExpression(pattern: pattern),
+               let m = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+               let r = Range(m.range(at: 1), in: html), let n = Int(html[r]) {
+                return n
+            }
+        }
+        return nil
+    }
+
+    /// The last row any object in `canvasHTML` starts on. The phone stacks
+    /// objects in document order, so a shared object that sits below the
+    /// page's content on the desktop — a footer — has to come after it in
+    /// the document too, or it lands third from the top on a phone.
+    public static func lastObjectRow(in canvasHTML: String) -> Int {
+        guard let regex = try? NSRegularExpression(pattern: "<[a-z]+[^>]*class=\"[^\"]*tim-object[^\"]*\"[^>]*>") else { return 0 }
+        var top = 0
+        for m in regex.matches(in: canvasHTML, range: NSRange(canvasHTML.startIndex..., in: canvasHTML)) {
+            guard let r = Range(m.range, in: canvasHTML), let row = startRow(of: String(canvasHTML[r])) else { continue }
+            top = max(top, row)
+        }
+        return top
+    }
+
     public static func stamped(name: String, content: String) -> String {
         "<div data-tim-component=\"\(name)\" style=\"display:contents\">\(content)</div>"
     }
@@ -254,8 +280,16 @@ public enum PageComponents {
                       !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                       let tagEnd = pageHTML.range(of: ">", range: canvasAttr.upperBound..<pageHTML.endIndex)
                 else { continue }
-                pageHTML.insert(contentsOf: "\n" + raised(stamped(name: name, content: content), above: pageHTML),
-                                at: tagEnd.upperBound)
+                let piece = "\n" + raised(stamped(name: name, content: content), above: pageHTML)
+                // Below the page's content on the desktop → after it in the
+                // document, so the phone stacks it last as well.
+                if let row = startRow(of: content), row > lastObjectRow(in: pageHTML),
+                   let bodyClose = pageHTML.range(of: "</body>"),
+                   let canvasClose = pageHTML.range(of: "</div>", options: .backwards, range: tagEnd.upperBound..<bodyClose.lowerBound) {
+                    pageHTML.insert(contentsOf: piece + "\n", at: canvasClose.lowerBound)
+                } else {
+                    pageHTML.insert(contentsOf: piece, at: tagEnd.upperBound)
+                }
                 pageChanged = true
             }
             if pageChanged {

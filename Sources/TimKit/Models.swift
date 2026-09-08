@@ -3195,11 +3195,21 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         for (var name in templateProps) {
           var p = templateProps[name];
           var scope = 'body[data-tim-template="' + name + '"]';
+          // Each option is also a custom property, so a theme's own
+          // pieces — a button, an eyebrow's bar — can follow the page's
+          // colors and type without knowing anything about the page.
           var bodyRule = '';
           if (p.bg) { bodyRule += 'background:' + p.bg + ';'; }
-          if (p.fg) { bodyRule += 'color:' + p.fg + ';'; }
+          if (p.fg) { bodyRule += 'color:' + p.fg + ';--tim-ink:' + p.fg + ';'; }
+          if (p.link) { bodyRule += '--tim-link:' + p.link + ';'; }
+          if (p.accent) { bodyRule += '--tim-accent:' + p.accent + ';'; }
+          if (p.headingFont) { bodyRule += '--tim-font-heading:' + p.headingFont + ';'; }
+          if (p.bodyFont) { bodyRule += '--tim-font-body:' + p.bodyFont + ';font-family:' + p.bodyFont + ';'; }
           if (bodyRule) { out += scope + '{' + bodyRule + '}\\n'; }
           if (p.link) { out += scope + ' a{color:' + p.link + ';}\\n'; }
+          // Title and Heading take the heading font directly: a page whose
+          // styles name a face outright (most older pages) follows too.
+          if (p.headingFont) { out += scope + ' .tim-style-title,' + scope + ' .tim-style-heading{font-family:' + p.headingFont + ';}\\n'; }
           if (p.baseSize != null) { out += 'html:has(' + scope + '){font-size:' + p.baseSize + 'px;}\\n'; }
           if (p.padY != null || p.marginX != null || p.contentW != null) {
             var pad = p.padY != null ? p.padY : 48;
@@ -3232,6 +3242,11 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           upsertMeta('name', 'twitter:card', value ? 'summary_large_image' : '');
         } else if (kind === 'robots') {
           upsertMeta('name', 'robots', value);
+        } else if (kind === 'ownTheme') {
+          // This page keeps its own look — Done's site-wide pass for
+          // colors, type and templates passes it by, both ways.
+          if (value) { doc.body.setAttribute('data-tim-own-theme', ''); }
+          else { doc.body.removeAttribute('data-tim-own-theme'); }
         } else if (kind === 'ownIcons') {
           // This page keeps its own icons — Done's site-icon stamping
           // passes it by.
@@ -3262,6 +3277,23 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (prop === 'title') {
           doc.title = value;
           upsertMeta('property', 'og:title', value);
+          return;
+        }
+        if (prop === 'template' || prop === 'newTemplate') {
+          var to = String(value || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
+          if (!to) { return; }
+          checkpoint('page:template');
+          if (prop === 'newTemplate') {
+            // A new template starts as a copy of this page's — so what you
+            // see doesn't change; only what follows it does.
+            if (templateProps[to]) { return; }
+            var from = doc.body.getAttribute('data-tim-template') || 'default';
+            templateProps[to] = JSON.parse(JSON.stringify(templateProps[from] || {}));
+          } else if (!templateProps[to]) {
+            templateProps[to] = {};
+          }
+          doc.body.setAttribute('data-tim-template', to);
+          writeTemplates();
           return;
         }
         checkpoint('page:' + prop);
@@ -3317,6 +3349,11 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           })(),
           fg: p.fg || cs.color,
           link: p.link || '',
+          accent: p.accent || '',
+          headingFont: p.headingFont || '',
+          bodyFont: p.bodyFont || '',
+          templates: Object.keys(templateProps),
+          ownTheme: doc.body.hasAttribute('data-tim-own-theme') ? 1 : 0,
           contentW: p.contentW != null ? p.contentW : 1320,
           marginX: p.marginX != null ? p.marginX : 32,
           padY: p.padY != null ? p.padY : 48,

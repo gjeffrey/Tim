@@ -1901,6 +1901,13 @@ struct TabContentView: View {
                         in: site.localProjectPath, excludingRel: String(rel.dropFirst())
                     )
                     restamped = Array(Set(restamped + injected))
+                    // The look — colors, type, templates, named styles —
+                    // reaches every page the way shared objects do. This is
+                    // what makes "every page on this template follows" true.
+                    let themed = SiteTheme.propagate(
+                        from: html, in: site.localProjectPath, excludingRel: String(rel.dropFirst())
+                    )
+                    restamped = Array(Set(restamped + themed))
                     // Fonts the page uses join the site's cached list in
                     // tim.json — that's what pins them in every font picker,
                     // on every Mac, without rescanning pages.
@@ -3766,18 +3773,42 @@ struct NewPageSheet: View {
     @ObservedObject var tab: Tab
     @EnvironmentObject var siteStore: SiteStore
     @Environment(\.dismiss) private var dismiss
-
     @State private var title = ""
+    @State private var template: Paper.Template
+    @State private var wholeSite: Bool
     @State private var isCreating = false
     @State private var errorMessage: String?
+
+    init(site: Site?, tab: Tab) {
+        self.site = site
+        self.tab = tab
+        // A site with no pages yet starts at Home, and offers the rest.
+        let empty = site.map {
+            !AstroProject.isAstroProject($0.localProjectPath) && SiteWorkspace.needsHomePage($0.localProjectPath)
+        } ?? false
+        _template = State(initialValue: empty ? .home : .blank)
+        _wholeSite = State(initialValue: empty)
+    }
 
     private var isAstro: Bool {
         site.map { AstroProject.isAstroProject($0.localProjectPath) } ?? false
     }
-    /// An empty site's first page is obviously the home page.
     private var isHomePage: Bool {
         guard let site, !isAstro else { return false }
         return SiteWorkspace.needsHomePage(site.localProjectPath)
+    }
+    private var scaffolding: Bool { wholeSite && isHomePage }
+    private var siteName: String {
+        guard let site else { return "My Site" }
+        if !site.name.isEmpty { return site.name }
+        return URL(string: site.origin)?.host() ?? "My Site"
+    }
+    private var suggestedTitle: String { template == .home ? siteName : template.title }
+    private var pageTitle: String { title.isEmpty ? suggestedTitle : title }
+    private var slug: String {
+        pageTitle.lowercased()
+            .replacingOccurrences(of: " ", with: "-")
+            .filter { $0.isLetter || $0.isNumber || $0 == "-" }
     }
     private var effectiveSlug: String { isHomePage ? "index" : slug }
 
@@ -3786,31 +3817,44 @@ struct NewPageSheet: View {
             Text("New Page")
                 .font(.title3.bold())
 
-            TextField("Page title", text: $title)
+            if !isAstro {
+                templatePicker
+                Text(template.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            TextField(suggestedTitle, text: $title)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { create() }
 
+            if isHomePage {
+                Toggle("Also create About, Work, Writing and Contact", isOn: $wholeSite)
+                    .font(.system(size: 12))
+                    .onChange(of: wholeSite) { _, on in if on { template = .home } }
+                Text("Paper — Tim's theme. A navigation bar, your site's name and a footer on every page. Change a color or a typeface once and every page follows.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Text(isAstro
                  ? "Creates src/pages/\(slug.isEmpty ? "…" : slug).astro from your site's layout, builds, and opens it."
-                 : (isHomePage
-                    ? "This site has no home page yet — this page becomes index.html, publishes, and opens."
-                    : "Creates \(effectiveSlug.isEmpty ? "…" : effectiveSlug).html in the site's local folder, publishes it, and opens it."))
+                 : (scaffolding
+                    ? "Creates five pages in the site's local folder, publishes them, and opens the home page."
+                    : (isHomePage
+                       ? "This site has no home page yet — this page becomes index.html, publishes, and opens."
+                       : "Creates \(effectiveSlug.isEmpty ? "…" : effectiveSlug).html in the site's local folder, publishes it, and opens it.")))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-
-            Text("Every page is a canvas — a plain article is just a full-width text box.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-
             if let errorMessage {
                 Text(errorMessage)
                     .font(.caption)
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
             }
-
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -3821,22 +3865,47 @@ struct NewPageSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 380)
+        .frame(width: 468)
     }
 
-    private var slug: String {
-        title.lowercased()
-            .replacingOccurrences(of: " ", with: "-")
-            .filter { $0.isLetter || $0.isNumber || $0 == "-" }
+    /// Six small drawings of six layouts. Pick one; the words below say
+    /// what it's for.
+    private var templatePicker: some View {
+        HStack(spacing: 8) {
+            ForEach(Paper.Template.allCases) { t in
+                Button {
+                    if wholeSite, t != .home { wholeSite = false }
+                    template = t
+                } label: {
+                    VStack(spacing: 6) {
+                        TemplateGlyph(template: t)
+                            .frame(width: 58, height: 76)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(Color(nsColor: .textBackgroundColor))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .strokeBorder(template == t ? Color.accentColor : Color.primary.opacity(0.12),
+                                                  lineWidth: template == t ? 2 : 1)
+                            )
+                        Text(t.title)
+                            .font(.system(size: 11, weight: template == t ? .semibold : .regular))
+                            .foregroundStyle(template == t ? .primary : .secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+                .opacity(scaffolding && t != .home ? 0.45 : 1)
+            }
+        }
+        .frame(maxWidth: .infinity)
     }
 
     private func create() {
         guard var site else { return }
         isCreating = true
         errorMessage = nil
-        let pageTitle = title
-
-        // The local mirror is where pages are born.
+        let chosenTitle = pageTitle
         if site.localProjectPath.isEmpty {
             site.localProjectPath = SiteWorkspace.defaultFolder(for: site.name.isEmpty ? site.origin : site.name)
             siteStore.upsert(site)
@@ -3844,43 +3913,58 @@ struct NewPageSheet: View {
         SiteWorkspace.ensure(site.localProjectPath)
         let workingSite = site
         let pageSlug = effectiveSlug
-
+        let chosen = template
+        let scaffold = scaffolding
+        let name = siteName
+        let astro = isAstro
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let rel: String
-                if isAstro {
-                    rel = try ComponentLibrary.createPage(
-                        slug: pageSlug, title: pageTitle, projectPath: workingSite.localProjectPath
-                    )
-                    _ = try AstroProject.build(projectPath: workingSite.localProjectPath)
+                let folder = workingSite.localProjectPath
+                var rel: String
+                var written: [String] = []
+                if astro {
+                    rel = try ComponentLibrary.createPage(slug: pageSlug, title: chosenTitle, projectPath: folder)
+                    _ = try AstroProject.build(projectPath: folder)
+                } else if scaffold {
+                    written = try Paper.installSite(in: folder, siteName: name, origin: workingSite.origin)
+                        .filter { !$0.hasPrefix("/components/") }
+                    rel = "/index.html"
                 } else {
-                    // Plain site: write the page into the mirror, publish it.
                     rel = pageSlug == "index" ? "/index.html" : "/\(pageSlug).html"
-                    let html = LocalPage.html(
-                        title: pageTitle.isEmpty ? pageSlug : pageTitle,
-                        likeSiteAt: workingSite.localProjectPath
-                    )
-                    try PageWriter.write(html: html, folder: workingSite.localProjectPath, relativePath: rel)
+                    let html = Paper.page(chosen, title: chosenTitle, likeSiteAt: folder,
+                                          siteName: name, origin: workingSite.origin)
+                    try PageWriter.write(html: html, folder: folder, relativePath: rel)
+                    written = [rel]
+                }
+                if !astro {
                     switch workingSite.target {
                     case .sftp:
                         let root = workingSite.remoteRoot.hasSuffix("/")
                             ? String(workingSite.remoteRoot.dropLast()) : workingSite.remoteRoot
-                        _ = try SFTP.upload(
-                            html: html, to: root + rel,
-                            host: workingSite.host, username: workingSite.username, port: workingSite.port
-                        )
+                        for pageRel in written {
+                            let html = try String(contentsOfFile: (folder as NSString).appendingPathComponent(pageRel), encoding: .utf8)
+                            _ = try SFTP.upload(
+                                html: html, to: root + pageRel,
+                                host: workingSite.host, username: workingSite.username, port: workingSite.port
+                            )
+                        }
                     case .cloudflare:
-                        _ = try CloudflarePublisher.publish(site: workingSite, folder: workingSite.localProjectPath)
+                        _ = try CloudflarePublisher.publish(site: workingSite, folder: folder)
                     case .githubPages:
                         _ = try GitHubPagesPublisher.publish(
-                            repo: workingSite.localProjectPath, message: "New page \(rel) with Tim"
+                            repo: folder, message: scaffold ? "New site with Tim" : "New page \(rel) with Tim"
                         )
                     }
+                    SiteWorkspace.snapshot(folder, message: scaffold ? "New site with Tim" : "New page \(rel) with Tim")
                 }
                 DispatchQueue.main.async {
                     isCreating = false
-                    let destination = workingSite.origin + (rel == "/index.html" && !isAstro ? "/" : rel)
-                    PageRegistry.record(url: destination, title: pageTitle)
+                    for pageRel in written where pageRel != rel {
+                        let stem = ((pageRel as NSString).lastPathComponent as NSString).deletingPathExtension
+                        PageRegistry.record(url: workingSite.origin + pageRel, title: stem.capitalized)
+                    }
+                    let destination = workingSite.origin + (rel == "/index.html" && !astro ? "/" : rel)
+                    PageRegistry.record(url: destination, title: chosenTitle)
                     tab.navigate(to: destination)
                     dismiss()
                 }
@@ -3890,6 +3974,69 @@ struct NewPageSheet: View {
                     errorMessage = error.localizedDescription
                 }
             }
+        }
+    }
+}
+
+/// A template, drawn small: where the words, pictures and buttons sit.
+struct TemplateGlyph: View {
+    let template: Paper.Template
+    enum Kind { case title, text, image, accent, rule }
+    struct Box { let r: Int, c: Int, re: Int, ce: Int, kind: Kind }
+
+    var body: some View {
+        Canvas { ctx, size in
+            let cols = 24.0, rows = 36.0
+            let inset = 5.0
+            let w = size.width - inset * 2, h = size.height - inset * 2
+            for b in boxes {
+                let x = inset + (Double(b.c - 1) / cols) * w
+                let y = inset + (Double(b.r - 1) / rows) * h
+                let bw = max(1.5, (Double(b.ce - b.c) / cols) * w - 1.2)
+                let bh = max(1.5, (Double(b.re - b.r) / rows) * h - 1.2)
+                let rect = CGRect(x: x, y: y, width: bw, height: bh)
+                let color: Color
+                switch b.kind {
+                case .title: color = .primary.opacity(0.78)
+                case .text: color = .primary.opacity(0.28)
+                case .image: color = .primary.opacity(0.14)
+                case .accent: color = Color(red: 1, green: 0.84, blue: 0.04)
+                case .rule: color = .primary.opacity(0.18)
+                }
+                ctx.fill(Path(roundedRect: rect, cornerRadius: b.kind == .accent ? bh / 2 : 1), with: .color(color))
+            }
+        }
+    }
+
+    private var boxes: [Box] {
+        switch template {
+        case .blank:
+            return [Box(r: 4, c: 1, re: 7, ce: 15, kind: .title), Box(r: 7, c: 1, re: 10, ce: 13, kind: .text)]
+        case .home:
+            return [Box(r: 4, c: 1, re: 5, ce: 10, kind: .text), Box(r: 5, c: 1, re: 10, ce: 14, kind: .title),
+                    Box(r: 10, c: 1, re: 13, ce: 12, kind: .text), Box(r: 13, c: 1, re: 15, ce: 6, kind: .accent),
+                    Box(r: 4, c: 15, re: 17, ce: 25, kind: .image), Box(r: 18, c: 1, re: 19, ce: 25, kind: .rule),
+                    Box(r: 20, c: 1, re: 25, ce: 9, kind: .image), Box(r: 20, c: 9, re: 25, ce: 17, kind: .image),
+                    Box(r: 20, c: 17, re: 25, ce: 25, kind: .image), Box(r: 27, c: 3, re: 31, ce: 23, kind: .text)]
+        case .about:
+            return [Box(r: 5, c: 1, re: 9, ce: 15, kind: .title), Box(r: 4, c: 16, re: 16, ce: 25, kind: .image),
+                    Box(r: 10, c: 1, re: 18, ce: 15, kind: .text), Box(r: 19, c: 1, re: 20, ce: 25, kind: .rule),
+                    Box(r: 21, c: 1, re: 24, ce: 8, kind: .text), Box(r: 21, c: 9, re: 24, ce: 16, kind: .text),
+                    Box(r: 21, c: 17, re: 24, ce: 25, kind: .text), Box(r: 26, c: 3, re: 30, ce: 23, kind: .text)]
+        case .work:
+            return [Box(r: 5, c: 1, re: 9, ce: 14, kind: .title), Box(r: 6, c: 16, re: 9, ce: 25, kind: .text),
+                    Box(r: 11, c: 1, re: 18, ce: 9, kind: .image), Box(r: 11, c: 9, re: 18, ce: 17, kind: .image),
+                    Box(r: 11, c: 17, re: 18, ce: 25, kind: .image), Box(r: 20, c: 1, re: 27, ce: 9, kind: .image),
+                    Box(r: 20, c: 9, re: 27, ce: 17, kind: .image), Box(r: 20, c: 17, re: 27, ce: 25, kind: .image)]
+        case .writing:
+            return [Box(r: 5, c: 5, re: 10, ce: 21, kind: .title), Box(r: 10, c: 6, re: 13, ce: 19, kind: .text),
+                    Box(r: 14, c: 3, re: 21, ce: 23, kind: .image), Box(r: 23, c: 6, re: 29, ce: 19, kind: .text),
+                    Box(r: 30, c: 6, re: 31, ce: 19, kind: .title), Box(r: 31, c: 6, re: 33, ce: 19, kind: .text)]
+        case .contact:
+            return [Box(r: 5, c: 1, re: 10, ce: 15, kind: .title), Box(r: 10, c: 1, re: 13, ce: 13, kind: .text),
+                    Box(r: 14, c: 1, re: 16, ce: 6, kind: .accent), Box(r: 5, c: 17, re: 8, ce: 25, kind: .text),
+                    Box(r: 9, c: 17, re: 13, ce: 25, kind: .text), Box(r: 14, c: 17, re: 18, ce: 25, kind: .text),
+                    Box(r: 19, c: 1, re: 20, ce: 25, kind: .rule), Box(r: 21, c: 1, re: 33, ce: 25, kind: .image)]
         }
     }
 }
@@ -5942,6 +6089,12 @@ struct PageOptionsControls: View {
     @State private var bg: Color
     @State private var fg: Color
     @State private var link: Color
+    @State private var accent: Color
+    @State private var headingFontName: String
+    @State private var bodyFontName: String
+    @State private var fontTarget: PageFontTarget?
+    @State private var templateNames: [String]
+    @State private var ownTheme: Bool
     @State private var contentW: Double
     @State private var marginX: Double
     @State private var padY: Double
@@ -5990,6 +6143,18 @@ struct PageOptionsControls: View {
         _bgAngle = State(initialValue: gradient?.angle ?? 180)
         _fg = State(initialValue: Color(cssColor: info["fg"] as? String ?? "", fallback: .black))
         _link = State(initialValue: Color(cssColor: info["link"] as? String ?? "", fallback: .blue))
+        _accent = State(initialValue: Color(cssColor: info["accent"] as? String ?? "", fallback: Color(red: 1, green: 0.84, blue: 0.04)))
+        _headingFontName = State(initialValue: Self.familyName(info["headingFont"] as? String ?? ""))
+        _bodyFontName = State(initialValue: Self.familyName(info["bodyFont"] as? String ?? ""))
+        let current = info["template"] as? String ?? "default"
+        var names = (info["templates"] as? [String]) ?? []
+        if !names.contains(current) { names.append(current) }
+        _templateNames = State(initialValue: names.sorted { a, b in
+            if a == "default" { return true }
+            if b == "default" { return false }
+            return a < b
+        })
+        _ownTheme = State(initialValue: (info["ownTheme"] as? Int) == 1)
         _contentW = State(initialValue: min(1680, max(560, info["contentW"] as? Double ?? 1320)))
         _marginX = State(initialValue: min(120, max(0, info["marginX"] as? Double ?? 32)))
         _padY = State(initialValue: min(200, max(0, info["padY"] as? Double ?? 48)))
@@ -6007,23 +6172,114 @@ struct PageOptionsControls: View {
 
     private var currentSite: Site? { siteStore.match(tab.webView.url) }
 
+    enum PageFontTarget: String, Identifiable {
+        case heading, body
+        var id: String { rawValue }
+    }
+
+    private func fontRow(_ label: String, family: String, target: PageFontTarget) -> some View {
+        HStack(spacing: 8) {
+            rowLabel(label)
+            Menu {
+                Button("Browse Fonts…") { fontTarget = target }
+                Button("System Font") { setPageFont(target, family: nil) }
+            } label: {
+                HStack {
+                    Text(family.isEmpty ? "System" : family)
+                        .font(.system(size: 12))
+                        .lineLimit(1)
+                    Spacer()
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 5)
+                .padding(.horizontal, 8)
+                .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(0.06)))
+                .contentShape(Rectangle())
+            }
+            .menuIndicator(.hidden)
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func setPageFont(_ target: PageFontTarget, family: GoogleFonts.Family?) {
+        let prop = target == .heading ? "headingFont" : "bodyFont"
+        if let family {
+            tab.ensurePageFont(family: family.family, cssURL: GoogleFonts.cssURL(for: family))
+            tab.setPageOption(prop, "'\(family.family)', \(GoogleFonts.genericFallback(family.category))")
+            if target == .heading { headingFontName = family.family } else { bodyFontName = family.family }
+        } else {
+            tab.setPageOption(prop, "")
+            if target == .heading { headingFontName = "" } else { bodyFontName = "" }
+        }
+    }
+
+    /// "'Fraunces', Georgia, serif" → "Fraunces".
+    static func familyName(_ stack: String) -> String {
+        guard let first = stack.split(separator: ",").first else { return "" }
+        return first.trimmingCharacters(in: CharacterSet(charactersIn: " '\""))
+    }
+
+    private func promptNewTemplate() {
+        let alert = NSAlert()
+        alert.messageText = "New Template"
+        alert.informativeText = "It starts as a copy of this page's template. This page moves to it; pages you set to it later follow it too."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 22))
+        field.placeholderString = "Name"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.lowercased()
+            .replacingOccurrences(of: " ", with: "-")
+            .filter { $0.isLetter || $0.isNumber || $0 == "-" }
+        guard !name.isEmpty, !templateNames.contains(name) else { return }
+        tab.setPageOption("newTemplate", name)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { reload() }
+    }
+
     var body: some View {
         ScrollView(.vertical) {
             LazyVStack(alignment: .leading, spacing: 10) {
                 card {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 6) {
                         rowLabel("Template")
                         Picker("", selection: $template) {
-                            Text("Default").tag("default")
+                            ForEach(templateNames, id: \.self) { name in
+                                Text(name.capitalized).tag(name)
+                            }
                         }
                         .pickerStyle(.menu)
                         .labelsHidden()
                         .controlSize(.small)
+                        .onChange(of: template) { _, name in
+                            tab.setPageOption("template", name)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { reload() }
+                        }
+                        Menu {
+                            Button("New Template from This Page…") { promptNewTemplate() }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                                .font(.system(size: 11))
+                        }
+                        .menuIndicator(.hidden)
+                        .buttonStyle(.plain)
+                        .help("A new template starts as a copy of this one. Pages you move to it follow it from then on.")
                     }
-                    Text("Page options edit this template — every page using it follows. Templates live in your theme, next to styles.")
+                    Text("Page options edit this template — on Done, every page using it follows. Templates live in your theme, next to styles.")
                         .font(.system(size: 10))
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
+                    if currentSite != nil {
+                        Toggle("This page keeps its own look", isOn: $ownTheme)
+                            .font(.system(size: 10))
+                            .onChange(of: ownTheme) { _, on in
+                                tab.setPageMeta("ownTheme", on ? "1" : "")
+                            }
+                            .help("On: colors, type and templates set here stay on this page. Off: on Done, every page on the site gets them.")
+                    }
                 }
 
                 card("Page") {
@@ -6119,10 +6375,19 @@ struct PageOptionsControls: View {
                         .onChange(of: link) { _, c in tab.setPageOption("link", c.hexString) }
                     Spacer()
                 }
+                HStack(spacing: 8) {
+                    rowLabel("Accent")
+                    ColorPicker("", selection: $accent, supportsOpacity: false)
+                        .labelsHidden()
+                        .onChange(of: accent) { _, c in tab.setPageOption("accent", c.hexString) }
+                    Spacer()
+                }
+                .help("Buttons, eyebrows and the other small flourishes, in themes that have them.")
                 Button("Reset Colors") {
                     tab.setPageOption("bg", "")
                     tab.setPageOption("fg", "")
                     tab.setPageOption("link", "")
+                    tab.setPageOption("accent", "")
                     tab.setPageBackgroundVideo("")
                     bgMode = "color"
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { reload() }
@@ -6130,6 +6395,20 @@ struct PageOptionsControls: View {
                 .controlSize(.small)
             }
 
+            card("Type") {
+                fontRow("Headings", family: headingFontName, target: .heading)
+                fontRow("Body", family: bodyFontName, target: .body)
+                Text("Title and Heading use the headings face; everything else the body face. Set once — on Done, every page on this template follows.")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .popover(item: $fontTarget, arrowEdge: .leading) { target in
+                FontPickerView(pinned: pinnedFonts, current: target == .heading ? headingFontName : bodyFontName) { family in
+                    setPageFont(target, family: family)
+                    fontTarget = nil
+                }
+            }
             card("Layout") {
                 sliderRow("Width", $contentW, 560...1680, 20, "\(Int(contentW))")
                     .onChange(of: contentW) { _, v in tab.setPageOption("contentW", "\(Int(v))") }

@@ -128,7 +128,7 @@ public enum MobileCSS {
     /// Named styles with big fixed sizes get viewport-proportional mobile
     /// sizes. Styles already using clamp()/vw don't match and are left be.
     static func styleClassRules(in html: String) -> [String] {
-        guard let styleRange = html.range(of: "<style data-tim-styles>[\\s\\S]*?</style>", options: .regularExpression) else { return [] }
+        guard let styleRange = html.range(of: "<style data-tim-styles[^>]*>[\\s\\S]*?</style>", options: .regularExpression) else { return [] }
         let styles = String(html[styleRange])
         guard let regex = try? NSRegularExpression(
             pattern: "\\.(tim-style-[a-z0-9-]+)[^{]*\\{[^}]*?font-size:\\s*([0-9.]+)(px|rem)"
