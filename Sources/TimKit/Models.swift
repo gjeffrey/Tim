@@ -46,6 +46,22 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     /// back, forward, reload. A navigation while editing that nobody asked
     /// for is a page acting on its own, and is not a reason to close the
     /// editor and stash a draft.
+    /// A restored tab that hasn't been shown yet: it knows its address and
+    /// title, and loads the first time it's selected — the way Safari
+    /// reopens a window. Loading every tab at launch meant a dozen web
+    /// processes and, for a site on one shared server, half a dozen
+    /// requests in the same second, which is how pages timed out.
+    @Published public var pendingURL: String?
+    public func deferLoad(of url: String) {
+        pendingURL = url
+        urlString = url
+        title = URL(string: url)?.host() ?? url
+    }
+    public func loadIfPending() {
+        guard let url = pendingURL else { return }
+        pendingURL = nil
+        navigate(to: url)
+    }
     private var deliberateNavigation = false
     /// `log stream --predicate 'subsystem == "com.gabrieljeffrey.tim"'` —
     /// the life of a page load, so a blank tab can say what it did.
@@ -4350,7 +4366,9 @@ extension Tab: WKUIDelegate {
 /// All open tabs and the selection.
 public final class BrowserStore: ObservableObject {
     @Published public var tabs: [Tab] = []
-    @Published public var selectedTabID: UUID?
+    @Published public var selectedTabID: UUID? {
+        didSet { selectedTab?.loadIfPending() }
+    }
 
     public var selectedTab: Tab? { tabs.first { $0.id == selectedTabID } }
 
@@ -4365,14 +4383,16 @@ public final class BrowserStore: ObservableObject {
         if saved.isEmpty {
             newTab()
         } else {
+            let selected = max(0, min(UserDefaults.standard.integer(forKey: Self.sessionSelectedKey), saved.count - 1))
             for (index, url) in saved.enumerated() {
                 let tab = Tab()
                 tab.isPinned = index < pinned.count && pinned[index]
-                if url.isEmpty { tab.loadStartPage() } else { tab.navigate(to: url) }
+                if url.isEmpty { tab.loadStartPage() }
+                else if index == selected { tab.navigate(to: url) }
+                else { tab.deferLoad(of: url) }
                 tabs.append(tab)
             }
-            let index = UserDefaults.standard.integer(forKey: Self.sessionSelectedKey)
-            selectedTabID = tabs[max(0, min(index, tabs.count - 1))].id
+            selectedTabID = tabs[selected].id
         }
         // URLs change constantly while browsing; a light heartbeat keeps
         // the saved session current without wiring every navigation.
