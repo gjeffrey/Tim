@@ -1839,8 +1839,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         img.style.cssText = '';
         img.parentNode.insertBefore(w, img);
         w.appendChild(img);
+        ensureObjectId(w);
         var f = rectOf(w);
-        if (f.w > 0 && f.h > 0) { w.style.aspectRatio = f.w.toFixed(2) + ' / ' + f.h.toFixed(2); }
+        if (f.w > 0 && f.h > 0) { w.setAttribute('data-tim-aspect', f.w.toFixed(2) + ' / ' + f.h.toFixed(2)); }
         var r = natH / natW;
         writeCrop(w, { s: f.w > 0 ? Math.max(1, (f.h / f.w) / r) : 1, x: 0.5, y: 0.5, r: r });
         return w;
@@ -1850,7 +1851,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         if (!img) { return w; }
         img.className = w.className.replace(/\\btim-crop\\b/, '').replace(/\\s+/g, ' ').trim();
         img.style.cssText = w.style.cssText;
-        img.style.position = ''; img.style.overflow = ''; img.style.containerType = ''; img.style.aspectRatio = '';
+        img.style.position = ''; img.style.overflow = ''; img.style.containerType = '';
         ['data-tim-id', 'data-tim-wrap', 'data-tim-mobile-hidden', 'id'].forEach(function (a) {
           if (w.hasAttribute(a)) { img.setAttribute(a, w.getAttribute(a)); }
         });
@@ -1867,7 +1868,23 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         c.x = Math.abs(spanX) > 1 ? (f.x - pic.x) / spanX : 0.5;
         c.y = Math.abs(spanY) > 1 ? (f.y - pic.y) / spanY : 0.5;
         setCrop(w, c);
-        w.style.aspectRatio = f.w.toFixed(2) + ' / ' + f.h.toFixed(2);
+        w.setAttribute('data-tim-aspect', f.w.toFixed(2) + ' / ' + f.h.toFixed(2));
+      }
+      // The frame keeps its shape in the phone's stack — and only there.
+      // Inline, aspect-ratio would also pin the frame on the desktop, and a
+      // vertical resize would do nothing at all.
+      function updateCropAspects() {
+        var frames = doc.querySelectorAll('.tim-crop[data-tim-aspect]');
+        var css = '';
+        Array.prototype.forEach.call(frames, function (w) {
+          var id = w.getAttribute('data-tim-id');
+          if (id) { css += '[data-tim-id="' + id + '"]{aspect-ratio:' + w.getAttribute('data-tim-aspect') + '}\\n'; }
+        });
+        var st = doc.getElementById('__tim-cropaspect');
+        if (!css) { if (st) { st.remove(); } return; }
+        if (!st) { st = doc.createElement('style'); st.id = '__tim-cropaspect'; doc.head.appendChild(st); }
+        var text = '@media (max-width:700px){\\n' + css + '}';
+        if (st.textContent !== text) { st.textContent = text; }
       }
       // Editing chrome: the whole picture, faded where the frame doesn't
       // show it, and a small bar beneath the frame with a Size slider.
@@ -1938,6 +1955,13 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         layout();
         notifySel(true);
       }
+      // For the test harness and for anyone debugging a crop.
+      window.__timDebugCrop = function () {
+        return JSON.stringify({ cropping: cropping ? cropping.className : null, selIsCropping: !!(sel && sel === cropping),
+                                selClass: sel ? sel.className : null, drag: drag ? { mode: drag.mode, hasPic: !!drag.picRect, hasFit: !!drag.lastFit } : null,
+                                frame: sel ? rectOf(sel) : null, pic: drag && drag.picRect ? drag.picRect : null,
+                                geo: (sel && cropWrap(sel)) ? cropGeometry(sel).pic : null });
+      };
       window.__timCropSel = function (on) {
         if (!sel) { return; }
         if (on === false) { exitCrop(); return; }
@@ -2049,6 +2073,7 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         pinPageColumns();
         markOffPage();
         updateWraps();
+        updateCropAspects();
         if (!sel || !doc.contains(sel)) { hide(); return; }
         updateCropChrome();
         var r = rectOf(sel);
@@ -2167,9 +2192,12 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
           var p0 = placement(sel);
           if (!canvas || !p0) { return; }
           checkpoint('drag');
-          // Media resizes with its aspect locked; hold Shift to break it.
+          // A picture's corners keep its proportions; its edges are free,
+          // and cover-fit crops what no longer fits — Keynote's behavior.
+          // Shift breaks the corner lock.
           var ratio = 0;
-          if ((sel.tagName === 'IMG' || sel.tagName === 'VIDEO') && !e.shiftKey) {
+          var cornerHandle = k === 'nw' || k === 'ne' || k === 'sw' || k === 'se';
+          if ((sel.tagName === 'IMG' || sel.tagName === 'VIDEO') && cornerHandle && !e.shiftKey) {
             var natW = sel.naturalWidth || sel.videoWidth || 0;
             var natH = sel.naturalHeight || sel.videoHeight || 0;
             ratio = (natW > 0 && natH > 0) ? natW / natH
@@ -2315,7 +2343,21 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
             }
           }
         }
-        if (drag.picRect && cropping === sel) { recrop(sel, drag.picRect); }
+        if (drag.picRect && cropping === sel) {
+          // The frame may not leave the picture: each edge stops at the
+          // last row or column that still lies inside it.
+          var pic = drag.picRect, cur = placement(sel), fr = rectOf(sel);
+          var unit = g.rowH + g.rowGap, cunit = g.colW + g.gap;
+          var rs = cur.rs, re = cur.re, cs = cur.cs, ce = cur.ce;
+          if (fr.y < pic.y - 0.5) { rs += Math.ceil((pic.y - fr.y - 0.5) / unit); }
+          if (fr.y + fr.h > pic.y + pic.h + 0.5) { re -= Math.ceil((fr.y + fr.h - pic.y - pic.h - 0.5) / unit); }
+          if (fr.x < pic.x - 0.5) { cs += Math.ceil((pic.x - fr.x - 0.5) / cunit); }
+          if (fr.x + fr.w > pic.x + pic.w + 0.5) { ce -= Math.ceil((fr.x + fr.w - pic.x - pic.w - 0.5) / cunit); }
+          if (re <= rs) { re = rs + 1; }
+          if (ce <= cs) { ce = cs + 1; }
+          if (rs !== cur.rs || re !== cur.re || cs !== cur.cs || ce !== cur.ce) { setArea(sel, rs, cs, re, ce); }
+          recrop(sel, pic);
+        }
         var np = placement(sel);
         badge.textContent = drag.mode === 'move'
           ? 'row ' + np.rs + ' · col ' + np.cs
@@ -2337,13 +2379,14 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         var moved = drag.moved;
         lastDragMoved = !!moved;
         var wasRotate = drag.mode === 'rotate';
+        var wasCropResize = !!drag.picRect;
         drag = null;
         // A cropped picture whose frame changed outside crop editing keeps
         // covering it — no gaps at the edges — and remembers its shape.
-        if (sel && cropWrap(sel) && !wasRotate && moved) {
+        if (sel && cropWrap(sel) && !wasRotate && moved && !wasCropResize) {
           var cw = sel, cc = readCrop(cw), need = coverScale(cw), fr = rectOf(cw);
           if (cc.s < need) { cc.s = need; setCrop(cw, cc); }
-          if (fr.w > 0 && fr.h > 0) { cw.style.aspectRatio = fr.w.toFixed(2) + ' / ' + fr.h.toFixed(2); }
+          if (fr.w > 0 && fr.h > 0) { cw.setAttribute('data-tim-aspect', fr.w.toFixed(2) + ' / ' + fr.h.toFixed(2)); }
         }
         hideGrid();
         if (sel && !wasRotate) { fitSpan(sel); }

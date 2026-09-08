@@ -43,6 +43,8 @@ public enum MobileCSS {
         for obj in objects(in: out) where obj.tag == "img" || obj.tag == "video" {
             rules.append("[data-tim-id=\"\(obj.id)\"]{height:auto !important;align-self:start}")
         }
+        // Cropped frames keep their desktop shape in the stack.
+        rules += cropAspectRules(in: out)
         // A hand-tuned mobile layout (data-tim-mobile-layout) is the
         // author's word — synthesis stays out of layout entirely then.
         // Until that point mobile is deliberately a resilient content
@@ -333,6 +335,19 @@ public enum MobileCSS {
         return [String(format: ".tim-canvas{padding-top:%.0fpx !important;padding-bottom:%.0fpx !important}", scaled, scaled)]
     }
 
+    /// A cropped picture is a frame with the picture positioned inside; its
+    /// desktop shape rides along as data-tim-aspect and holds on phones.
+    static func cropAspectRules(in html: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: "<div[^>]*class=\"[^\"]*tim-crop[^\"]*\"[^>]*>") else { return [] }
+        var rules: [String] = []
+        for m in regex.matches(in: html, range: NSRange(html.startIndex..., in: html)) {
+            guard let r = Range(m.range, in: html) else { continue }
+            let tag = String(html[r])
+            guard let id = capture(tag, "data-tim-id=\"([^\"]+)\""), let aspect = capture(tag, "data-tim-aspect=\"([^\"]+)\"") else { continue }
+            rules.append("[data-tim-id=\"\(id)\"]{aspect-ratio:\(aspect)}")
+        }
+        return rules
+    }
     static func scaleRule(px: Double, selector: String) -> String? {
         guard px > 28 else { return nil }
         let mobile = min(48.0, 28 + (px - 28) * 0.24)

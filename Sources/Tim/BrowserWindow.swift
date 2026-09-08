@@ -3992,6 +3992,57 @@ struct NewPageSheet: View {
     }
 }
 
+/// Text wrap, drawn: lines of text and a small object, arranged as the
+/// mode arranges them — the icons Pages uses, in Tim's hand.
+struct WrapGlyph: View {
+    let mode: String
+    var body: some View {
+        Canvas { ctx, size in
+            let w = size.width, h = size.height
+            let ink = Color.primary.opacity(0.85)
+            let lineH: CGFloat = 1.6
+            func line(_ y: CGFloat, _ x0: CGFloat, _ x1: CGFloat) {
+                guard x1 - x0 > 1 else { return }
+                ctx.fill(Path(roundedRect: CGRect(x: x0, y: y, width: x1 - x0, height: lineH), cornerRadius: 0.8), with: .color(ink))
+            }
+            let rows: [CGFloat] = [1.5, 4.7, 7.9, 11.1, 14.3].map { $0 * h / 16 }
+            switch mode {
+            case "around":
+                // Object at the left; text keeps to its right.
+                let box = CGRect(x: 1, y: h * 0.28, width: w * 0.38, height: h * 0.44)
+                ctx.fill(Path(roundedRect: box, cornerRadius: 1.5), with: .color(ink))
+                for (i, y) in rows.enumerated() {
+                    let beside = i == 1 || i == 2 || i == 3
+                    line(y, beside ? box.maxX + 2.5 : 1, w - 1)
+                }
+            case "above-below":
+                // Object full width; text only above and below.
+                let box = CGRect(x: 3, y: h * 0.3, width: w - 6, height: h * 0.4)
+                ctx.fill(Path(roundedRect: box, cornerRadius: 1.5), with: .color(ink))
+                line(rows[0], 1, w - 1)
+                line(rows[4], 1, w - 1)
+            case "none":
+                // Text runs on underneath; the object is only an outline.
+                for y in rows { line(y, 1, w - 1) }
+                let box = CGRect(x: w * 0.3, y: h * 0.25, width: w * 0.4, height: h * 0.5)
+                ctx.stroke(Path(roundedRect: box, cornerRadius: 1.5), with: .color(ink), lineWidth: 1.2)
+            default:
+                // Automatic: the object in the middle, text either side.
+                let box = CGRect(x: w * 0.33, y: h * 0.28, width: w * 0.34, height: h * 0.44)
+                ctx.fill(Path(roundedRect: box, cornerRadius: 1.5), with: .color(ink))
+                for (i, y) in rows.enumerated() {
+                    if i == 1 || i == 2 || i == 3 {
+                        line(y, 1, box.minX - 2.5)
+                        line(y, box.maxX + 2.5, w - 1)
+                    } else {
+                        line(y, 1, w - 1)
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// A template, drawn small: where the words, pictures and buttons sit.
 struct TemplateGlyph: View {
     let template: Paper.Template
@@ -5202,7 +5253,9 @@ struct InspectorControls: View {
             || ["h1", "h2", "h3", "h4", "h5", "h6", "p", "blockquote", "li"].contains(info["tag"] as? String ?? "")
     }
     private var isMedia: Bool {
-        ["img", "video", "audio"].contains(info["tag"] as? String ?? "")
+        // A cropped picture is a frame (a div) with the picture inside —
+        // still media, still gets the card.
+        ["img", "video", "audio"].contains(info["tag"] as? String ?? "") || (info["media"] as? [String: Any]) != nil
     }
 
     // MARK: Navigation
@@ -5988,18 +6041,15 @@ struct InspectorControls: View {
             if !isText {
                 HStack(spacing: 8) {
                     rowLabel("Text Wrap")
-                    Picker("", selection: $wrap) {
-                        Text("Automatic").tag("auto")
-                        Text("Around").tag("around")
-                        Text("Above and Below").tag("above-below")
-                        Text("None").tag("none")
+                    HStack(spacing: 3) {
+                        wrapButton("Automatic — around a narrow object, above and below a wide one", "auto")
+                        wrapButton("Around — text flows beside it", "around")
+                        wrapButton("Above and Below — text steps over it", "above-below")
+                        wrapButton("None — text ignores it", "none")
                     }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .controlSize(.small)
-                    .onChange(of: wrap) { _, mode in tab.setSelectionWrap(mode) }
-                    .help("How text boxes that overlap this object treat it. Around flows text beside it; Above and Below steps over it; Automatic picks by width. On phones nothing overlaps, so this shapes the desktop.")
+                    Spacer()
                 }
+                .help("How text boxes that overlap this object treat it. On phones nothing overlaps, so this shapes the desktop.")
             }
             Toggle("Show on iPhone", isOn: $showOnMobile)
                 .font(.system(size: 11))
@@ -6017,6 +6067,24 @@ struct InspectorControls: View {
             Image(systemName: symbol)
                 .font(.system(size: 10))
                 .frame(width: 22, height: 16)
+        }
+        .buttonStyle(.accessoryBar)
+        .controlSize(.small)
+        .help(help)
+    }
+
+    private func wrapButton(_ help: String, _ mode: String) -> some View {
+        Button {
+            wrap = mode
+            tab.setSelectionWrap(mode)
+        } label: {
+            WrapGlyph(mode: mode)
+                .frame(width: 26, height: 16)
+                .padding(.horizontal, 2)
+                .background(
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(wrap == mode ? Color.accentColor.opacity(0.22) : Color.clear)
+                )
         }
         .buttonStyle(.accessoryBar)
         .controlSize(.small)
