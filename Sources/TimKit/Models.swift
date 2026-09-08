@@ -1,4 +1,5 @@
 import Foundation
+import os
 import WebKit
 import UniformTypeIdentifiers
 #if os(macOS)
@@ -46,6 +47,12 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     /// for is a page acting on its own, and is not a reason to close the
     /// editor and stash a draft.
     private var deliberateNavigation = false
+    /// `log stream --predicate 'subsystem == "com.gabrieljeffrey.tim"'` —
+    /// the life of a page load, so a blank tab can say what it did.
+    static let navLog = Logger(subsystem: "com.gabrieljeffrey.tim", category: "navigation")
+    func note(_ event: String) {
+        Tab.navLog.notice("\(event, privacy: .public) \(self.urlString, privacy: .public)")
+    }
     /// The address to retry from the load-failure page.
     public var pendingRetryURL: String = ""
     /// An unpublished draft of this page exists on this Mac.
@@ -3839,6 +3846,7 @@ extension Tab: WKScriptMessageHandler {
 
 extension Tab: WKNavigationDelegate {
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        note("start")
         // Navigating away always leaves edit mode.
         if isEditing { isEditing = false }
         textSelection = nil
@@ -3847,6 +3855,7 @@ extension Tab: WKNavigationDelegate {
     }
 
     public func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        note("commit")
         deliberateNavigation = false
         #if os(iOS)
         if addressEditing { webView.evaluateJavaScript("window.__timAddressEditing = true;", completionHandler: nil) }
@@ -3859,6 +3868,7 @@ extension Tab: WKNavigationDelegate {
     /// so do we. An edit in progress is already in the draft, which the
     /// address bar offers back once the page returns.
     public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        note("web-process-terminated")
         if isEditing { isEditing = false }
         deliberateNavigation = true
         // A full load, not reload(): with the process gone, reload can be
@@ -3879,6 +3889,7 @@ extension Tab: WKNavigationDelegate {
     }
     private func showLoadFailure(_ error: Error) {
         let e = error as NSError
+        note("fail \(e.domain) \(e.code)")
         // Cancellations are ours (a newer navigation, an edit-mode guard,
         // a download) — not failures.
         if e.domain == NSURLErrorDomain && e.code == NSURLErrorCancelled { return }
@@ -3900,6 +3911,7 @@ extension Tab: WKNavigationDelegate {
         webView.loadHTMLString(html, baseURL: URL(string: failed))
     }
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        note("finish")
         #if os(iOS)
         if addressEditing { webView.evaluateJavaScript("window.__timAddressEditing = true;", completionHandler: nil) }
         #endif
@@ -3983,6 +3995,7 @@ extension Tab: WKNavigationDelegate {
             // editing — links go live again the moment editing ends.
             if navigationAction.navigationType == .linkActivated
                 || navigationAction.navigationType == .formSubmitted {
+                note("policy-cancel link-while-editing")
                 decisionHandler(.cancel)
                 return
             }
@@ -3990,6 +4003,7 @@ extension Tab: WKNavigationDelegate {
             // .other, which used to read as a deliberate move and threw
             // the editor away. If Tim didn't ask, nothing happens.
             if !deliberateNavigation {
+                note("policy-cancel not-deliberate")
                 decisionHandler(.cancel)
                 return
             }
