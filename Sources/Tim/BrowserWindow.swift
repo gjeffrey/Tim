@@ -4558,7 +4558,7 @@ struct SiteEditorSheet: View {
                     }
                     GridRow {
                         Text("Worker name")
-                        TextField("Optional — auto-named from the address", text: $draft.cfProjectName)
+                        TextField("Optional — will be \(draft.cfScriptName)", text: $draft.cfProjectName)
                     }
                 case .githubPages:
                     GridRow {
@@ -4665,7 +4665,9 @@ struct SiteEditorSheet: View {
         guard !draft.origin.isEmpty else { return false }
         switch draft.target {
         case .sftp: return !draft.host.isEmpty && !draft.username.isEmpty
-        case .cloudflare: return !draft.cfProjectName.isEmpty
+        // The Worker is named from the address when the field is blank —
+        // the field says "optional", so Save has to agree with it.
+        case .cloudflare: return true
         case .githubPages: return !draft.localProjectPath.isEmpty
         }
     }
