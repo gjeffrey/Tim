@@ -33,6 +33,7 @@ extension Notification.Name {
     static let timReplaceMedia = Notification.Name("tim.replaceMedia")
     static let timUpscaleMedia = Notification.Name("tim.upscaleMedia")
     static let timReplaceFromPhotos = Notification.Name("tim.replaceFromPhotos")
+    static let timChangeTheme = Notification.Name("tim.changeTheme")
     static let timRestackMobile = Notification.Name("tim.restackMobile")
     static let timMovePage = Notification.Name("tim.movePage")
     static let timResumeDraft = Notification.Name("tim.resumeDraft")
@@ -2617,6 +2618,7 @@ struct EditingToolbar: View {
     @State private var showLinkPopover = false
     @State private var showThemePanel = false
     @State private var showNewPageSheet = false
+    @State private var showChangeTheme = false
     @State private var navBuilderSite: Site?
     @State private var statusMessage: String?
     @State private var isWorking = false
@@ -2765,6 +2767,12 @@ struct EditingToolbar: View {
         .overlay(alignment: .bottom) {
             // The editing strip carries the ownership color, quietly.
             Rectangle().fill(timYellow.opacity(0.55)).frame(height: 1)
+        }
+        .sheet(isPresented: $showChangeTheme) {
+            ChangeThemeSheet(tab: tab)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .timChangeTheme)) { _ in
+            if tab.isEditing { showChangeTheme = true }
         }
         .sheet(isPresented: $showNewPageSheet) {
             NewPageSheet(site: site, tab: tab)
@@ -4042,6 +4050,72 @@ struct TemplateGlyph: View {
                     Box(r: 9, c: 17, re: 13, ce: 25, kind: .text), Box(r: 14, c: 17, re: 18, ce: 25, kind: .text),
                     Box(r: 19, c: 1, re: 20, ce: 25, kind: .rule), Box(r: 21, c: 1, re: 33, ce: 25, kind: .image)]
         }
+    }
+}
+
+/// Page › Change Theme…: the site's look, swapped for another — type,
+/// colors, spacing, the pieces. Every object stays where it is. Undo goes
+/// back; on Done, every page on the site follows.
+struct ChangeThemeSheet: View {
+    @ObservedObject var tab: Tab
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Change Theme")
+                .font(.title3.bold())
+            HStack(alignment: .top, spacing: 14) {
+                ThemeSwatch()
+                    .frame(width: 148, height: 96)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(Paper.name)
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("Warm paper, one accent, Fraunces and Manrope. Nine text styles, two page styles — Home and Page — and a navigation bar, name and footer that live on every page.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Text("The look changes; nothing moves. Text you've styled by hand keeps its own settings. Undo reverses it, and on Done every page on the site follows.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Change") {
+                    tab.applyTheme(styles: Paper.styles, overrides: Paper.overrideRules, templates: Paper.templateProps,
+                                   fonts: Paper.fontLinks, defaultTemplate: "page")
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 440)
+    }
+}
+
+/// Paper, at a glance: its ground, its ink, its accent.
+struct ThemeSwatch: View {
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(red: 0.965, green: 0.957, blue: 0.933))
+            VStack(alignment: .leading, spacing: 6) {
+                Capsule().fill(Color(red: 1, green: 0.84, blue: 0.04)).frame(width: 22, height: 3)
+                RoundedRectangle(cornerRadius: 2).fill(Color(red: 0.11, green: 0.106, blue: 0.094)).frame(width: 92, height: 12)
+                RoundedRectangle(cornerRadius: 2).fill(Color(red: 0.11, green: 0.106, blue: 0.094)).frame(width: 64, height: 12)
+                Spacer(minLength: 0)
+                HStack(spacing: 6) {
+                    RoundedRectangle(cornerRadius: 2).fill(Color(red: 0.11, green: 0.106, blue: 0.094).opacity(0.28)).frame(width: 70, height: 5)
+                    Capsule().fill(Color(red: 1, green: 0.84, blue: 0.04)).frame(width: 28, height: 10)
+                }
+            }
+            .padding(12)
+        }
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.primary.opacity(0.12)))
     }
 }
 
@@ -6119,8 +6193,7 @@ struct PageOptionsControls: View {
     @State private var fontTarget: PageFontTarget?
     @State private var templateNames: [String]
     @State private var ownTheme: Bool
-    @State private var theme: String
-    @State private var canRestoreTheme: Bool
+
     @State private var contentW: Double
     @State private var marginX: Double
     @State private var padY: Double
@@ -6181,8 +6254,7 @@ struct PageOptionsControls: View {
             return a < b
         })
         _ownTheme = State(initialValue: (info["ownTheme"] as? Int) == 1)
-        _theme = State(initialValue: info["theme"] as? String ?? "")
-        _canRestoreTheme = State(initialValue: (info["canRestoreTheme"] as? Int) == 1)
+
         _contentW = State(initialValue: min(1680, max(560, info["contentW"] as? Double ?? 1320)))
         _marginX = State(initialValue: min(120, max(0, info["marginX"] as? Double ?? 32)))
         _padY = State(initialValue: min(200, max(0, info["padY"] as? Double ?? 48)))
@@ -6249,20 +6321,10 @@ struct PageOptionsControls: View {
         return first.trimmingCharacters(in: CharacterSet(charactersIn: " '\""))
     }
 
-    private func confirmLayout(_ t: Paper.Template) {
-        let alert = NSAlert()
-        alert.messageText = "Start this page from the \(t.title) layout?"
-        alert.informativeText = "Its objects replace the ones on this page. Objects that appear on every page stay. Undo brings everything back."
-        alert.addButton(withTitle: "Replace")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        tab.replaceObjects(html: Paper.objects(for: t, title: title.isEmpty ? t.title : title))
-    }
-
     private func promptNewTemplate() {
         let alert = NSAlert()
-        alert.messageText = "New Template"
-        alert.informativeText = "It starts as a copy of this page's template. This page moves to it; pages you set to it later follow it too."
+        alert.messageText = "New Page Style"
+        alert.informativeText = "It starts as a copy of this page's style. This page moves to it; pages you set to it later follow it too."
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 22))
         field.placeholderString = "Name"
         alert.accessoryView = field
@@ -6283,7 +6345,7 @@ struct PageOptionsControls: View {
             LazyVStack(alignment: .leading, spacing: 10) {
                 card {
                     HStack(spacing: 6) {
-                        rowLabel("Template")
+                        rowLabel("Page Style")
                         Picker("", selection: $template) {
                             ForEach(templateNames, id: \.self) { name in
                                 Text(name.capitalized).tag(name)
@@ -6297,84 +6359,29 @@ struct PageOptionsControls: View {
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { reload() }
                         }
                         Menu {
-                            Button("New Template from This Page…") { promptNewTemplate() }
+                            Button("New Page Style from This Page…") { promptNewTemplate() }
                         } label: {
                             Image(systemName: "ellipsis.circle")
                                 .font(.system(size: 11))
                         }
                         .menuIndicator(.hidden)
                         .buttonStyle(.plain)
-                        .help("A new template starts as a copy of this one. Pages you move to it follow it from then on.")
+                        .help("A new page style starts as a copy of this one. Pages you move to it follow it from then on.")
                     }
-                    Text("Page options edit this template — on Done, every page using it follows. Templates live in your theme, next to styles.")
+                    Text("Everything below edits this page style. On Done, every page using it follows. A theme comes with its own page styles; Paper has Home and Page.")
                         .font(.system(size: 10))
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
                     if currentSite != nil {
-                        Toggle("This page keeps its own look", isOn: $ownTheme)
+                        Toggle("Changes here stay on this page", isOn: $ownTheme)
                             .font(.system(size: 10))
                             .onChange(of: ownTheme) { _, on in
                                 tab.setPageMeta("ownTheme", on ? "1" : "")
                             }
-                            .help("On: colors, type and templates set here stay on this page. Off: on Done, every page on the site gets them.")
+                            .help("On: colors, type and page styles set here stay on this page. Off: on Done, every page on the site gets them.")
                     }
                 }
 
-                card("Theme") {
-                    HStack(spacing: 8) {
-                        rowLabel("Look")
-                        Picker("", selection: $theme) {
-                            Text("This site's own").tag("")
-                            Text(Paper.name).tag("paper")
-                        }
-                        .pickerStyle(.menu)
-                        .labelsHidden()
-                        .controlSize(.small)
-                        .onChange(of: theme) { old, new in
-                            guard old != new else { return }
-                            if new == "paper" {
-                                tab.applyTheme(styles: Paper.styles, overrides: Paper.overrideRules, templates: Paper.templateProps,
-                                               fonts: Paper.fontLinks, defaultTemplate: "page")
-                            } else if canRestoreTheme {
-                                tab.restoreTheme()
-                            } else {
-                                theme = old
-                                return
-                            }
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { reload() }
-                        }
-                        .help(theme.isEmpty || canRestoreTheme
-                              ? "The look: type, colors, spacing, and a theme's own pieces. Objects stay where they are."
-                              : "This page's own look was set before this session, so there's nothing to switch back to here — Undo goes back one step.")
-                    }
-                    HStack(spacing: 8) {
-                        rowLabel("Layout")
-                        Menu {
-                            ForEach(Paper.Template.allCases) { t in
-                                Button(t.title) { confirmLayout(t) }
-                            }
-                        } label: {
-                            HStack {
-                                Text("Start From…")
-                                    .font(.system(size: 12))
-                                Spacer()
-                                Image(systemName: "chevron.up.chevron.down")
-                                    .font(.system(size: 8, weight: .semibold))
-                                    .foregroundStyle(.secondary)
-                            }
-                            .padding(.vertical, 5)
-                            .padding(.horizontal, 8)
-                            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(0.06)))
-                            .contentShape(Rectangle())
-                        }
-                        .menuIndicator(.hidden)
-                        .buttonStyle(.plain)
-                    }
-                    Text("A layout is a starting arrangement of objects — Home, About, Work and so on. Choosing one replaces what's on this page; Undo brings it back. Objects on every page stay.")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
                 card("Page") {
                     HStack(spacing: 8) {
                         rowLabel("Title")
