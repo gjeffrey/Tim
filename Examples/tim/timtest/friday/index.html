@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" class="tim-ready"><head>
+<html lang="en" class=""><head>
 <meta charset="utf-8">
 <meta name="generator" content="Tim">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -68,13 +68,6 @@ html:not(.tim-mobile-custom) .tim-canvas>.tim-text{width:auto !important}
 html:not(.tim-mobile-custom) .tim-canvas .tim-container{grid-template-columns:minmax(0,1fr) !important;grid-auto-rows:auto !important;height:auto !important}
 }</style>
 <style data-tim-pasteboard=""></style>
-<style data-tim-motion="">
-html.tim-reveal .tim-canvas > .tim-object{transition:opacity .38s cubic-bezier(.2,.7,.2,1),transform .38s cubic-bezier(.2,.7,.2,1)}
-html.tim-reveal .tim-canvas > .tim-object:not(.tim-in){opacity:0;transform:translateY(8px)}
-html.tim-fade body{opacity:0;transition:opacity .26s ease-out}
-html.tim-fade.tim-ready body{opacity:1}
-@media (prefers-reduced-motion: reduce){html.tim-reveal .tim-canvas > .tim-object,html.tim-fade body{opacity:1 !important;transform:none !important;transition:none !important}}
-</style>
 <style data-tim-mobile="">@media (max-width: 700px){
 [data-tim-mobile-hidden]{display:none !important}
 .tim-canvas .tim-text{column-count:1 !important;overflow-wrap:normal;word-break:normal}
@@ -86,18 +79,36 @@ html:not(.tim-mobile-custom) .tim-canvas>.tim-text{width:auto !important}
 html:not(.tim-mobile-custom) .tim-canvas .tim-container{grid-template-columns:minmax(0,1fr) !important;grid-auto-rows:auto !important;height:auto !important}
 }</style>
 <style data-tim-pasteboard=""></style>
-<style data-tim-motion="">
-html.tim-reveal .tim-canvas > .tim-object{transition:opacity .38s cubic-bezier(.2,.7,.2,1),transform .38s cubic-bezier(.2,.7,.2,1)}
-html.tim-reveal .tim-canvas > .tim-object:not(.tim-in){opacity:0;transform:translateY(8px)}
-html.tim-fade body{opacity:0;transition:opacity .26s ease-out}
-html.tim-fade.tim-ready body{opacity:1}
-@media (prefers-reduced-motion: reduce){html.tim-reveal .tim-canvas > .tim-object,html.tim-fade body{opacity:1 !important;transform:none !important;transition:none !important}}
-</style>
-<style data-tim-mobile>@media (max-width: 700px){
+<style data-tim-mobile="">@media (max-width: 700px){
 [data-tim-mobile-hidden]{display:none !important}
 .tim-canvas .tim-text{column-count:1 !important;overflow-wrap:normal;word-break:normal}
 .tim-canvas .tim-object{box-sizing:border-box;min-width:0;max-width:100%}
 .tim-canvas > .tim-object{grid-column:1 / -1 !important}
+html:not(.tim-mobile-custom) .tim-canvas{grid-template-columns:minmax(0,1fr) !important;grid-auto-rows:auto !important;overflow-x:clip}
+html:not(.tim-mobile-custom) .tim-canvas .tim-object{grid-area:auto !important;transform:none !important;margin-left:0 !important;margin-right:0 !important}
+html:not(.tim-mobile-custom) .tim-canvas>.tim-text{width:auto !important}
+html:not(.tim-mobile-custom) .tim-canvas .tim-container{grid-template-columns:minmax(0,1fr) !important;grid-auto-rows:auto !important;height:auto !important}
+}</style>
+<style data-tim-pasteboard=""></style>
+<style data-tim-mobile="">@media (max-width: 700px){
+[data-tim-mobile-hidden]{display:none !important}
+.tim-canvas .tim-text{column-count:1 !important;overflow-wrap:normal;word-break:normal}
+.tim-canvas .tim-object{box-sizing:border-box;min-width:0;max-width:100%}
+.tim-canvas > .tim-object{grid-column:1 / -1 !important}
+.tim-style-title{font-size:31px !important}
+html:not(.tim-mobile-custom) .tim-canvas{grid-template-columns:minmax(0,1fr) !important;grid-auto-rows:auto !important;overflow-x:clip}
+html:not(.tim-mobile-custom) .tim-canvas .tim-object{grid-area:auto !important;transform:none !important;margin-left:0 !important;margin-right:0 !important}
+html:not(.tim-mobile-custom) .tim-canvas>.tim-text{width:auto !important}
+html:not(.tim-mobile-custom) .tim-canvas .tim-container{grid-template-columns:minmax(0,1fr) !important;grid-auto-rows:auto !important;height:auto !important}
+}</style>
+<style data-tim-pasteboard=""></style>
+<style data-tim-mobile>@media (max-width: 700px){
+[data-tim-mobile-hidden]{display:none !important}
+.tim-wrap-spacer{display:none !important}
+.tim-canvas .tim-text{column-count:1 !important;overflow-wrap:normal;word-break:normal}
+.tim-canvas .tim-object{box-sizing:border-box;min-width:0;max-width:100%}
+.tim-canvas > .tim-object{grid-column:1 / -1 !important}
+.tim-style-title{font-size:31px !important}
 html:not(.tim-mobile-custom) .tim-canvas{grid-template-columns:minmax(0,1fr) !important;grid-auto-rows:auto !important;overflow-x:clip}
 html:not(.tim-mobile-custom) .tim-canvas .tim-object{grid-area:auto !important;transform:none !important;margin-left:0 !important;margin-right:0 !important}
 html:not(.tim-mobile-custom) .tim-canvas>.tim-text{width:auto !important}
@@ -114,71 +125,29 @@ html.tim-fade.tim-ready body{opacity:1}
 </head>
 <body data-tim-template="default" data-tim-motion="reveal fade" data-tim-own-icons="">
 <div class="tim-canvas" data-tim-canvas="">
-  <div class="tim-object tim-text tim-style-title tim-in" style="grid-row-start: 1; grid-column-start: 1; grid-row-end: 3; grid-column-end: 17; transition-delay: 0ms;" data-tim-id="t31821d">Hey Tim</div>
-  <div class="tim-object tim-text tim-style-body tim-in" style="grid-row-start: 3; grid-column-start: 1; grid-row-end: 6; grid-column-end: 13; transition-delay: 45ms;" data-tim-id="t83be8a">Double-click any text to edit it. Drag objects to move them — everything snaps to the grid. Insert adds text boxes, images, and video. Save writes this file.</div>
+  <div class="tim-object tim-text tim-style-title" style="grid-row-start: 1; grid-column-start: 1; grid-row-end: 3; grid-column-end: 17; transition-delay: 0ms;" data-tim-id="t31821d">Hey Tim</div>
+  <div class="tim-object tim-text tim-style-body" style="grid-row-start: 3; grid-column-start: 1; grid-row-end: 6; grid-column-end: 13; transition-delay: 45ms;" data-tim-id="t83be8a">Double-click any text to edit it. Drag objects to move them — everything snaps to the grid. Insert adds text boxes, images, and video. Save writes this file.</div>
 </div>
 
 
-<script data-tim-motion="" type="text/javascript">
-(function(){var h=document.documentElement;if(h.classList.contains('tim-editing'))return;
-if(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches)return;
-var m=document.body.getAttribute('data-tim-motion')||'';
-if(m.indexOf('fade')>=0){h.classList.add('tim-fade');
-  requestAnimationFrame(function(){requestAnimationFrame(function(){h.classList.add('tim-ready')})});
-  window.addEventListener('pageshow',function(ev){if(ev.persisted)h.classList.add('tim-ready')});
-  document.addEventListener('click',function(e){
-    if(e.defaultPrevented||e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
-    var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;
-    if(!a||(a.target&&a.target!=='_self')||a.hasAttribute('download'))return;
-    var u;try{u=new URL(a.getAttribute('href'),location.href)}catch(x){return}
-    if(u.origin!==location.origin||(u.pathname===location.pathname&&u.hash))return;
-    e.preventDefault();h.classList.remove('tim-ready');setTimeout(function(){location.href=u.href},190)},true);}
-if(m.indexOf('reveal')>=0&&'IntersectionObserver' in window){h.classList.add('tim-reveal');
-  var els=[].slice.call(document.querySelectorAll('.tim-canvas > .tim-object'));
-  var io=new IntersectionObserver(function(entries){
-    var batch=[];for(var i=0;i<entries.length;i++){if(entries[i].isIntersecting)batch.push(entries[i].target)}
-    if(!batch.length)return;
-    batch.sort(function(a,b){var ra=a.getBoundingClientRect(),rb=b.getBoundingClientRect();return (ra.top-rb.top)||(ra.left-rb.left)});
-    batch.forEach(function(el,i){el.style.transitionDelay=Math.min(i*45,450)+'ms';el.classList.add('tim-in');io.unobserve(el)})
-  },{rootMargin:'0px 0px -8% 0px',threshold:0.05});
-  els.forEach(function(el){io.observe(el)});}
-})();
-</script>
 
-<script data-tim-motion="" type="text/javascript">
-(function(){var h=document.documentElement;if(h.classList.contains('tim-editing'))return;
-if(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches)return;
-var m=document.body.getAttribute('data-tim-motion')||'';
-if(m.indexOf('fade')>=0){h.classList.add('tim-fade');
-  requestAnimationFrame(function(){requestAnimationFrame(function(){h.classList.add('tim-ready')})});
-  window.addEventListener('pageshow',function(ev){if(ev.persisted)h.classList.add('tim-ready')});
-  document.addEventListener('click',function(e){
-    if(e.defaultPrevented||e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
-    var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;
-    if(!a||(a.target&&a.target!=='_self')||a.hasAttribute('download'))return;
-    var u;try{u=new URL(a.getAttribute('href'),location.href)}catch(x){return}
-    if(u.origin!==location.origin||(u.pathname===location.pathname&&u.hash))return;
-    e.preventDefault();h.classList.remove('tim-ready');setTimeout(function(){location.href=u.href},190)},true);}
-if(m.indexOf('reveal')>=0&&'IntersectionObserver' in window){h.classList.add('tim-reveal');
-  var els=[].slice.call(document.querySelectorAll('.tim-canvas > .tim-object'));
-  var io=new IntersectionObserver(function(entries){
-    var batch=[];for(var i=0;i<entries.length;i++){if(entries[i].isIntersecting)batch.push(entries[i].target)}
-    if(!batch.length)return;
-    batch.sort(function(a,b){var ra=a.getBoundingClientRect(),rb=b.getBoundingClientRect();return (ra.top-rb.top)||(ra.left-rb.left)});
-    batch.forEach(function(el,i){el.style.transitionDelay=Math.min(i*45,450)+'ms';el.classList.add('tim-in');io.unobserve(el)})
-  },{rootMargin:'0px 0px -8% 0px',threshold:0.05});
-  els.forEach(function(el){io.observe(el)});}
-})();
-</script>
+
+
 
 <script data-tim-motion>
-(function(){var h=document.documentElement;if(h.classList.contains('tim-editing'))return;
+(function(){var h=document.documentElement;
+// Asked per click, never once at load: a page opened normally and then
+// put into edit mode would otherwise still follow links out from under
+// the editor.
+function editing(){return h.classList.contains('tim-editing')}
+if(editing())return;
 if(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches)return;
 var m=document.body.getAttribute('data-tim-motion')||'';
 if(m.indexOf('fade')>=0){h.classList.add('tim-fade');
   requestAnimationFrame(function(){requestAnimationFrame(function(){h.classList.add('tim-ready')})});
   window.addEventListener('pageshow',function(ev){if(ev.persisted)h.classList.add('tim-ready')});
   document.addEventListener('click',function(e){
+    if(editing())return;
     if(e.defaultPrevented||e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
     var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;
     if(!a||(a.target&&a.target!=='_self')||a.hasAttribute('download'))return;
