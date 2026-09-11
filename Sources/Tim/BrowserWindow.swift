@@ -307,17 +307,114 @@ final class ActivityCenter: ObservableObject {
         let id = UUID()
         let label: String
     }
+    /// What just happened — shown for a moment once nothing is in flight.
+    struct Note: Identifiable, Equatable {
+        let id = UUID()
+        let text: String
+        let failed: Bool
+    }
     @Published var activities: [Activity] = []
+    @Published var note: Note?
+    private var noteDismiss: DispatchWorkItem?
 
     @discardableResult
     func begin(_ label: String) -> UUID {
         let activity = Activity(label: label)
-        DispatchQueue.main.async { self.activities.append(activity) }
+        DispatchQueue.main.async {
+            // Work starting clears whatever note was fading.
+            self.noteDismiss?.cancel()
+            self.note = nil
+            self.activities.append(activity)
+        }
         return activity.id
     }
 
-    func end(_ id: UUID) {
-        DispatchQueue.main.async { self.activities.removeAll { $0.id == id } }
+    /// Ends an activity. With a note, and once nothing else is in flight,
+    /// the HUD says so for a beat — "Published", "Added IMG_0412.jpg".
+    /// Without one it simply goes quiet, which is right between the
+    /// phases of one job (optimizing, then uploading).
+    func end(_ id: UUID, note text: String? = nil) {
+        DispatchQueue.main.async {
+            self.activities.removeAll { $0.id == id }
+            if let text, self.activities.isEmpty { self.show(Note(text: text, failed: false), for: 1.6) }
+        }
+    }
+
+    /// Ends an activity that didn't work out. The HUD says what went
+    /// wrong and stays a little longer — long enough to read.
+    func fail(_ id: UUID, _ message: String) {
+        DispatchQueue.main.async {
+            self.activities.removeAll { $0.id == id }
+            self.show(Note(text: message, failed: true), for: 4.0)
+        }
+    }
+
+    private func show(_ n: Note, for seconds: Double) {
+        noteDismiss?.cancel()
+        note = n
+        let work = DispatchWorkItem { [weak self] in if self?.note?.id == n.id { self?.note = nil } }
+        noteDismiss = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
+}
+
+/// The HUD: what Tim is doing right now, at the foot of the page, and
+/// for a moment afterwards, what it did. One capsule of material; a
+/// spinner while working, a check when done, a warning when not. It
+/// never takes a click — the page under it stays yours.
+struct StatusHUD: View {
+    @ObservedObject var center = ActivityCenter.shared
+
+    private struct Content: Equatable {
+        let id: UUID
+        let symbol: String?
+        let text: String
+        let failed: Bool
+        let working: Bool
+    }
+    private var content: Content? {
+        if let first = center.activities.first {
+            let more = center.activities.count - 1
+            return Content(id: first.id, symbol: nil,
+                           text: more > 0 ? "\(first.label)  ·  \(more) more" : first.label,
+                           failed: false, working: true)
+        }
+        if let note = center.note {
+            return Content(id: note.id, symbol: note.failed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill",
+                           text: note.text, failed: note.failed, working: false)
+        }
+        return nil
+    }
+
+    var body: some View {
+        ZStack {
+            if let c = content {
+                HStack(spacing: 9) {
+                    if c.working {
+                        ProgressView().controlSize(.small).scaleEffect(0.8).frame(width: 16, height: 16)
+                    } else if let symbol = c.symbol {
+                        Image(systemName: symbol)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(c.failed ? Color.orange : Color.accentColor)
+                    }
+                    Text(c.text)
+                        .font(.system(size: 13, weight: .semibold))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(.regularMaterial, in: Capsule())
+                .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08)))
+                .shadow(color: .black.opacity(0.25), radius: 14, y: 5)
+                .frame(maxWidth: 520)
+                .id(c.working ? "working" : c.id.uuidString)
+                .transition(.opacity.combined(with: .scale(scale: 0.94)))
+            }
+        }
+        .animation(.spring(duration: 0.28), value: content)
+        .allowsHitTesting(false)
     }
 }
 
@@ -1087,6 +1184,7 @@ struct SiteSection: View {
 
         let wasCurrent = currentRel == rel && !hidden
         DispatchQueue.global(qos: .userInitiated).async {
+            let activity = ActivityCenter.shared.begin("Deleting \u{201C}\(page.label)\u{201D}…")
             do {
                 let localPath = s.localProjectPath + rel
                 if hidden, rel.hasPrefix("/_h/") {
@@ -1111,11 +1209,13 @@ struct SiteSection: View {
                 }
                 SiteWorkspace.snapshot(s.localProjectPath, message: "Delete \(rel)")
                 DispatchQueue.main.async {
+                    ActivityCenter.shared.end(activity, note: "Deleted \u{201C}\(page.label)\u{201D}")
                     refresh()
                     if wasCurrent { tab.navigate(to: s.origin) }
                 }
             } catch {
                 DispatchQueue.main.async {
+                    ActivityCenter.shared.fail(activity, "Couldn’t delete \u{201C}\(page.label)\u{201D}")
                     let failure = NSAlert()
                     failure.messageText = "Delete Page"
                     failure.informativeText = error.localizedDescription
@@ -1152,6 +1252,7 @@ struct SiteSection: View {
         let token = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let hiddenRel = "/_h/\(token)" + rel
         DispatchQueue.global(qos: .userInitiated).async {
+            let activity = ActivityCenter.shared.begin("Hiding \u{201C}\(page.label)\u{201D}…")
             do {
                 let root = s.remoteRoot.hasSuffix("/") ? String(s.remoteRoot.dropLast()) : s.remoteRoot
                 // mkdir the token path, then move the file server-side.
@@ -1173,9 +1274,13 @@ struct SiteSection: View {
                 try? FileManager.default.removeItem(atPath: to)
                 try FileManager.default.moveItem(atPath: from, toPath: to)
                 SiteWorkspace.snapshot(s.localProjectPath, message: "Hide \(rel)")
-                DispatchQueue.main.async { refresh() }
+                DispatchQueue.main.async {
+                    ActivityCenter.shared.end(activity, note: "Hidden — it has a secret address now")
+                    refresh()
+                }
             } catch {
                 DispatchQueue.main.async {
+                    ActivityCenter.shared.fail(activity, "Couldn’t hide \u{201C}\(page.label)\u{201D}")
                     let failure = NSAlert()
                     failure.messageText = "Hide Page"
                     failure.informativeText = error.localizedDescription
@@ -1192,6 +1297,7 @@ struct SiteSection: View {
         let isLegacy = parts.first == "_hidden"
         let rel = "/" + parts.dropFirst(isLegacy ? 1 : 2).joined(separator: "/")
         DispatchQueue.global(qos: .userInitiated).async {
+            let activity = ActivityCenter.shared.begin("Putting \u{201C}\(page.label)\u{201D} back on the site…")
             do {
                 let root = s.remoteRoot.hasSuffix("/") ? String(s.remoteRoot.dropLast()) : s.remoteRoot
                 let from = s.localProjectPath + hiddenRel
@@ -1218,9 +1324,13 @@ struct SiteSection: View {
                     }
                 }
                 SiteWorkspace.snapshot(s.localProjectPath, message: "Show \(rel)")
-                DispatchQueue.main.async { refresh() }
+                DispatchQueue.main.async {
+                    ActivityCenter.shared.end(activity, note: "\u{201C}\(page.label)\u{201D} is back on the site")
+                    refresh()
+                }
             } catch {
                 DispatchQueue.main.async {
+                    ActivityCenter.shared.fail(activity, "Couldn’t show \u{201C}\(page.label)\u{201D}")
                     let failure = NSAlert()
                     failure.messageText = "Show Page"
                     failure.informativeText = error.localizedDescription
@@ -1495,6 +1605,11 @@ struct TabContentView: View {
                 Divider()
             }
             pageArea
+                .overlay(alignment: .bottom) {
+                    StatusHUD()
+                        .padding(.bottom, 28)
+                        .padding(.horizontal, 24)
+                }
         }
         // The system inspector: AppKit owns the column, while Tim owns one
         // stable 300-point content contract inside it. Selection changes
@@ -1635,6 +1750,7 @@ struct TabContentView: View {
             guard store.selectedTab === tab, let action = note.userInfo?["action"] as? String else { return }
             switch action {
             case "new-local": LocalPages.createAndOpen(in: tab)
+            case "playground": LocalPages.createPlayground(in: tab)
             case "retry": if !tab.pendingRetryURL.isEmpty { tab.navigate(to: tab.pendingRetryURL) }
             case "open": openLocalPage()
             case "connect": showConnectSheet = true
@@ -1955,7 +2071,7 @@ struct TabContentView: View {
                     }
                     SiteWorkspace.snapshot(site.localProjectPath, message: "Edit \(rel)")
                     DispatchQueue.main.async {
-                        ActivityCenter.shared.end(publishing)
+                        ActivityCenter.shared.end(publishing, note: "Published")
                         DraftStore.clear(for: url.absoluteString)
                         PageRegistry.record(url: url.absoluteString, title: tab.title)
                         captureThumbnailSoon(expecting: url)
@@ -1965,7 +2081,7 @@ struct TabContentView: View {
                     }
                 } catch {
                     DispatchQueue.main.async {
-                        ActivityCenter.shared.end(publishing)
+                        ActivityCenter.shared.fail(publishing, "Couldn’t publish: \(error.localizedDescription)")
                         publishAlert(error)
                     }
                 }
@@ -2387,6 +2503,7 @@ struct TabContentView: View {
             let newRel = "/\(slug).html"
             let sourcePath = (site.localProjectPath as NSString).appendingPathComponent(String(rel.dropFirst()))
             DispatchQueue.global(qos: .userInitiated).async {
+                let activity = ActivityCenter.shared.begin("Duplicating the page…")
                 do {
                     let html = try String(contentsOfFile: sourcePath, encoding: .utf8)
                     try PageWriter.write(html: html, folder: site.localProjectPath, relativePath: newRel)
@@ -2401,11 +2518,15 @@ struct TabContentView: View {
                     }
                     SiteWorkspace.snapshot(site.localProjectPath, message: "Duplicate \(rel) as \(newRel)")
                     DispatchQueue.main.async {
+                        ActivityCenter.shared.end(activity, note: "Duplicated")
                         PageRegistry.record(url: site.origin + newRel, title: slug)
                         tab.navigate(to: site.origin + newRel)
                     }
                 } catch {
-                    DispatchQueue.main.async { publishAlert(error) }
+                    DispatchQueue.main.async {
+                        ActivityCenter.shared.fail(activity, "Couldn’t duplicate: \(error.localizedDescription)")
+                        publishAlert(error)
+                    }
                 }
             }
         } else if url.isFileURL {
@@ -2870,8 +2991,24 @@ struct EditingToolbar: View {
     /// The system Photos picker: albums, People, Places and search, none of
     /// which a file dialog can reach — a Photos library is an opaque package.
     private func insertFromPhotos() {
-        PhotosBrowser.pick(multiple: true) { urls in
-            for url in urls { insertMediaFile(url, at: nil) }
+        // Placeholders go down the moment the choice is made — exporting
+        // from Photos is the slow part, and the page should already show
+        // where things are going to be.
+        var placeholders: [String] = []
+        PhotosBrowser.pick(multiple: true, onPicked: { count in
+            let spans = Self.mediaSpans(for: .image)
+            for _ in 0..<count {
+                let id = UUID().uuidString
+                placeholders.append(id)
+                tab.insertObject(html: Self.placeholderHTML(id: id, label: "Getting from Photos…"),
+                                 colSpan: spans.cols, rowSpan: spans.rows, at: nil)
+            }
+        }) { urls in
+            for (i, url) in urls.enumerated() {
+                insertMediaFile(url, at: nil, placeholderID: i < placeholders.count ? placeholders[i] : nil)
+            }
+            // Fewer arrived than were promised: the spares go away.
+            for id in placeholders.dropFirst(urls.count) { tab.resolvePlaceholder(id: id, html: "") }
         }
     }
 
@@ -2894,8 +3031,50 @@ struct EditingToolbar: View {
                               label: Self.dropLabel(for: payload),
                               canReplace: Self.replaceCandidate(payload))
         }
+        var promisedPlaceholders: [String] = []
+        var promisedActivity: UUID?
+        view.dropPromised = { payload, point in
+            guard tab.isEditing else { return }
+            promisedActivity = ActivityCenter.shared.begin(
+                payload.promised == 1 ? "Receiving the file…" : "Receiving \(payload.promised) files…")
+            // A lone picture may be about to replace another — that's
+            // decided when it lands, so it gets no placeholder of its own.
+            guard !Self.replaceCandidate(payload) else { return }
+            let kind = MediaKind.of(fileExtension: payload.promisedExtension)
+            let spans = Self.mediaSpans(for: kind)
+            var y = point.y
+            for _ in 0..<payload.promised {
+                let id = UUID().uuidString
+                promisedPlaceholders.append(id)
+                tab.insertObject(html: Self.placeholderHTML(id: id, label: "Receiving…"),
+                                 colSpan: spans.cols, rowSpan: spans.rows, at: CGPoint(x: point.x, y: y))
+                y += 40
+            }
+        }
         view.drop = { payload, point in
-            guard tab.isEditing else { return false }
+            if let a = promisedActivity {
+                promisedActivity = nil
+                if payload.files.isEmpty, payload.promised > 0 {
+                    ActivityCenter.shared.fail(a, "The files never arrived.")
+                } else {
+                    ActivityCenter.shared.end(a)
+                }
+            }
+            let waiting = promisedPlaceholders
+            promisedPlaceholders = []
+            guard tab.isEditing else {
+                for id in waiting { tab.resolvePlaceholder(id: id, html: "") }
+                return false
+            }
+            if !waiting.isEmpty {
+                for (i, url) in payload.files.enumerated() where i < waiting.count {
+                    insertDropped(file: url, at: point, asLink: payload.asLink, placeholderID: waiting[i])
+                }
+                for url in payload.files.dropFirst(waiting.count) { insertDropped(file: url, at: point, asLink: payload.asLink) }
+                for id in waiting.dropFirst(payload.files.count) { tab.resolvePlaceholder(id: id, html: "") }
+                return true
+            }
+            if payload.files.isEmpty, payload.promised > 0 { return true }
             // One picture, dropped on the swap target of another: the only
             // reading of that gesture is "use this one instead".
             if Self.replaceCandidate(payload), let file = payload.files.first {
@@ -2977,21 +3156,22 @@ struct EditingToolbar: View {
         return "Add text"
     }
 
-    private func insertDropped(file: URL, at point: CGPoint, asLink: Bool) {
+    private func insertDropped(file: URL, at point: CGPoint, asLink: Bool, placeholderID: String? = nil) {
         let ext = file.pathExtension.lowercased()
-        if asLink { insertMediaFile(file, at: point, forcedKind: .file); return }
+        if asLink { insertMediaFile(file, at: point, forcedKind: .file, placeholderID: placeholderID); return }
         if ["md", "markdown", "txt", "text"].contains(ext) {
             let raw = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
             let html = (ext.hasPrefix("m"))
                 ? Markdown.html(raw)
                 : raw.components(separatedBy: "\n\n").map { "<p>\(Markdown.escapeText($0).replacingOccurrences(of: "\n", with: "<br>"))</p>" }.joined()
+            if let placeholderID { tab.resolvePlaceholder(id: placeholderID, html: "") }
             tab.insertObject(html: "<div class=\"tim-object tim-text tim-style-body\">\(html)</div>", colSpan: 12, rowSpan: 4, at: point)
             return
         }
-        insertMediaFile(file, at: point)
+        insertMediaFile(file, at: point, placeholderID: placeholderID)
     }
 
-    private func insertMediaFile(_ fileURL: URL, at point: CGPoint?, forcedKind: MediaKind? = nil) {
+    private func insertMediaFile(_ fileURL: URL, at point: CGPoint?, forcedKind: MediaKind? = nil, placeholderID existing: String? = nil) {
         let name = fileURL.lastPathComponent
         let kind = forcedKind ?? MediaKind.of(fileExtension: fileURL.pathExtension)
 
@@ -3006,17 +3186,23 @@ struct EditingToolbar: View {
             resolvedSite = s
         }
         let pageURL = tab.webView.url
-        let placeholderID = UUID().uuidString
+        let placeholderID = existing ?? UUID().uuidString
         isWorking = true
         statusMessage = "Adding \(name)…"
 
         // The placeholder appears this instant — optimizing and uploading
         // can take a while, and the canvas should say so, beautifully.
-        let spans = Self.mediaSpans(for: kind)
-        tab.insertObject(
-            html: Self.placeholderHTML(id: placeholderID, label: "Adding \(name)…"),
-            colSpan: spans.cols, rowSpan: spans.rows, at: point
-        )
+        // (Or it appeared earlier still, when the file was chosen, and is
+        // only relabelled here.)
+        if existing != nil {
+            tab.setPlaceholderLabel(id: placeholderID, "Adding \(name)…")
+        } else {
+            let spans = Self.mediaSpans(for: kind)
+            tab.insertObject(
+                html: Self.placeholderHTML(id: placeholderID, label: "Adding \(name)…"),
+                colSpan: spans.cols, rowSpan: spans.rows, at: point
+            )
+        }
         DispatchQueue.global(qos: .userInitiated).async {
             var activity = ActivityCenter.shared.begin("Adding \(name)…")
             do {
@@ -3046,14 +3232,14 @@ struct EditingToolbar: View {
                 DispatchQueue.main.async { statusMessage = "Uploading \(publishName)…" }
                 try Self.uploadStagedMedia(site: resolvedSite, name: publishName)
                 DispatchQueue.main.async {
-                    ActivityCenter.shared.end(activity)
+                    ActivityCenter.shared.end(activity, note: "Added \(publishName)")
                     isWorking = false
                     statusMessage = nil
                     tab.resolvePlaceholder(id: placeholderID, html: Self.mediaHTML(kind: kind, src: src, name: publishName))
                 }
             } catch {
                 DispatchQueue.main.async {
-                    ActivityCenter.shared.end(activity)
+                    ActivityCenter.shared.fail(activity, "Couldn’t add \(name): \(error.localizedDescription)")
                     isWorking = false
                     statusMessage = "Couldn’t add \(name): \(error.localizedDescription)"
                     tab.failPlaceholder(id: placeholderID, message: "Couldn’t add \(name)")
@@ -3163,14 +3349,14 @@ struct EditingToolbar: View {
                 DispatchQueue.main.async { statusMessage = "Uploading \(publishName)…" }
                 try Self.uploadStagedMedia(site: resolvedSite, name: publishName)
                 DispatchQueue.main.async {
-                    ActivityCenter.shared.end(activity)
+                    ActivityCenter.shared.end(activity, note: "Replaced with \(publishName)")
                     isWorking = false
                     statusMessage = nil
                     tab.replaceMedia(id: replaceID, html: Self.mediaHTML(kind: kind, src: src, name: publishName))
                 }
             } catch {
                 DispatchQueue.main.async {
-                    ActivityCenter.shared.end(activity)
+                    ActivityCenter.shared.fail(activity, "Couldn’t replace \(name): \(error.localizedDescription)")
                     isWorking = false
                     statusMessage = "Couldn’t replace with \(name): \(error.localizedDescription)"
                     tab.unmarkMedia(id: replaceID)
@@ -3932,6 +4118,7 @@ struct NewPageSheet: View {
         let name = siteName
         let astro = isAstro
         DispatchQueue.global(qos: .userInitiated).async {
+            let activity = ActivityCenter.shared.begin(scaffold ? "Creating the site…" : "Creating \u{201C}\(chosenTitle)\u{201D}…")
             do {
                 let folder = workingSite.localProjectPath
                 var rel: String
@@ -3972,6 +4159,7 @@ struct NewPageSheet: View {
                     SiteWorkspace.snapshot(folder, message: scaffold ? "New site with Tim" : "New page \(rel) with Tim")
                 }
                 DispatchQueue.main.async {
+                    ActivityCenter.shared.end(activity, note: scaffold ? "Your site is up" : "Created \u{201C}\(chosenTitle)\u{201D}")
                     isCreating = false
                     for pageRel in written where pageRel != rel {
                         let stem = ((pageRel as NSString).lastPathComponent as NSString).deletingPathExtension
@@ -3984,6 +4172,7 @@ struct NewPageSheet: View {
                 }
             } catch {
                 DispatchQueue.main.async {
+                    ActivityCenter.shared.fail(activity, "Couldn’t create the page: \(error.localizedDescription)")
                     isCreating = false
                     errorMessage = error.localizedDescription
                 }
@@ -5014,6 +5203,26 @@ enum AddressField {
 // MARK: - New local page (a single .html canvas file, no site needed)
 
 enum LocalPages {
+    static func createPlayground(in tab: Tab?) {
+        guard let tab else { return }
+        do {
+            let base = try FileManager.default.url(for: .applicationSupportDirectory,
+                                                  in: .userDomainMask, appropriateFor: nil, create: true)
+            let folder = base.appendingPathComponent("Tim/Playgrounds", isDirectory: true)
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let url = folder.appendingPathComponent("My playground.html")
+            try LocalPage.playground.write(to: url, atomically: true, encoding: .utf8)
+            PageRegistry.record(url: url.absoluteString, title: "My playground")
+            tab.navigate(to: url.absoluteString, editingAfterLoad: true)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Couldn’t Create Your Playground"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+        }
+    }
+
     static func createAndOpen(in tab: Tab?) {
         guard let tab else { return }
         let panel = NSSavePanel()
@@ -5027,11 +5236,7 @@ enum LocalPages {
         let title = url.deletingPathExtension().lastPathComponent
         do {
             try LocalPage.html(title: title).write(to: url, atomically: true, encoding: .utf8)
-            tab.navigate(to: url.absoluteString)
-            // Enter edit mode once the new page has loaded.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                if !tab.isEditing { tab.setEditing(true) }
-            }
+            tab.navigate(to: url.absoluteString, editingAfterLoad: true)
         } catch {
             NSSound.beep()
         }
@@ -8202,14 +8407,14 @@ struct MovePageSheet: View {
                     ? publishLocal(file!, to: destination, at: to)
                     : moveExisting(from: from, to: to, source: source!, destination: destination, forward: leaveForward)
                 DispatchQueue.main.async {
-                    ActivityCenter.shared.end(activity)
+                    ActivityCenter.shared.end(activity, note: file != nil ? "The page is online" : "Moved")
                     working = false
                     tab.navigate(to: newURL)
                     dismiss()
                 }
             } catch {
                 DispatchQueue.main.async {
-                    ActivityCenter.shared.end(activity)
+                    ActivityCenter.shared.end(activity, note: file != nil ? "The page is online" : "Moved")
                     working = false
                     self.error = error.localizedDescription
                 }

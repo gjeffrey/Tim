@@ -15,7 +15,10 @@ enum PhotosBrowser {
     /// Presents the picker and hands back real files on disk: the chosen
     /// assets are copied out into a temporary folder, so everything after
     /// this point is Tim's ordinary media pipeline.
-    static func pick(multiple: Bool, completion: @escaping ([URL]) -> Void) {
+    /// `onPicked` fires the moment the person confirms, with how many
+    /// files are coming — before Photos has exported a single byte, which
+    /// for a video can take a while. Put the placeholders down then.
+    static func pick(multiple: Bool, onPicked: ((Int) -> Void)? = nil, completion: @escaping ([URL]) -> Void) {
         // One picker at a time. A second request while one is up is the
         // same request heard twice, not a second wish.
         guard retained == nil else { return }
@@ -40,7 +43,7 @@ enum PhotosBrowser {
         sheet.styleMask = [.titled, .closable, .resizable]
         sheet.setContentSize(NSSize(width: 860, height: 620))
         sheet.minSize = NSSize(width: 560, height: 420)
-        let delegate = Delegate(host: hostWindow, sheet: sheet, completion: completion)
+        let delegate = Delegate(host: hostWindow, sheet: sheet, onPicked: onPicked, completion: completion)
         picker.delegate = delegate
         retained = delegate
         hostWindow.beginSheet(sheet)
@@ -51,11 +54,13 @@ enum PhotosBrowser {
 
     private final class Delegate: NSObject, PHPickerViewControllerDelegate {
         private let completion: ([URL]) -> Void
+        private let onPicked: ((Int) -> Void)?
         private let host: NSWindow
         private let sheet: NSWindow
-        init(host: NSWindow, sheet: NSWindow, completion: @escaping ([URL]) -> Void) {
+        init(host: NSWindow, sheet: NSWindow, onPicked: ((Int) -> Void)?, completion: @escaping ([URL]) -> Void) {
             self.host = host
             self.sheet = sheet
+            self.onPicked = onPicked
             self.completion = completion
         }
 
@@ -63,6 +68,9 @@ enum PhotosBrowser {
             host.endSheet(sheet)
             sheet.orderOut(nil)
             guard !results.isEmpty else { finish([]); return }
+            onPicked?(results.count)
+            let activity = ActivityCenter.shared.begin(results.count == 1 ? "Getting the photo from Photos…" : "Getting \(results.count) photos from Photos…")
+            defer { pendingActivity = activity }
             let dir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("tim-photos-\(UUID().uuidString.prefix(8))")
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -101,7 +109,9 @@ enum PhotosBrowser {
             return base + "." + ext
         }
 
+        private var pendingActivity: UUID?
         private func finish(_ urls: [URL]) {
+            if let pendingActivity { ActivityCenter.shared.end(pendingActivity) }
             completion(urls)
             PhotosBrowser.retained = nil
         }

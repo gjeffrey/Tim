@@ -40,7 +40,7 @@ enum HomePage {
             var cards = ""
             for page in locals.prefix(12) {
                 let file = URL(string: page.url)
-                let label = file.map { $0.deletingPathExtension().lastPathComponent } ?? page.title
+                let label = page.title.isEmpty ? (file?.deletingPathExtension().lastPathComponent ?? "Untitled") : page.title
                 cards += card(title: label, subtitle: "On this Mac", href: page.url, thumbnail: page.url)
             }
             sections += """
@@ -51,10 +51,8 @@ enum HomePage {
 
         if sites.isEmpty {
             sections += """
-            <section class="intro"><p>Tim edits pages where they live. Make a page here on your
-            Mac to try it — nobody else can see it until you publish. When you're ready,
-            connect a site you own and Tim will publish straight to it.</p>
-            <a class="ghost" href="tim:connect">Connect a Site…</a></section>
+            <section class="intro"><p>A page for your photographs. A tiny magazine. A love letter to something obscure.
+            Start here on your Mac; connect a site when you’re ready to share it.</p></section>
             """
         }
 
@@ -94,15 +92,21 @@ enum HomePage {
     private static func page(_ sections: String) -> String {
         """
         <!DOCTYPE html>
-        <html lang="en"><head><meta charset="utf-8"><title>Start</title>
+        <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Start</title>
         <style>
           :root { color-scheme: light dark; --ink:#1d1d1f; --dim:#6e6e73; --paper:#fbfbfd; --card:#fff; --line:rgba(0,0,0,0.10); }
           @media (prefers-color-scheme: dark) { :root { --ink:#f5f5f7; --dim:#a1a1a6; --paper:#161617; --card:#1e1e20; --line:rgba(255,255,255,0.14); } }
           * { margin:0; padding:0; box-sizing:border-box; }
           body { font-family:-apple-system, ui-sans-serif, system-ui, sans-serif; background:var(--paper); color:var(--ink); }
           main { max-width:60rem; margin:0 auto; padding:3.2rem 2rem 4rem; }
-          h1 { font-size:2.6rem; font-weight:700; letter-spacing:-0.03em;
-               background:linear-gradient(135deg,#0a84ff,#bf5af2); -webkit-background-clip:text; background-clip:text; color:transparent; }
+          h1 { font-family:Georgia, serif; font-size:3rem; font-weight:400; letter-spacing:-0.06em; }
+          .welcome { padding:2rem 0 2.5rem; }
+          .welcome h2 { display:block; color:var(--ink); font-family:Georgia, serif; font-size:clamp(2.4rem, 5vw, 4.5rem); font-weight:400; line-height:1.06; letter-spacing:-0.045em; text-transform:none; max-width:12ch; margin-bottom:1rem; }
+          .welcome p { color:var(--dim); font-size:1.05rem; line-height:1.6; max-width:38rem; margin-bottom:1.3rem; }
+          .welcome .actions { margin-bottom:0.8rem; }
+          .welcome .reassurance { font-size:0.8rem; margin-bottom:0; }
+          a:focus-visible { outline:3px solid #0a84ff; outline-offset:5px; }
+          @media(max-width:520px) { main { padding:2rem 1.2rem; } h2 { flex-wrap:wrap; } .grid { grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); } }
           .tagline { font-size:1.05rem; color:var(--dim); margin:0.1rem 0 1.8rem; }
           .actions { display:flex; gap:0.6rem; align-items:center; flex-wrap:wrap; margin-bottom:2.6rem; }
           a.primary { background:#ffd60a; color:#111; font-weight:600; font-size:0.95rem;
@@ -129,10 +133,16 @@ enum HomePage {
         <body><main>
           <h1>Tim</h1>
           <p class="tagline">The web, editable again.</p>
+          <div class="welcome">
+          <h2>The web could use a little more you.</h2>
+          <p>Make something just because. Move the words, change the colors, follow an idea. Every piece is yours to play with.</p>
           <div class="actions">
-            <a class="primary" href="tim:new-local">New Local Page</a>
+            <a class="primary" href="tim:playground">Start playing ↗</a>
+            <a class="ghost" href="tim:new-local">Start a blank page…</a>
             <a class="ghost" href="tim:open">Open…</a>
             <a class="ghost" href="tim:connect">Connect a Site…</a>
+          </div>
+          <p class="reassurance">The playground opens on your Mac. No account. Nothing goes online.</p>
           </div>
           \(sections)
         </main></body></html>

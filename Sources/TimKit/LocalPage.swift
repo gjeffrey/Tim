@@ -8,6 +8,31 @@ public enum LocalPage {
         Paper.page(.blank, title: title)
     }
 
+    /// A small, offline playground made entirely from ordinary canvas objects.
+    public static var playground: String {
+        let objects = """
+        <div class="tim-object tim-text tim-style-caption" style="grid-area:1 / 2 / 2 / 22;">YOUR OWN LITTLE CORNER OF THE WEB</div>
+        <div class="tim-object tim-text tim-style-title" style="grid-area:3 / 2 / 7 / 17;">Something only<br>you would make.</div>
+        <div class="tim-object tim-text tim-style-body" style="grid-area:8 / 2 / 11 / 14;">Double-click these words. Write about something you love, however small or strange.</div>
+        <div class="tim-object tim-text tim-style-heading" style="grid-area:3 / 18 / 8 / 25;background:#ffd60a;color:#202020;border-radius:50%;display:flex;align-items:center;justify-content:center;text-align:center;padding:20px;">Move<br>me.</div>
+        <div class="tim-object tim-text tim-style-body" style="grid-area:12 / 2 / 16 / 12;background:#d6e9de;color:#202020;padding:24px;border-radius:6px;">Try a different shape.<br>Click this card, then drag an edge to resize it.</div>
+        <div class="tim-object tim-text tim-style-body" style="grid-area:12 / 14 / 16 / 24;background:#f4c1b4;color:#202020;padding:24px;border-radius:6px;">Make a happy accident.<br>Move something somewhere unexpected. Undo is always ⌘Z.</div>
+        <div class="tim-object tim-text tim-style-caption" style="grid-area:18 / 2 / 20 / 23;">Try the phone preview above. When you’re happy, press Done to save this page on your Mac.</div>
+        """
+        // System fonts keep the very first experiment independent of a connection.
+        let head = Paper.head(title: "My playground")
+            .replacingOccurrences(of: Paper.fontLinks, with: "")
+            .replacingOccurrences(of: Paper.headingFont, with: "Georgia, serif")
+            .replacingOccurrences(of: Paper.bodyFont, with: "-apple-system, ui-sans-serif, system-ui, sans-serif")
+        return MobileCSS.regenerate(in: """
+        <!DOCTYPE html><html lang="en"><head>
+        \(head)
+        </head><body data-tim-template="page">
+        <div class="tim-canvas" data-tim-canvas>\(objects)</div>
+        </body></html>
+        """)
+    }
+
     /// A new page in the site's own design language: the seed page's head
     /// (styles, fonts, template rules, icons) with a fresh canvas. Falls
     /// back to the generic starter when the site has no pages yet.

@@ -175,7 +175,10 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
     }
 
     /// Interprets the address bar text as a URL, a bare domain, or a search.
-    public func navigate(to input: String) {
+    private var editAfterLoadURL: URL?
+
+    public func navigate(to input: String, editingAfterLoad: Bool = false) {
+        editAfterLoadURL = editingAfterLoad ? URL(string: input) : nil
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         deliberateNavigation = true
@@ -825,6 +828,9 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
 
     /// Live styling from the Inspector: sets one CSS property on the
     /// selected element (design vocabulary in the UI, CSS underneath).
+    public func setPlaceholderLabel(id: String, _ label: String) {
+        webView.evaluateJavaScript("window.__timPlaceholderLabel && window.__timPlaceholderLabel(\(Self.jsLiteral(id)), \(Self.jsLiteral(label)));", completionHandler: nil)
+    }
     /// Crop editing for the selected picture, the way Keynote edits a mask.
     public func setCropping(_ on: Bool) {
         webView.evaluateJavaScript("window.__timCropSel && window.__timCropSel(\(on ? "true" : "false"));", completionHandler: nil)
@@ -3341,6 +3347,12 @@ public final class Tab: NSObject, ObservableObject, Identifiable {
         layout();
         notifySel(true);
       };
+      window.__timPlaceholderLabel = function (id, message) {
+        var ph = doc.querySelector('[data-tim-placeholder=' + JSON.stringify(id) + ']');
+        if (!ph) { return; }
+        var lbl = ph.querySelector('.tim-media-loading-label');
+        if (lbl) { lbl.textContent = message; }
+      };
       window.__timFailPlaceholder = function (id, message) {
         var ph = doc.querySelector('[data-tim-placeholder=' + JSON.stringify(id) + ']');
         if (!ph) { return; }
@@ -4235,6 +4247,7 @@ extension Tab: WKNavigationDelegate {
         // a download) — not failures.
         if e.domain == NSURLErrorDomain && e.code == NSURLErrorCancelled { return }
         if e.domain == "WebKitErrorDomain" && (e.code == 102 || e.code == 204) { return }
+        editAfterLoadURL = nil
         let failed = (e.userInfo[NSURLErrorFailingURLStringErrorKey] as? String) ?? urlString
         let message = e.localizedDescription
             .replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
@@ -4265,7 +4278,10 @@ extension Tab: WKNavigationDelegate {
         // A draft is offered, never imposed: the page loads as published,
         // and the draft shows in the address bar and History. Only an
         // explicit resumeDraft() brings it back into edit mode.
-        if restoringDraft {
+        if let expected = editAfterLoadURL, webView.url == expected {
+            editAfterLoadURL = nil
+            setEditing(true)
+        } else if restoringDraft {
             restoringDraft = false
             setEditing(true)
         } else {
@@ -4542,6 +4558,10 @@ public final class TimWebView: WKWebView {
     /// handled. Hover reports the point and the Option state; nil on exit.
     /// Promised files arrive after the drop, so the closure can be called
     /// once the source has written them.
+    /// A drop whose files haven't been written yet — Photos, Mail — just
+    /// landed. Called the instant it's accepted, with how many files are
+    /// coming and what they are, so the page can show them arriving.
+    public var dropPromised: ((_ payload: DropPayload, _ point: CGPoint) -> Void)?
     public var drop: ((_ payload: DropPayload, _ point: CGPoint) -> Bool)? {
         didSet {
             #if os(macOS)
@@ -4632,6 +4652,7 @@ public final class TimWebView: WKWebView {
             let dir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("tim-drop-\(UUID().uuidString.prefix(8))")
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            dropPromised?(p, point)
             let queue = OperationQueue()
             let group = DispatchGroup()
             let lock = NSLock()
@@ -4644,9 +4665,10 @@ public final class TimWebView: WKWebView {
                 }
             }
             group.notify(queue: .main) {
-                guard !landed.isEmpty else { return }
                 var settled = p
                 settled.files = landed.sorted { $0.lastPathComponent < $1.lastPathComponent }
+                // Even an empty landing is delivered: whoever showed the
+                // files arriving needs to know they never did.
                 _ = drop(settled, point)
             }
             return true
