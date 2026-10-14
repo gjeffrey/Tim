@@ -53,7 +53,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
         <true/>
     </dict>
     <key>SUFeedURL</key>
-    <string>https://gabrieljeffrey.com/tim/appcast.xml</string>
+    <string>https://github.com/gjeffrey/Tim/releases/latest/download/appcast.xml</string>
     <key>SUPublicEDKey</key>
     <string>TM8yvT30uFU2LjT3tGN72/bwV1tjrtjZjpnqX9Avtyc=</string>
     <key>SUEnableAutomaticChecks</key>

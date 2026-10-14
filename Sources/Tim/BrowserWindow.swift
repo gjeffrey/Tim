@@ -1589,7 +1589,10 @@ struct TabContentView: View {
         }
     }
 
-    var body: some View {
+    /// The view and its sheets. The notification handlers are applied
+    /// in `body`, as a second expression: as one chain of twenty-eight
+    /// modifiers, Swift 6.4 gives up type-checking it.
+    private var chrome: some View {
         VStack(spacing: 0) {
             if tab.isEditing {
                 // Preview's markup bar: the format row belongs to the
@@ -1686,6 +1689,13 @@ struct TabContentView: View {
         .sheet(isPresented: $showShowcaseSheet) {
             ShowcaseSheet(tab: tab)
         }
+    }
+
+    /// Swift 6.4 gives up on one chain of this many modifiers, so the
+    /// handlers are applied in stages. Order within a stage is kept;
+    /// the stages are independent of one another.
+    private func handlers1<V: View>(_ v: V) -> some View {
+        v
         .onReceive(NotificationCenter.default.publisher(for: .timSubmitShowcase)) { _ in
             if store.selectedTab === tab { showShowcaseSheet = true }
         }
@@ -1716,6 +1726,10 @@ struct TabContentView: View {
         .sheet(isPresented: $showChangeTheme) {
             ChangeThemeSheet(tab: tab)
         }
+    }
+
+    private func handlers2<V: View>(_ v: V) -> some View {
+        v
         .onReceive(NotificationCenter.default.publisher(for: .timChangeTheme)) { _ in
             guard store.selectedTab === tab, isPageEditable else { NSSound.beep(); return }
             if !tab.isEditing { tab.setEditing(true) }
@@ -1737,6 +1751,10 @@ struct TabContentView: View {
                 LocalPages.createAndOpen(in: tab)
             }
         }
+    }
+
+    private func handlers3<V: View>(_ v: V) -> some View {
+        v
         .onReceive(NotificationCenter.default.publisher(for: .timOpenPage)) { _ in
             openLocalPage()
         }
@@ -1768,6 +1786,10 @@ struct TabContentView: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { tab.resetMobileLayout() }
             }
         }
+    }
+
+    private func handlers4<V: View>(_ v: V) -> some View {
+        v
         .onReceive(NotificationCenter.default.publisher(for: .timMovePage)) { _ in
             guard store.selectedTab === tab else { return }
             // Every site needs its local folder before it can be a
@@ -1806,6 +1828,10 @@ struct TabContentView: View {
             }
             if tab.isEditing { tab.refreshReviewCounts() }
         }
+    }
+
+    var body: some View {
+        handlers4(handlers3(handlers2(handlers1(chrome))))
     }
 
     /// A local page that isn't a build product of a connected project —

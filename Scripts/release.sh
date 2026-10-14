@@ -1,6 +1,8 @@
 #!/bin/zsh
 # Release Tim: signed, notarized, stapled, zipped, appcast updated, and
-# uploaded to gabrieljeffrey.com/tim.
+# published as a GitHub release — which is where the app looks for updates
+# (SUFeedURL → releases/latest/download/appcast.xml) and where the site's
+# Download button points (releases/latest/download/Tim.zip).
 #
 # One-time setup (already partly done on this Mac):
 #   - Developer ID Application cert in the keychain        [present]
@@ -38,15 +40,13 @@ if [ ${#NOTARY_AUTH[@]} -eq 0 ] && [ -f "$KEY_FILE" ] && [ -n "$NOTARY_ISSUER_ID
     NOTARY_AUTH=(--key "$KEY_FILE" --key-id "$KEY_ID" --issuer "$NOTARY_ISSUER_ID")
     echo "▸ Notary auth: API key $KEY_ID"
 fi
-# Where releases go. Yours, not the repo's: put them in Scripts/.release.env
-# (ignored by git), e.g.
-#   SFTP_DEST="user@host"
-#   REMOTE_ROOT="/path/to/site/tim"
-RELEASE_ENV="$(dirname "$0")/.release.env"
-[ -f "$RELEASE_ENV" ] && . "$RELEASE_ENV"
-: "${SFTP_DEST:?Set SFTP_DEST in Scripts/.release.env}"
-: "${REMOTE_ROOT:?Set REMOTE_ROOT in Scripts/.release.env}"
+REPO="gjeffrey/Tim"
 RELEASES_DIR="Releases"
+gh auth status >/dev/null 2>&1 || { echo "!! gh isn't logged in (gh auth login)"; exit 1; }
+if gh release view "v$VERSION" -R "$REPO" >/dev/null 2>&1; then
+    echo "!! v$VERSION already exists on GitHub. Bump TIM_VERSION, or delete the release first."
+    exit 1
+fi
 SPARKLE_BIN=$(find .build/artifacts -type d -name bin -path "*sparkle*" | head -1)
 
 ./Scripts/make-app.sh
@@ -66,9 +66,9 @@ codesign --force --options runtime --timestamp --sign "$IDENTITY" "Tim.app"
 codesign --verify --deep --strict "Tim.app" && echo "signature OK"
 
 mkdir -p "$RELEASES_DIR"
-# Versioned artifact: the site is behind Cloudflare, which caches zips
-# for two days — a same-named upload was served stale to Sparkle (and
-# failed its signature check). A new name per release is a new URL.
+# One zip per version, kept in Releases/ so the appcast keeps every
+# version it has ever listed (generate_appcast drops items whose archive
+# is gone).
 ZIP="$RELEASES_DIR/Tim-$VERSION.zip"
 rm -f "$ZIP" "$RELEASES_DIR/Tim.zip"
 ditto -c -k --keepParent "Tim.app" "$ZIP"
@@ -86,23 +86,22 @@ else
 fi
 
 echo "== Appcast"
+# Each version's zip lives under its own tag, so the prefix is rewritten
+# per item: …/download/Tim-0.8.zip → …/download/v0.8/Tim-0.8.zip.
 "$SPARKLE_BIN/generate_appcast" "$RELEASES_DIR" \
-    --download-url-prefix "https://gabrieljeffrey.com/tim/" \
+    --download-url-prefix "https://github.com/$REPO/releases/download/" \
     -o "$RELEASES_DIR/appcast.xml"
+sed -i '' -E 's#(releases/download/)Tim-([0-9.]+)\.zip#\1v\2/Tim-\2.zip#g' "$RELEASES_DIR/appcast.xml"
 
-# The site's Download button follows the versioned file, so it can never
-# point at a stale edge copy. (Examples/tim is the page's mirror.)
-sed -i '' "s#https://gabrieljeffrey.com/tim/Tim\(-[0-9.]*\)\{0,1\}\.zip#https://gabrieljeffrey.com/tim/Tim-$VERSION.zip#g" Examples/tim/index.html
+echo "== Publishing v$VERSION on GitHub"
+# Three assets: the versioned zip the appcast names, Tim.zip for the
+# site's stable Download link (releases/latest/download/Tim.zip), and
+# the appcast itself (releases/latest/download/appcast.xml — the feed).
+# Notes come from Releases/notes-$VERSION.md when there is one.
+cp "$ZIP" "$RELEASES_DIR/Tim.zip"
+NOTES=(--generate-notes)
+[ -f "$RELEASES_DIR/notes-$VERSION.md" ] && NOTES=(--notes-file "$RELEASES_DIR/notes-$VERSION.md")
+gh release create "v$VERSION" -R "$REPO" --title "Tim $VERSION" "${NOTES[@]}" \
+    "$ZIP" "$RELEASES_DIR/Tim.zip" "$RELEASES_DIR/appcast.xml"
 
-echo "== Uploading to gabrieljeffrey.com/tim"
-# The versioned zip is what the appcast points at; Tim.zip stays the
-# site's stable download link (uncached at the edge via .htaccess).
-sftp -o BatchMode=yes -b - "$SFTP_DEST" <<SFTP
-put "$ZIP" "$REMOTE_ROOT/$(basename "$ZIP")"
-put "$ZIP" "$REMOTE_ROOT/Tim.zip"
-put "$RELEASES_DIR/appcast.xml" "$REMOTE_ROOT/appcast.xml"
-put "Scripts/tim-htaccess" "$REMOTE_ROOT/.htaccess"
-put "Examples/tim/index.html" "$REMOTE_ROOT/index.html"
-SFTP
-
-echo "Release complete: https://gabrieljeffrey.com/tim/$(basename "$ZIP") (and Tim.zip)"
+echo "Release complete: https://github.com/$REPO/releases/tag/v$VERSION"
