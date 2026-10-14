@@ -11,3 +11,4 @@ Releases/
 Templates/
 TimPad/.build-xcode/
 TimPad/.build-device*/
+Scripts/.release.env

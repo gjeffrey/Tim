@@ -38,8 +38,14 @@ if [ ${#NOTARY_AUTH[@]} -eq 0 ] && [ -f "$KEY_FILE" ] && [ -n "$NOTARY_ISSUER_ID
     NOTARY_AUTH=(--key "$KEY_FILE" --key-id "$KEY_ID" --issuer "$NOTARY_ISSUER_ID")
     echo "▸ Notary auth: API key $KEY_ID"
 fi
-SFTP_DEST="dh_xvreha@pdx1-shared-a1-34.dreamhost.com"
-REMOTE_ROOT="/home/dh_xvreha/gabrieljeffrey.com/tim"
+# Where releases go. Yours, not the repo's: put them in Scripts/.release.env
+# (ignored by git), e.g.
+#   SFTP_DEST="user@host"
+#   REMOTE_ROOT="/path/to/site/tim"
+RELEASE_ENV="$(dirname "$0")/.release.env"
+[ -f "$RELEASE_ENV" ] && . "$RELEASE_ENV"
+: "${SFTP_DEST:?Set SFTP_DEST in Scripts/.release.env}"
+: "${REMOTE_ROOT:?Set REMOTE_ROOT in Scripts/.release.env}"
 RELEASES_DIR="Releases"
 SPARKLE_BIN=$(find .build/artifacts -type d -name bin -path "*sparkle*" | head -1)
 
