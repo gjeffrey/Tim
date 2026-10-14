@@ -104,5 +104,5 @@ GitHub's private reporting; see [SECURITY.md](SECURITY.md).
 ## Licence
 
 MIT — see [LICENSE](LICENSE). The Tim name and icon identify this
-release and aren't part of the licence; build on the code and ship under
-your own name.
+release and aren't part of the licence (see [TRADEMARK.md](TRADEMARK.md));
+build on the code and ship under your own name.
